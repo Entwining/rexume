@@ -16,7 +16,7 @@ Each session's layout is one JSON document in `session`, keyed by the session's 
 
 `occupant` records which agent conversation a pane runs, from the session-start hook, and `block` caches the pane's directory, size, foreground program, and program status. `report` records an occupant only when the reporting agent's parent process is the pane's foreground program, so a subagent or a nested run does not replace the pane's conversation. The conversation's own record (Claude Code and Codex transcripts, Pi session files) is the authority on its turns; rexume reads it line by line and never writes it. A line that is complete but not JSON is logged with its path and offset, and the turn it belongs to counts as unknown; a line still being written is read once it ends.
 
-`Store::open` applies the schema to a new, empty database, uses one whose `application_id` and `user_version` match this version without taking the write lock, and refuses anything else, including a database written by a newer version. `rexume status` opens the database read-only. When the daemon starts observing an instance, it deletes what nothing refers to any more: other instances' `live` rows, panes no saved layout or open task names, earlier instances' restores, epochs, and conversations older than 30 days, and tasks whose latest round finished more than 30 days ago and has no notice that may still reach its owner.
+`Store::open` applies the schema to a new, empty database, uses one whose `application_id` and `user_version` match this version without taking the write lock, and refuses anything else, including a database written by a newer version. `rexume status` opens the database read-only. When the daemon starts observing an instance, it deletes what nothing refers to any more: other instances' `live` rows, panes no saved layout or open task names, earlier instances' restores, epochs, and conversations older than 30 days, and tasks whose latest round was acknowledged, or if never acknowledged finished, more than 30 days ago and has no notice that may still reach its owner.
 
 ## Restore
 
@@ -29,7 +29,7 @@ When a new server instance appears, every saved session from an earlier instance
 | `created` | The server answered, or a gate's claim showed the session. Floating layers, focus, zoom, and labels follow. |
 | `completed` | Every pane exists. |
 | `partial` | A floating layer was refused, or was requested and none of its panes claimed within 5 seconds, so it may or may not exist. A late claim completes it. |
-| `unknown` | The create got no answer. A gate's claim seen within 5 seconds, or when the daemon next starts, makes it `created`. |
+| `unknown` | The create got no answer. A gate's claim seen within 5 seconds, or when the daemon next connects to the server, makes it `created`. |
 | `failed` | The server refused the create. |
 
 A floating layer creates panes like a session does, so its slots carry `layer_sent_at` before the request and the layer is never requested twice. Display settings that fail are logged and do not hold the operation back.
@@ -88,6 +88,14 @@ Most of these come from what Rex and the agents expose; the others need a failur
 
 ## Measurements
 
-On the maintainer's Apple Silicon Mac, with 20 sessions and 60 panes and a release build: the daemon woke 0 times and used 0.0 s CPU over 30 idle seconds; a rename reached disk in 15 ms at the median; title changes caused no calls; no process started per event; and every session was restored with every pane's directory known 1047 ms after the new server started.
+`cargo test --release --test it bench -- --ignored --nocapture` starts its own server with 20 sessions of three panes each, runs the daemon against it, and prints one JSON report. It asserts nothing: read the report against the goals in [AGENTS.md](../AGENTS.md), and a change's report against the baseline commit's from the same machine. `REXUME_BENCH_GOGC` sets `GOGC` for the daemon's `rex do`.
 
-Memory is the median of three samples, in two measures. Resident memory (`ps -o rss`) counts shared and clean file pages in every process that maps them: 6.2 MiB for the daemon, 2.9 MiB for the relay, and 35.6 MiB for `rex do`. The physical footprint (`phys_footprint`, which `top` shows as `MEM`) counts only memory the process itself dirtied: it was 2.8 MiB for the daemon, 1.4 MiB for the relay, and 18.0 MiB for `rex do`, 22.2 MiB in all; `rex do` is Rex's own client and Go runtime, which rexume does not control. `tests/it/bench.rs` reproduces these figures.
+| Key | What it measures |
+| --- | --- |
+| `idle_30s` | The daemon's CPU seconds and the idle wakeups `top` counts over 30 seconds with nothing happening; both should be 0. |
+| `memory_kib` | The daemon, `rex do`, and the relay, each the median of three samples a second apart. `rss` (`ps -o rss`) counts shared and clean file pages in every process that maps them; `phys_footprint` (`top`'s `MEM`) counts what the kernel charges to the process, including compressed pages. `rex do` is Rex's own client and Go runtime. |
+| `title_changes_50_calls` | Server calls the daemon made while a pane changed its title 50 times; should be 0. |
+| `rename_to_disk_ms` | For 20 session renames, the time from the command until the saved layout holds the new name: the median, the maximum, and each. |
+| `rename_views_for_20` | The `session.view` calls those renames caused. |
+| `daemon_children_during_renames` | The daemon's child processes seen meanwhile; only `rex do` is expected, since no process starts per event. |
+| `restore_20_sessions_60_panes_ms` | The time from the new server's start until every session's restore completed and every pane's directory is known again. |

@@ -28,16 +28,16 @@ rexume install
 
 `install` writes four things and prints what it did as JSON:
 
-| What | Where | Identified by |
-| --- | --- | --- |
-| Claude Code `SessionStart` hook | `~/.claude/settings.json` | its command, `rexume report claude` |
-| Codex `SessionStart` hook | `~/.codex/hooks.json` | its command, `rexume report codex` |
-| Pi extension | `~/.pi/agent/extensions/rexume.ts` | its path and first line |
-| LaunchAgent `io.github.entwining.rexume`, which runs `rexume daemon` | `~/Library/LaunchAgents/io.github.entwining.rexume.plist` | its label |
+| What | Where |
+| --- | --- |
+| Claude Code `SessionStart` hook | `~/.claude/settings.json` |
+| Codex `SessionStart` hook | `~/.codex/hooks.json` |
+| Pi extension | `~/.pi/agent/extensions/rexume.ts` |
+| LaunchAgent `io.github.entwining.rexume`, which runs `rexume daemon` | `~/Library/LaunchAgents/io.github.entwining.rexume.plist` |
 
-A runtime whose directory does not exist is skipped; if you install Claude Code, Codex, or Pi later, run `rexume install` again once it is set up. Running `install` again changes only what is missing or different, keeps every other hook and setting, and reloads the LaunchAgent only when its file changed or it is not loaded. Codex runs a new hook only after you approve it: open `/hooks` in Codex and trust the `rexume report codex` entry.
+A runtime whose directory does not exist is skipped; if you install Claude Code, Codex, or Pi later, run `rexume install` again once it is set up. Running it again leaves one copy of each entry and keeps your other hooks and settings; [docs/cli.md](docs/cli.md#how-install-recognizes-its-entries) describes how it recognizes its entries. Codex runs a new hook only after you approve it: open `/hooks` in Codex and trust the `rexume report codex` entry.
 
-The daemon uses the first `rex` on `PATH` and the server in `REX_SERVER`, or the Rex app's default server; pass `--rex` or `--server` to `install` to choose others. It keeps the `PATH` you ran `install` with, which is how it finds `codex` to send notices. Restored terminals answer color queries before the app shows them only if they know your theme, so pass your terminal's colors as `--theme-foreground '#rrggbb' --theme-background '#rrggbb'`. The daemon logs to `~/Library/Logs/rexume.log`.
+`install` records the first `rex` on `PATH` and the server in `REX_SERVER`, or the Rex app's default server, in the LaunchAgent; pass `--rex` or `--server` to choose others. The daemon keeps the `PATH` you ran `install` with, which is how it finds `codex` to send notices. Restored terminals answer color queries before the app shows them only if they know your theme, so pass your terminal's colors as `--theme-foreground '#rrggbb' --theme-background '#rrggbb'`. The daemon logs to `~/Library/Logs/rexume.log`.
 
 Agents started before `install` are recorded from their next session start. Upgrading the program, with `brew upgrade` or by installing over it, is enough: the daemon notices that its executable was replaced and launchd starts the new one.
 
@@ -71,6 +71,7 @@ Run these from the orchestrator's own Rex pane: they find the orchestrator throu
 - `failed`: the server refused to create the session.
 - `unknown`: the server did not answer the create, and no pane of the session reported.
 - `partial`: a floating layer was refused, or may exist without any of its panes having reported.
+- `planned`, `sent`, `created`: still in progress, or stopped at that step after an error until the daemon next connects.
 
 rexume does not request an unanswered create or layer again, because doing so could duplicate panes; check the session in the Rex app and recreate what is missing. [docs/design.md](docs/design.md) describes these states.
 
@@ -84,14 +85,17 @@ This removes the two hooks (and any hook group left empty), the Pi extension if 
 
 ## Known limits
 
-These come from what Rex and the agents expose today:
+Rex and Claude Code do not provide what these would need:
 
 - A close carries no reason, so rexume treats every close on a live server as yours, including one an app or script made.
 - Rex has no conditional close. Between rexume's check that a worker's pane is unused and the close, a person can still start typing in it.
 - Rex has no per-pane notification audience, so a worker's Done or Blocked indicator notifies you like any other pane.
-- `session.create` has no idempotency key. When the server does not answer a create, rexume waits for the new panes' claims instead of creating the session again; a session none of whose panes report stays `unknown`. When the reply is lost, a pane can also start a shell instead of its conversation.
+- `session.create` has no idempotency key. When the server does not answer a create, rexume waits for the new panes' claims instead of creating the session again; a session none of whose panes report stays `unknown`.
+- Claude Code applies its inbound-message rules to rexume's notices, which carry no permission class. With `crossSessionInbound` unset, an orchestrator that prompts for permissions receives them, but one that bypasses permission prompts holds each notice for your approval; `hold` and `refuse` hold or drop them. You can set it to `accept` to receive notices without approval, which also lets that session's other cross-session messages through; rexume does not change the setting.
+
+This one is rexume's own trade-off:
+
 - The daemon reads a session's layout at once after a change but at most once per 300 ms, so a change made within 300 ms of the previous read is lost if the server crashes before that interval ends.
-- Claude Code applies its inbound-message rules to rexume's notices, which carry no permission class. With `crossSessionInbound` unset, an orchestrator that prompts for permissions receives them, but one that bypasses permission prompts holds each notice for your approval; `hold` and `refuse` hold or drop them.
 
 ## Documentation
 

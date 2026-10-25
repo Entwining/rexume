@@ -91,7 +91,7 @@ enum Command {
     ///
     /// The LaunchAgent runs this. It runs until stopped, logs to stderr, and exits at once when
     /// another daemon holds the same state directory. Set `RUST_LOG=rexume=debug` to log every
-    /// call it makes to the server.
+    /// call it makes through its adapter.
     Daemon {
         #[command(flatten)]
         server: Server,

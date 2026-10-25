@@ -35,7 +35,7 @@ Each field has a `_note` beside it, which says why when the value needs a reason
 - **Pi extension.** `~/.pi/agent/extensions/rexume.ts` is rewritten whenever its bytes differ from the extension this version ships. Uninstall removes it only when its first line is the one install writes.
 - **LaunchAgent.** The job is the label `io.github.entwining.rexume` in `gui/$UID`, defined by `~/Library/LaunchAgents/io.github.entwining.rexume.plist`, which runs `rexume daemon` and logs to `~/Library/Logs/rexume.log`. Install compares the plist it would write with the one on disk by their parsed content, writes it when they differ, and boots the job out and in again only when the plist changed or the job is not loaded; otherwise launchd is not touched.
 
-Files are replaced through a rename that keeps their permissions; a symbolic link is followed and its target replaced.
+The Pi extension and the plist hold nothing of the user's, so they are replaced whole and no backup is kept; the plist is written from install's flags and its `PATH`. Files are replaced through a rename that keeps their permissions; a symbolic link is followed and its target replaced.
 
 ## uninstall
 
@@ -58,7 +58,7 @@ Each field is `removed` or `absent`; `pi_extension` can also be `kept`.
 rexume daemon [--rex PATH] [--server ADDRESS] [--theme-foreground COLOR --theme-background COLOR]
 ```
 
-The process the LaunchAgent runs. It runs until stopped, logs to stderr (set `RUST_LOG=rexume=debug` for every call it makes), and exits 1 at once when another daemon holds the same state directory. It starts `rex do` with its adapter script as a child process and reconnects with a growing delay, from 1 to 30 seconds, when the server goes away; a new server socket wakes it early. On `SIGTERM` or `SIGINT` it ends `rex do` and exits 0; it also exits 0 when its executable is replaced, so that launchd starts the new one.
+The process the LaunchAgent runs. It runs until stopped, logs to stderr (set `RUST_LOG=rexume=debug` for every call it makes through its adapter), and exits 1 at once when another daemon holds the same state directory. It starts `rex do` with its adapter script as a child process and reconnects with a growing delay, from 1 to 30 seconds, when the server goes away; a new server socket wakes it early. On `SIGTERM` or `SIGINT` it ends `rex do` and exits 0; it also exits 0 when its executable is replaced, so that launchd starts the new one.
 
 ## status
 
@@ -104,7 +104,7 @@ The task commands run from the orchestrator's own Rex pane: they find the callin
 | `task ack ID [--round N]` | Records that the owner has a finished round's result; a notice not yet sent for it is dropped. The daemon then closes a disposable worker's pane if it is unused. Fails while the round is `running` or `blocked`. | `TASK` |
 | `task rearm ID` | Starts the next round with the same interactive worker; only a turn it finishes after now counts. Fails while the round is unfinished, or when the pane is closed or rexume is closing it. | `TASK` of the new round |
 
-`TASK` has `id`, `title`, `round`, `state`, `mode` (`interactive` or `non_interactive`), `keep_pane`, `worker` (the pane's current Rex block ID, or `null` once it is not on the server), `result_ref` (for a completed round, the record ID of an interactive worker's answer or a non-interactive run's result file), `note` (why the round ended without a result), `finished_at`, `acked_at`, `pane`, and, except in `task list`, `result`. `pane` is `{state, closed_at, note}`: `state` is `open` while rexume may still close the pane, `closing` during a close attempt, `closed` once the pane is gone, or `kept` when it was used after the result and is left to whoever uses it; `note` says why a pane was kept or a close put off.
+`TASK` has `id`, `title`, `round`, `state`, `mode` (`interactive` or `non_interactive`), `keep_pane`, `worker` (the pane's current Rex block ID, or `null` once it is not on the server), `result_ref` (for a completed round, the record ID of an interactive worker's answer or a non-interactive run's result file), `note` (why the round ended without a result), `finished_at`, `acked_at`, `pane`, and, except in `task list`, `result`. `pane` is `{state, closed_at, note}`: `state` is `open` while the pane exists and rexume has neither closed nor given it up (a `--keep-pane` pane stays `open`), `closing` during a close attempt, `closed` once the pane is gone, or `kept` when it was used after the result and is left to whoever uses it; `note` says why a pane was kept or a close put off.
 
 A round's `state` is `running` or `blocked` (the worker is waiting for someone) until it finishes as `completed` (its result is saved), `cancelled`, `failed`, `terminated` (a non-interactive run ended by a signal), or `worker_closed`.
 
@@ -117,7 +117,7 @@ A notice's text starts with `[rexume NOTICE_ID]` and names the task, its title, 
 | Variable | Read by | Use |
 | --- | --- | --- |
 | `HOME` | every command | the default state directory; install's and uninstall's targets |
-| `PATH` | `install`, `daemon` | finding `rex` and `rexume`; install writes its own into the LaunchAgent, where the daemon finds `codex` through it |
+| `PATH` | `install`, `daemon`, `report`, `task` | finding `rex` (and, for `install`, `rexume`); install writes its own into the LaunchAgent, where the daemon finds `codex` through it |
 | `REX_SERVER` | `install`, `daemon`, `report`, `task` | the server address when `--server` is not given; `report` and `task` use it to reach the server |
 | `REX_BLOCK` | `report`, `task`, `gate` | the calling pane |
 | `REX_SESSION` | `report`, `gate` | the calling pane's session |

@@ -55,7 +55,6 @@ fn every_argument_is_documented() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
-/// The examples in the help still parse after a flag changes.
 #[test]
 fn examples_parse() {
     for text in [EXAMPLES, TASK_EXAMPLES] {
@@ -72,7 +71,6 @@ fn examples_parse() {
     }
 }
 
-/// No line of a rendered --help is wider than 100 columns.
 #[test]
 fn help_fits_in_100_columns() {
     fn check(cmd: &mut clap::Command, out: &mut Vec<String>) {

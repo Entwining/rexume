@@ -1,6 +1,7 @@
 //! The daemon: one long-running process that observes a Rex server, keeps the saved layout and
 //! pane states, restores the saved sessions on a new server instance, and moves tasks along. It
-//! waits on one kqueue and wakes only for an event, a deadline, a signal, or a file it follows.
+//! waits on one kqueue and wakes only for an event, a deadline, a signal, a process exit, or a
+//! file it follows.
 
 mod block;
 mod connection;

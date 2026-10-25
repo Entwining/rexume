@@ -138,8 +138,7 @@ pub struct Process {
     pub name: Option<String>,
 }
 
-/// Records the conversation and makes it the pane's occupant. Claude Code leaves the model out of a
-/// resumed session's start, so the settings a later report does not repeat are kept.
+/// Records the conversation and makes it the pane's occupant.
 pub fn record(
     tx: &Transaction,
     lineage: &str,
@@ -225,7 +224,7 @@ mod tests {
             tx.commit()?;
             Ok(model)
         };
-        // Inputs as Claude Code 2.1.310 sends them on startup and on resume.
+        // Inputs as Claude Code sends them on startup and on resume.
         let startup = json!({"session_id": "s", "source": "startup", "model": "claude-haiku-5-5"});
         assert_eq!(
             model(&mut store, startup)?.as_deref(),

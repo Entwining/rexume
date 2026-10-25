@@ -1,11 +1,11 @@
 -- rexume state. One SQLite database (state.db) shared by the daemon and the short-lived
--- commands; Store::open sets the connection pragmas (WAL, synchronous=NORMAL, foreign_keys=ON,
--- busy_timeout) and applies this file to a new database. Conventions: every table is STRICT;
--- every closed set of states is a CHECK, and a state the code adds is added to the CHECK, never
--- loosened; every time is Unix milliseconds; an ID this tool mints is UUIDv7 text; a lineage is
--- the Rex ID a resource had when first seen. A JSON column is read and written whole by one
--- module, whose serde types are its shape; its validity CHECK is a column constraint so that the
--- column can still be dropped. Table comments are the only place a column's meaning lives.
+-- commands; Store::open sets the connection pragmas and applies this file to a new database.
+-- Conventions: every table is STRICT; every closed set of states is a CHECK, and a state the
+-- code adds is added to the CHECK, never loosened; every time is Unix milliseconds; an ID this
+-- tool mints is UUIDv7 text; a lineage is the Rex ID a resource had when first seen. A JSON
+-- column is read and written whole by one module, whose serde types are its shape; its validity
+-- CHECK is a column constraint so that the column can still be dropped. Table comments are the
+-- only place a column's meaning lives.
 
 -- One observation of one server instance, from a confirmed subscription until it ended.
 -- 'server_gone': the connection ended and the server then no longer answered as the same
@@ -23,11 +23,12 @@ CREATE TABLE epoch (
 CREATE INDEX epoch_instance ON epoch (instance_id, id);
 
 -- The layout to restore: one document per session, keyed by the session's lineage, read and
--- written whole. Only layout.rs and restore/create.rs read `doc`; its shape is their serde
--- types. `instance_id` is where the layout was last saved: a session saved on an earlier
--- instance and not yet restored on the current one is what a restore plans from. `position` is
--- the session's place in the server's list, the order restores are planned in; `updated_at` is
--- when the document was last written.
+-- written whole. Only the layout module and restore/create.rs parse `doc`, whose shape is their
+-- serde types; store::sweep finds the pane lineages in it by the key `lineage`. `instance_id` is
+-- where the layout was last saved: a session saved on an earlier instance and not yet restored
+-- on the current one is what a restore plans from. `position` is the session's place in the
+-- server's list, the order restores are planned in; `updated_at` is when the document was last
+-- written.
 CREATE TABLE session (
   lineage     TEXT    PRIMARY KEY,
   instance_id TEXT    NOT NULL,
@@ -82,7 +83,10 @@ CREATE UNIQUE INDEX live_lineage ON live (instance_id, lineage);
 -- runtimes grows in code (enum Runtime), which refuses an unknown name before writing.
 -- `settings` is a JSON object owned by the runtime's module (model, effort, provider, ...,
 -- whatever its resume command needs); a later report merges into it (json_patch), so a value
--- a resumed session's start omits is kept.
+-- a resumed session's start omits is kept. `transcript` is the runtime's record of the
+-- conversation, which a later report without one leaves in place. `resumable` is 0 for a run
+-- its runtime cannot reopen, such as a Pi run outside its terminal interface. `reported_at` is
+-- when the conversation was last reported.
 CREATE TABLE conversation (
   runtime     TEXT    NOT NULL,
   native_id   TEXT    NOT NULL,
@@ -97,7 +101,10 @@ CREATE TABLE conversation (
 -- pane's current binding, not its history. A report may come before the daemon has seen the
 -- pane, so there is no reference to `block`; store::forget_block deletes the occupant with the
 -- block. `transport` is a JSON object owned by the runtime's module: how a notice reaches this
--- process (Claude Code's messaging socket; nothing for Codex and Pi).
+-- process (Claude Code's messaging socket; nothing for Codex and Pi). `pid` and `pid_name` are
+-- the reporting process and the name Rex reported for it, which tell whether a pane's later
+-- status came from the same process. `keeps_session_env`: the process ran with `REX_SESSION`, so
+-- its reopened conversation gets it too.
 CREATE TABLE occupant (
   block_lineage     TEXT    PRIMARY KEY,
   runtime           TEXT    NOT NULL,
@@ -114,7 +121,7 @@ CREATE INDEX occupant_conversation ON occupant (runtime, native_id, reported_at)
 -- A session recreated on a new server instance. Its panes run `rexume gate`, which claims its
 -- slot before starting anything, so an unanswered create is reconciled from the claims and a
 -- late gate cannot start a second copy of a conversation. `doc` is the layout as planned (the
--- saved layout without retired workers) and goes with the layout feature; the saved layout
+-- saved layout without retired workers), in the layout module's shape; the saved layout
 -- itself is rewritten as soon as the new instance shows the session, so the restore reads only
 -- this copy, and `status` shows its `label`. The created session's live ID is the `live` row
 -- for (instance_id, session_lineage), written by the create reply or by the first gate's claim.
@@ -170,17 +177,17 @@ CREATE TABLE restore_slot (
 CREATE UNIQUE INDEX restore_slot_executor ON restore_slot (instance_id, runtime, native_id)
   WHERE start IN ('agent', 'continue');
 
--- Work an orchestrator's conversation handed to a worker pane: which conversation owns it,
--- which pane does it, and what happens to the pane afterwards. Panes are named by lineage, not
--- referenced: a task outlives its pane's row. A task with `result_file` is a non-interactive
--- run whose result is that file; without one it is an interactive worker whose rounds are
--- answered turns. `worker_pid` is the pane's foreground process when the task was registered,
--- which is the program whose exit ends a non-interactive run. `pane_state`: 'open' while the
--- pane exists and rexume may still close it; 'closing' while the daemon, the only closer, holds
--- the pane for one close attempt (add and rearm refuse it); 'closed' once the pane is gone, by
--- rexume or by the user; 'kept' when the pane was found in use after the result and is left
--- to whoever uses it, `pane_note` saying why. A close the daemon put off writes its reason to
--- `pane_note` and leaves 'open'. A pane the orchestrator asked to keep is never 'closing' or
+-- Work an orchestrator's conversation handed to a worker pane: which conversation owns it, which
+-- pane does it, and what happens to the pane afterwards. Panes are named by lineage, not
+-- referenced: a task outlives its pane's row. A task with `result_file` is a non-interactive run
+-- whose result is that file; without one it is an interactive worker whose rounds are answered
+-- turns. `worker_pid` is the pane's foreground process when the task was registered, which is
+-- the program whose exit ends a non-interactive run. `pane_state`: 'open' while the pane exists
+-- and rexume has neither closed nor given it up; 'closing' while the daemon, the only closer,
+-- holds the pane for one close attempt (add and rearm refuse it); 'closed' once the pane is
+-- gone, by rexume or by the user; 'kept' when the pane was found in use after the result and is
+-- left to whoever uses it, `pane_note` saying why. A close the daemon put off writes its reason
+-- to `pane_note` and leaves 'open'. A pane the orchestrator asked to keep is never 'closing' or
 -- 'kept'.
 CREATE TABLE task (
   id              TEXT    PRIMARY KEY,
@@ -205,19 +212,20 @@ CREATE TABLE task (
 CREATE INDEX task_owner ON task (owner_runtime, owner_native_id);
 CREATE INDEX task_worker ON task (worker_lineage);
 
--- One round of a task: the worker answering one prompt. A new round is a new row and an
--- earlier round keeps its result, so the rounds are the task's history. `worker_runtime` and
+-- One round of a task: the worker answering one prompt. A new round is a new row and an earlier
+-- round keeps its result, so the rounds are the task's history. `worker_runtime` and
 -- `worker_native_id` are the conversation whose record the round follows, bound once (at
 -- registration when the pane's foreground process had reported, else by the daemon from the
 -- first report after it) and never moved to a conversation that takes over the pane later; a
--- non-interactive run has none. `cursor`: byte offset into that record from which a finished
--- turn counts. `waiter_pid`: a `task wait` process that takes the result itself while it
--- runs. A round is 'completed' exactly when its result is saved here, in the transaction that
--- also writes its notice; every final state sets `finished_at`. `finished_status_at` and
--- `finished_generation` are the worker pane's status time and foreground generation when the
--- round finished, to tell later activity in the pane apart. `result_ref` is the record ID of an
--- interactive worker's answer, or a non-interactive run's result file; `note` says why a round
--- ended without a result. `result` is last: the one large
+-- non-interactive run has none. `cursor`: byte offset into that record; while the round runs, a
+-- turn after it is the round's, and once the round finishes it is the offset after the result's
+-- turn, so any later turn is activity in the pane. `waiter_pid`: a `task wait` process that
+-- takes the result itself while it runs. A round is 'completed' exactly when its result is saved
+-- here, in the transaction that also writes its notice; every final state sets `finished_at`.
+-- `finished_status_at` and `finished_generation` are the worker pane's status time and
+-- foreground generation when the round finished, to tell later activity in the pane apart.
+-- `result_ref` is the record ID of an interactive worker's answer, or a non-interactive run's
+-- result file; `note` says why a round ended without a result. `result` is last: the one large
 -- column, so reads of the others never cross its overflow pages.
 CREATE TABLE task_round (
   task_id             TEXT    NOT NULL REFERENCES task (id) ON DELETE CASCADE,
@@ -250,8 +258,8 @@ CREATE INDEX task_round_worker ON task_round (worker_runtime, worker_native_id);
 
 -- The notice that tells the owner its round finished, written in the transaction that finishes
 -- the round; its kind is the round's final state and its time is the round's `finished_at`.
--- Exactly one claimant, the daemon or the owner's own `task wait`, moves it out of 'pending'.
--- 'sending' is the running daemon's claim and every state after it is the daemon's.
+-- Exactly one claimant, the daemon or the owner's own `task wait` or `task ack`, moves it out of
+-- 'pending'. 'sending' is the running daemon's claim and every state after it is the daemon's.
 -- 'unknown': the send may have happened, so only the owner's own record settles it, never a
 -- resend. 'superseded': the owner had the result before anything was sent, through `task wait`
 -- or `task ack` (`note` says which). A 'pending' notice with a `note` is one whose send failed
@@ -272,7 +280,6 @@ CREATE TABLE notice (
   FOREIGN KEY (task_id, round) REFERENCES task_round (task_id, round) ON DELETE CASCADE
 ) STRICT;
 
--- 'rexu' in ASCII: Store::open initialises only a database with application_id 0 and no
--- tables, uses one with this id and a user_version it knows, and refuses anything else.
+-- 'rexu' in ASCII, which Store::open checks before it uses a database.
 PRAGMA application_id = 0x72657875;
 PRAGMA user_version = 1;

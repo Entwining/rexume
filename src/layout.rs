@@ -1,5 +1,5 @@
 //! The saved form of a session's layout, built from `session.view` and keyed by lineage instead of
-//! the IDs of one server instance, and the `session` table that holds it. Only this file and
+//! the IDs of one server instance, and the `session` table that holds it. Only this module and
 //! `restore/create.rs` know the layout's form.
 
 mod persist;

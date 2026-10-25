@@ -8,8 +8,8 @@ use anyhow::{Context, Result, bail};
 
 use super::{Install, LABEL, Targets, write};
 
-/// Writes the plist and loads the job when either changed: a loaded job keeps the definition it
-/// was loaded with. Plists are compared by their parsed content.
+/// Writes the plist when its parsed content differs, and loads the job when the plist changed or
+/// the job is not loaded: a loaded job keeps the definition it was loaded with.
 pub(super) fn install(install: &Install, targets: &Targets) -> Result<&'static str> {
     let wanted = plist(install, &targets.logs.join("rexume.log"));
     let current = match plist::Value::from_file(&targets.plist) {

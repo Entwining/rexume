@@ -157,8 +157,8 @@ impl Cli {
         Err(classify(&String::from_utf8_lossy(&output.stderr)))
     }
 
-    /// Starts the script that connects the daemon: it runs `rexume relay` back to `socket` with
-    /// `token` as its first line, and passes calls and events through it.
+    /// Starts the script that connects the daemon: it runs `relay` with `token` appended, which
+    /// the relay sends back as its first line, and passes calls and events through it.
     pub fn adapter(&self, relay: &[String], token: &str) -> std::io::Result<Child> {
         let args = json!({ "relay": relay, "token": token });
         self.command()

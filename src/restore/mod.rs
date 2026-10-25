@@ -224,10 +224,8 @@ impl Restorer {
         self.after_create(rex, store, instance, id)
     }
 
-    /// Floating layers, then focus, zoom, and the active window. A layer creates blocks, so like
-    /// the session it is marked as sent before it is requested and, once sent, is only ever
-    /// adopted from its gates' claims. The operation is complete only when every layer exists;
-    /// display settings that fail are logged and do not hold it back.
+    /// Floating layers, then focus, zoom, and the active window. The operation is complete only
+    /// when every layer exists; display settings that fail are logged and do not hold it back.
     fn after_create(
         &mut self,
         rex: &mut Rex,
