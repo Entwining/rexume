@@ -1,4 +1,4 @@
-// Written by `rexume install`, which replaces this file when it changes; `rexume uninstall` removes it.
+// Written by `rexume install` and kept current by the rexume daemon; `rexume uninstall` removes it.
 import { execFile } from "node:child_process";
 import { type FSWatcher, mkdirSync, readdirSync, readFileSync, renameSync, watch } from "node:fs";
 import { homedir } from "node:os";

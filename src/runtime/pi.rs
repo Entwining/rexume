@@ -1,4 +1,4 @@
-//! Pi, through the extension `rexume install` writes.
+//! Pi, through the extension `rexume install` writes and the daemon keeps current.
 
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -10,6 +10,10 @@ use super::{Conversation, Sent, Target, Turn, content_texts, text_at};
 
 /// The extension `rexume install` writes into Pi's extensions directory.
 pub const EXTENSION: &str = include_str!("pi/extension.ts");
+
+/// How the extension starts in every version, so that a file install wrote is recognized after
+/// the rest of its first line changes.
+pub const WRITTEN_BY: &str = "// Written by `rexume install`";
 
 /// The `customType` of the notices the extension passes to Pi.
 const NOTICE: &str = "rexume";

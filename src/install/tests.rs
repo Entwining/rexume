@@ -47,3 +47,34 @@ fn the_plist_round_trips_through_its_parsed_form() -> Result<()> {
     assert_eq!(plist::Value::from_reader_xml(bytes.as_slice())?, wanted);
     Ok(())
 }
+
+#[test]
+fn the_daemon_refreshes_only_an_extension_install_wrote() -> Result<()> {
+    use std::os::unix::fs::MetadataExt;
+
+    let home = tempfile::tempdir()?;
+    let path = Targets::new(home.path()).pi;
+    assert_eq!(refresh_pi_extension(home.path())?, "absent");
+    assert!(!path.exists(), "a removed extension is not written back");
+
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    std::fs::write(&path, format!("{}, by an older version\n", pi::WRITTEN_BY))?;
+    assert_eq!(refresh_pi_extension(home.path())?, "updated");
+    assert_eq!(std::fs::read_to_string(&path)?, pi::EXTENSION);
+
+    let inode = std::fs::metadata(&path)?.ino();
+    assert_eq!(refresh_pi_extension(home.path())?, "unchanged");
+    assert_eq!(
+        std::fs::metadata(&path)?.ino(),
+        inode,
+        "a current file is not replaced"
+    );
+
+    std::fs::write(&path, "// the user's own extension\n")?;
+    assert_eq!(refresh_pi_extension(home.path())?, "kept");
+    assert_eq!(
+        std::fs::read_to_string(&path)?,
+        "// the user's own extension\n"
+    );
+    Ok(())
+}

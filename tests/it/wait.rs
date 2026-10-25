@@ -15,6 +15,7 @@ fn a_daemon_starts_as_soon_as_a_server_appears_under_directories_that_did_not_ex
             .arg(dir.path().join("state"))
             .args(["--rex", "/usr/bin/false", "--server"])
             .arg(format!("unix://{}", socket.display()))
+            .env("HOME", dir.path().join("home"))
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(&log).unwrap())
             .spawn()

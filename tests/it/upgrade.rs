@@ -26,6 +26,10 @@ fn a_daemon_exits_when_an_upgrade_replaces_its_executable() {
         } else {
             install(&exe);
         }
+        // The extension an older version's install wrote.
+        let extension = dir.path().join("home/.pi/agent/extensions/rexume.ts");
+        std::fs::create_dir_all(extension.parent().unwrap()).unwrap();
+        std::fs::write(&extension, "// Written by `rexume install`, long ago\n").unwrap();
         let log = dir.path().join("daemon.log");
         let mut daemon = Running(
             Command::new(&exe)
@@ -34,6 +38,7 @@ fn a_daemon_exits_when_an_upgrade_replaces_its_executable() {
                 .arg(dir.path().join("state"))
                 .args(["--rex", "/usr/bin/false", "--server"])
                 .arg(format!("unix://{}", dir.path().join("s.sock").display()))
+                .env("HOME", dir.path().join("home"))
                 .stdout(Stdio::null())
                 .stderr(std::fs::File::create(&log).unwrap())
                 .spawn()
@@ -44,6 +49,11 @@ fn a_daemon_exits_when_an_upgrade_replaces_its_executable() {
             "the daemon to wait for its server",
             Duration::from_secs(10),
             || read_log().contains("waiting for the server").then_some(()),
+        );
+        assert_eq!(
+            std::fs::read_to_string(&extension).unwrap(),
+            include_str!("../../src/runtime/pi/extension.ts"),
+            "a starting daemon brings the extension up to date"
         );
 
         if linked {

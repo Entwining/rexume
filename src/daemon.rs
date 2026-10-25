@@ -21,6 +21,7 @@ use nix::sys::signal::{SigSet, Signal};
 use rusqlite::params;
 use serde_json::Value;
 
+use crate::install;
 use crate::kqueue::{Kqueue, Token};
 use crate::rex::Cli;
 use crate::store::{Store, now_ms};
@@ -34,6 +35,8 @@ pub struct Options {
     /// The colors restored terminals start with, so programs that ask for the background color
     /// before the app shows them get an answer.
     pub theme: Option<Value>,
+    /// The home directory whose Pi extension the daemon refreshes when it starts.
+    pub home: PathBuf,
 }
 
 const LISTEN: Token = 1;
@@ -73,6 +76,13 @@ pub fn run(options: &Options) -> Result<()> {
                 )
             });
         }
+    }
+    // A daemon starts after every upgrade, so this is where a new extension reaches Pi; Pi without
+    // it only misses reports and notices, which is no reason to stop restoring.
+    match install::refresh_pi_extension(&options.home) {
+        Ok("updated") => log::info!("updated the Pi extension"),
+        Ok(_) => {}
+        Err(e) => log::warn!("failed to refresh the Pi extension: {e:#}"),
     }
     let mut store = Store::open(&options.state_dir)?;
     // Holding the lock, an epoch still open belongs to a daemon that died. Whether its server

@@ -307,6 +307,7 @@ fn run(command: Command) -> Result<Option<Value>> {
                     .theme_foreground
                     .zip(server.theme_background)
                     .map(|(fg, bg)| json!({ "foreground": fg, "background": bg })),
+                home: home()?,
             };
             daemon::run(&options).map(|()| None)
         }

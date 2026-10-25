@@ -39,7 +39,7 @@ A runtime whose directory does not exist is skipped; if you install Claude Code,
 
 `install` records the first `rex` on `PATH` and the server in `REX_SERVER`, or the Rex app's default server, in the LaunchAgent; pass `--rex` or `--server` to choose others. The daemon keeps the `PATH` you ran `install` with, which is how it finds `codex` to send notices. Restored terminals answer color queries before the app shows them only if they know your theme, so pass your terminal's colors as `--theme-foreground '#rrggbb' --theme-background '#rrggbb'`. The daemon logs to `~/Library/Logs/rexume.log`.
 
-Agents started before `install` are recorded from their next session start. Upgrading the program, with `brew upgrade` or by installing over it, is enough for the hooks and the daemon: the daemon notices that its executable was replaced and launchd starts the new one. The Pi extension is a copy that only `install` writes, so when a release's notes say the extension changed, run `rexume install` again.
+Agents started before `install` are recorded from their next session start. Upgrading the program, with `brew upgrade` or by installing over it, is enough: the daemon notices that its executable was replaced, launchd starts the new one, and it replaces the Pi extension `install` wrote when the new version's differs. It never creates the extension, so one you removed stays removed.
 
 ## What comes back, and what does not
 

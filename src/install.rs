@@ -1,7 +1,8 @@
 //! `rexume install` and `rexume uninstall`: the session hooks of Claude Code and Codex, the Pi
-//! extension, and the LaunchAgent that runs the daemon. Each entry is recognized by its identity
-//! (the hook's command, the extension's and plist's paths), so install changes only what is
-//! missing or different, and uninstall removes only these entries.
+//! extension, which the daemon also refreshes, and the LaunchAgent that runs the daemon. Each
+//! entry is recognized by its identity (the hook's command, the extension's and plist's paths),
+//! so install changes only what is missing or different, and uninstall removes only these
+//! entries.
 
 mod launch_agent;
 
@@ -89,11 +90,12 @@ pub fn install(home: &Path, install: &Install) -> Result<Value> {
 
 pub fn uninstall(home: &Path) -> Result<Value> {
     let targets = Targets::new(home);
+    // The daemon rewrites the Pi extension when it starts, so it is stopped before the extension
+    // is removed.
+    launch_agent::unload()?;
     let claude = remove_hook(&targets.claude, "claude")?;
     let codex = remove_hook(&targets.codex, "codex")?;
-    let marker = pi::EXTENSION.lines().next().unwrap_or_default();
-    let extension = remove_file(&targets.pi, |text| text.starts_with(marker))?;
-    launch_agent::unload()?;
+    let extension = remove_file(&targets.pi, |text| text.starts_with(pi::WRITTEN_BY))?;
     let launch_agent = remove_file(&targets.plist, |_| true)?;
     Ok(outcomes([
         ("claude_hook", (claude, None)),
@@ -101,6 +103,20 @@ pub fn uninstall(home: &Path) -> Result<Value> {
         ("pi_extension", extension),
         ("launch_agent", launch_agent),
     ]))
+}
+
+/// Rewrites the Pi extension install wrote when it differs from this version's, so that an
+/// upgrade reaches Pi without another install. A missing file stays missing, so that uninstall
+/// stays final, and a file install did not write is left as it is. Returns `updated`,
+/// `unchanged`, `absent`, or `kept`.
+pub fn refresh_pi_extension(home: &Path) -> Result<&'static str> {
+    let path = Targets::new(home).pi;
+    match std::fs::read_to_string(&path) {
+        Ok(text) if text.starts_with(pi::WRITTEN_BY) => write(&path, pi::EXTENSION.as_bytes()),
+        Ok(_) => Ok("kept"),
+        Err(e) if e.kind() == ErrorKind::NotFound => Ok("absent"),
+        Err(e) => Err(e).with_context(|| format!("failed to read `{}`", path.display())),
+    }
 }
 
 /// Whether a hook runs `rexume report <runtime>`, by whatever path to rexume.
