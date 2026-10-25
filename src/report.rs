@@ -14,8 +14,21 @@ use crate::rex::{Cli, Rex, require_str, str_at};
 use crate::runtime::Runtime;
 use crate::store::{Store, ensure_lineage, now_ms};
 
+/// What a session start says about the session's place in the agent process that reports it.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum Role {
+    /// The agent's own conversation.
+    Own,
+    /// A session the agent runs inside its process for its own purposes.
+    Inner,
+    /// Not marked either way: the agent's own conversation when its process does not hold the
+    /// pane yet, and an inner session of the process that does.
+    Unmarked,
+}
+
 pub struct Report {
     pub native_id: String,
+    pub role: Role,
     pub transcript: Option<String>,
     pub resumable: bool,
     /// Only the settings this report carries; a later report merges into the recorded ones.
@@ -24,7 +37,7 @@ pub struct Report {
 
 /// Reads the hook's JSON input. Claude Code and Codex send their hook input; the Pi extension sends
 /// `session_id`, `session_file`, `mode`, `provider`, `model`, and `thinking`.
-pub fn parse(runtime: Runtime, input: &Value) -> Result<Option<Report>> {
+pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
     let text = |key: &str| {
         input
             .get(key)
@@ -32,10 +45,18 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Option<Report>> {
             .filter(|s| !s.is_empty())
             .map(str::to_owned)
     };
-    // A subagent's session start describes the subagent, not the pane's conversation.
-    if runtime == Runtime::Claude && input.get("agent_id").is_some_and(|v| !v.is_null()) {
-        return Ok(None);
-    }
+    // The agent also runs sessions inside its own process, which pass the foreground check, so
+    // the runtime's marks decide. Claude Code marks a subagent's or in-process teammate's start
+    // with `agent_id`. Codex records every interactive conversation, and none of its guardian
+    // reviews or side conversations, nor an ephemeral `codex exec` run. Pi runs the pane's
+    // interactive session in `tui` mode, and an SDK session an extension creates starts in
+    // `print` mode, as `pi -p` does.
+    let role = match runtime {
+        Runtime::Claude if input.get("agent_id").is_some_and(|v| !v.is_null()) => Role::Inner,
+        Runtime::Codex if text("transcript_path").is_none() => Role::Unmarked,
+        Runtime::Pi if text("mode").as_deref() != Some("tui") => Role::Unmarked,
+        _ => Role::Own,
+    };
     // Each runtime's resume command reads these keys (`runtime::*::resume_argv`).
     let settings_from = |pairs: &[(&str, &str)]| -> Map<String, Value> {
         pairs
@@ -43,11 +64,12 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Option<Report>> {
             .filter_map(|(field, key)| Some(((*key).to_owned(), Value::from(text(field)?))))
             .collect()
     };
-    let report = match runtime {
+    Ok(match runtime {
         Runtime::Claude | Runtime::Codex => Report {
             native_id: text("session_id").context("hook input without session_id")?,
+            role,
             transcript: text("transcript_path"),
-            resumable: true,
+            resumable: role == Role::Own,
             settings: settings_from(&[("model", "model"), ("effort", "effort")]),
         },
         Runtime::Pi => {
@@ -56,7 +78,8 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Option<Report>> {
                 native_id: text("session_id")
                     .or_else(|| file.clone())
                     .context("hook input without session_id or session_file")?,
-                resumable: text("mode").as_deref() == Some("tui") && file.is_some(),
+                role,
+                resumable: role == Role::Own && file.is_some(),
                 transcript: file,
                 settings: settings_from(&[
                     ("provider", "provider"),
@@ -65,8 +88,7 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Option<Report>> {
                 ]),
             }
         }
-    };
-    Ok(Some(report))
+    })
 }
 
 pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
@@ -79,9 +101,7 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
         .read_to_string(&mut input)
         .context("failed to read stdin")?;
     let input: Value = serde_json::from_str(&input).context("failed to parse the hook input")?;
-    let Some(report) = parse(runtime, &input)? else {
-        return Ok(());
-    };
+    let report = parse(runtime, &input)?;
     let mut rex = Rex::Cli(Cli::from_env()?);
     // Workers run without `REX_SESSION`.
     let session = match std::env::var_os("REX_SESSION") {
@@ -138,7 +158,8 @@ pub struct Process {
     pub name: Option<String>,
 }
 
-/// Records the conversation and makes it the pane's occupant.
+/// Records the conversation and makes it the pane's occupant, unless it is an inner session of
+/// the agent process.
 pub fn record(
     tx: &Transaction,
     lineage: &str,
@@ -146,6 +167,19 @@ pub fn record(
     report: &Report,
     process: &Process,
 ) -> Result<()> {
+    let inner = match report.role {
+        Role::Own => false,
+        Role::Inner => true,
+        Role::Unmarked => tx.query_row(
+            "SELECT EXISTS (SELECT 1 FROM occupant
+               WHERE block_lineage = ?1 AND pid = ?2 AND pid_name IS ?3)",
+            params![lineage, process.pid, process.name],
+            |row| row.get(0),
+        )?,
+    };
+    if inner {
+        return Ok(());
+    }
     let now = now_ms();
     tx.execute(
         "INSERT INTO conversation (runtime, native_id, transcript, resumable, settings, reported_at)
@@ -187,63 +221,4 @@ pub fn record(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn pi_print_runs_and_session_less_runs_are_not_resumable() -> Result<()> {
-        let tui = json!({"session_id": "s", "session_file": "/p/s.jsonl", "mode": "tui"});
-        assert!(parse(Runtime::Pi, &tui)?.unwrap().resumable);
-        let print = json!({"session_id": "s", "session_file": "/p/s.jsonl", "mode": "print"});
-        assert!(!parse(Runtime::Pi, &print)?.unwrap().resumable);
-        let no_session = json!({"session_id": "s", "mode": "tui"});
-        assert!(!parse(Runtime::Pi, &no_session)?.unwrap().resumable);
-        Ok(())
-    }
-
-    #[test]
-    fn a_resumed_claude_conversation_keeps_its_launch_model() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let mut store = Store::open(dir.path())?;
-        let process = Process {
-            transport: Map::new(),
-            keeps_session_env: false,
-            pid: 100,
-            name: Some("claude".into()),
-        };
-        let model = |store: &mut Store, input: Value| -> Result<Option<String>> {
-            let tx = store.write()?;
-            let report = parse(Runtime::Claude, &input)?.unwrap();
-            record(&tx, "b", Runtime::Claude, &report, &process)?;
-            let model = tx.query_row(
-                "SELECT c.settings ->> '$.model' FROM occupant o
-                 JOIN conversation c USING (runtime, native_id) WHERE o.block_lineage = 'b'",
-                [],
-                |row| row.get(0),
-            )?;
-            tx.commit()?;
-            Ok(model)
-        };
-        // Inputs as Claude Code sends them on startup and on resume.
-        let startup = json!({"session_id": "s", "source": "startup", "model": "claude-haiku-5-5"});
-        assert_eq!(
-            model(&mut store, startup)?.as_deref(),
-            Some("claude-haiku-5-5")
-        );
-        let resume = json!({"session_id": "s", "source": "resume"});
-        assert_eq!(
-            model(&mut store, resume)?.as_deref(),
-            Some("claude-haiku-5-5")
-        );
-        let other = json!({"session_id": "t", "source": "resume"});
-        assert_eq!(model(&mut store, other)?, None);
-        Ok(())
-    }
-
-    #[test]
-    fn claude_subagent_starts_do_not_replace_the_pane_conversation() -> Result<()> {
-        let input = json!({"session_id": "s", "agent_id": "a1", "transcript_path": "/t"});
-        assert!(parse(Runtime::Claude, &input)?.is_none());
-        Ok(())
-    }
-}
+mod tests;

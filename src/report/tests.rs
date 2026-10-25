@@ -1,0 +1,171 @@
+use super::*;
+
+#[test]
+fn a_pi_session_without_a_file_is_recorded_but_not_resumable() -> Result<()> {
+    let tui = json!({"session_id": "s", "session_file": "/p/s.jsonl", "mode": "tui"});
+    assert!(parse(Runtime::Pi, &tui)?.resumable);
+    let no_session = json!({"session_id": "s", "mode": "tui"});
+    assert!(!parse(Runtime::Pi, &no_session)?.resumable);
+    Ok(())
+}
+
+#[test]
+fn a_resumed_claude_conversation_keeps_its_launch_model() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut store = Store::open(dir.path())?;
+    let process = Process {
+        transport: Map::new(),
+        keeps_session_env: false,
+        pid: 100,
+        name: Some("claude".into()),
+    };
+    let model = |store: &mut Store, input: Value| -> Result<Option<String>> {
+        let tx = store.write()?;
+        let report = parse(Runtime::Claude, &input)?;
+        record(&tx, "b", Runtime::Claude, &report, &process)?;
+        let model = tx.query_row(
+            "SELECT c.settings ->> '$.model' FROM occupant o
+             JOIN conversation c USING (runtime, native_id) WHERE o.block_lineage = 'b'",
+            [],
+            |row| row.get(0),
+        )?;
+        tx.commit()?;
+        Ok(model)
+    };
+    // Inputs as Claude Code sends them on startup and on resume.
+    let startup = json!({"session_id": "s", "source": "startup", "model": "claude-haiku-5-5"});
+    assert_eq!(
+        model(&mut store, startup)?.as_deref(),
+        Some("claude-haiku-5-5")
+    );
+    let resume = json!({"session_id": "s", "source": "resume"});
+    assert_eq!(
+        model(&mut store, resume)?.as_deref(),
+        Some("claude-haiku-5-5")
+    );
+    let other = json!({"session_id": "t", "source": "resume"});
+    assert_eq!(model(&mut store, other)?, None);
+    Ok(())
+}
+
+fn process(pid: i64) -> Process {
+    Process {
+        transport: Map::new(),
+        keeps_session_env: false,
+        pid,
+        name: Some("agent".into()),
+    }
+}
+
+/// Reports each input from its process, in order, and returns the conversations recorded and the
+/// pane's occupant with whether it can be reopened.
+fn report_all(runtime: Runtime, inputs: &[(i64, &Value)]) -> Result<(Vec<String>, String, bool)> {
+    let dir = tempfile::tempdir()?;
+    let mut store = Store::open(dir.path())?;
+    for (pid, input) in inputs {
+        let tx = store.write()?;
+        record(&tx, "b", runtime, &parse(runtime, input)?, &process(*pid))?;
+        tx.commit()?;
+    }
+    let conn = store.conn();
+    let conversations = conn
+        .prepare("SELECT native_id FROM conversation ORDER BY native_id")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    let (occupant, resumable) = conn.query_row(
+        "SELECT native_id, resumable FROM occupant JOIN conversation USING (runtime, native_id)",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    Ok((conversations, occupant, resumable))
+}
+
+/// Each runtime starts sessions of its own inside the pane's agent process, so their session starts
+/// come from the pane's foreground program too. Inputs as each runtime sends them: Claude Code for
+/// a subagent and an in-process teammate, Codex for a guardian review and a side conversation, and
+/// Pi for sessions an extension creates through the SDK in each mode but `tui`.
+#[test]
+fn an_agents_inner_sessions_do_not_replace_the_pane_conversation() -> Result<()> {
+    let cases = [
+        (
+            Runtime::Claude,
+            json!({"session_id": "main", "transcript_path": "/c/main.jsonl", "source": "startup"}),
+            vec![
+                json!({"session_id": "inner", "transcript_path": "/c/inner.jsonl",
+                       "source": "startup", "agent_id": "a1", "agent_type": "Explore"}),
+                json!({"session_id": "inner", "transcript_path": "/c/inner.jsonl",
+                       "source": "startup", "agent_id": "lead@team", "agent_type": "lead"}),
+            ],
+        ),
+        (
+            Runtime::Codex,
+            json!({"session_id": "main", "transcript_path": "/x/rollout-main.jsonl",
+                   "hook_event_name": "SessionStart", "model": "big", "permission_mode": "default",
+                   "source": "startup"}),
+            vec![
+                json!({"session_id": "inner", "transcript_path": null,
+                       "hook_event_name": "SessionStart", "model": "small",
+                       "permission_mode": "bypassPermissions", "source": "startup"}),
+                json!({"session_id": "inner", "transcript_path": null,
+                       "hook_event_name": "SessionStart", "model": "big",
+                       "permission_mode": "default", "source": "fork"}),
+            ],
+        ),
+        (
+            Runtime::Pi,
+            json!({"session_id": "main", "session_file": "/p/main.jsonl", "mode": "tui"}),
+            ["print", "json", "rpc"]
+                .map(|mode| json!({"session_id": "inner", "mode": mode, "model": "small"}))
+                .to_vec(),
+        ),
+    ];
+    for (runtime, main, inner) in cases {
+        let inputs: Vec<_> = std::iter::once(&main)
+            .chain(&inner)
+            .map(|i| (100, i))
+            .collect();
+        let (conversations, occupant, resumable) = report_all(runtime, &inputs)?;
+        assert_eq!(
+            (conversations, occupant.as_str(), resumable),
+            (vec!["main".to_owned()], "main", true),
+            "{runtime}"
+        );
+    }
+    Ok(())
+}
+
+/// A start the runtime marks neither way is the agent's own conversation when it comes from a new
+/// process, such as an ephemeral `codex exec` or a `pi -p` run after the pane's conversation ended,
+/// and so is a Claude Code session started with `--agent`, which carries only `agent_type`.
+#[test]
+fn a_new_process_takes_the_pane_even_without_the_runtimes_mark() -> Result<()> {
+    let cases = [
+        (
+            Runtime::Claude,
+            json!({"session_id": "old", "transcript_path": "/c/old.jsonl"}),
+            json!({"session_id": "new", "transcript_path": "/c/new.jsonl", "agent_type": "lead"}),
+            true,
+        ),
+        (
+            Runtime::Codex,
+            json!({"session_id": "old", "transcript_path": "/x/rollout-old.jsonl"}),
+            json!({"session_id": "new", "transcript_path": null, "source": "startup"}),
+            false,
+        ),
+        (
+            Runtime::Pi,
+            json!({"session_id": "old", "session_file": "/p/old.jsonl", "mode": "tui"}),
+            json!({"session_id": "new", "session_file": "/p/new.jsonl", "mode": "print"}),
+            false,
+        ),
+    ];
+    for (runtime, old, new, reopens) in cases {
+        let (_, occupant, resumable) = report_all(runtime, &[(100, &old), (200, &new)])?;
+        assert_eq!(
+            (occupant.as_str(), resumable),
+            ("new", reopens),
+            "{runtime}"
+        );
+    }
+    Ok(())
+}

@@ -84,9 +84,10 @@ CREATE UNIQUE INDEX live_lineage ON live (instance_id, lineage);
 -- `settings` is a JSON object owned by the runtime's module (model, effort, provider, ...,
 -- whatever its resume command needs); a later report merges into it (json_patch), so a value
 -- a resumed session's start omits is kept. `transcript` is the runtime's record of the
--- conversation, which a later report without one leaves in place. `resumable` is 0 for a run
--- its runtime cannot reopen, such as a Pi run outside its terminal interface. `reported_at` is
--- when the conversation was last reported.
+-- conversation, which a later report without one leaves in place. `resumable` is 0 for a
+-- conversation its runtime cannot reopen, such as a run its runtime keeps no record of or a
+-- Pi session without a session file.
+-- `reported_at` is when the conversation was last reported.
 CREATE TABLE conversation (
   runtime     TEXT    NOT NULL,
   native_id   TEXT    NOT NULL,

@@ -81,13 +81,13 @@ What to check after a restart, read without changing anything: restores that did
 rexume report claude|codex|pi
 ```
 
-Run by the session-start hooks with the hook's JSON on stdin. Outside a Rex pane (no `REX_BLOCK`) it does nothing. It records the conversation as the pane's occupant only when its parent agent process is the pane's foreground program, so a subagent or a nested run does not replace the pane's conversation. It prints nothing, and any failure goes to stderr with exit status 0, so a hook never holds up or fails the session it reports.
+Run by the session-start hooks with the hook's JSON on stdin. Outside a Rex pane (no `REX_BLOCK`) it does nothing. It records the conversation as the pane's occupant only when its parent agent process is the pane's foreground program, so a run the agent starts in another process does not replace the pane's conversation. Sessions the agent runs inside its own process pass that check too, so the runtime's marks decide, as the table says for each runtime: a start marked as such a session is ignored, and a start the runtime leaves unmarked is ignored while its process already holds the pane and otherwise recorded as a conversation that cannot be reopened. It prints nothing, and any failure goes to stderr with exit status 0, so a hook never holds up or fails the session it reports.
 
 | Runtime | Fields read from stdin |
 | --- | --- |
-| `claude` | `session_id`, `transcript_path`, `model`, `effort`; a start with `agent_id` is a subagent's and is ignored |
-| `codex` | `session_id`, `transcript_path`, `model`, `effort` |
-| `pi` | `session_id`, `session_file`, `mode`, `provider`, `model`, `thinking`; only a `tui` session with a file can be reopened |
+| `claude` | `session_id`, `transcript_path`, `model`, `effort`; a start with `agent_id` is a subagent's or an in-process teammate's and is ignored |
+| `codex` | `session_id`, `transcript_path`, `model`, `effort`; a start without `transcript_path` is unmarked: Codex keeps no record of its guardian reviews and side conversations, nor of an ephemeral `codex exec` run |
+| `pi` | `session_id`, `session_file`, `mode`, `provider`, `model`, `thinking`; a start outside `tui` mode is unmarked, which covers SDK sessions an extension creates and `pi -p`, `--mode json`, and `--mode rpc` runs, and only a `tui` session with a file can be reopened |
 
 A Claude Code conversation also records `CLAUDE_CODE_MESSAGING_SOCKET`, through which notices reach it.
 
