@@ -92,14 +92,16 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
 }
 
 pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
-    let Some(block) = std::env::var_os("REX_BLOCK") else {
-        return Ok(());
-    };
-    let block = block.to_string_lossy();
+    // The agent writes the whole input whether or not it is needed; reading it first keeps that
+    // write from meeting a closed pipe.
     let mut input = String::new();
     std::io::stdin()
         .read_to_string(&mut input)
         .context("failed to read stdin")?;
+    let Some(block) = std::env::var_os("REX_BLOCK") else {
+        return Ok(());
+    };
+    let block = block.to_string_lossy();
     let input: Value = serde_json::from_str(&input).context("failed to parse the hook input")?;
     let report = parse(runtime, &input)?;
     let mut rex = Rex::Cli(Cli::from_env()?);

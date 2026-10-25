@@ -123,6 +123,8 @@ impl Parser {
 
 #[cfg(test)]
 mod tests {
+    use std::os::unix::fs::PermissionsExt;
+
     use super::super::tests::{settings, transcript};
     use super::super::{Runtime, last_turn};
     use super::*;
@@ -184,6 +186,84 @@ mod tests {
         // passed here would override them.
         std::fs::write(&session, "")?;
         assert_eq!(argv()?, ["pi", "--session", &path]);
+        Ok(())
+    }
+
+    /// Loads the extension in Node, as Pi does, and starts a session with a fake Pi. The fake's
+    /// `getSessionFile`, which the extension calls after starting the report and before writing its
+    /// input, waits until `ready` exists, so a report that closes its input first makes the write
+    /// fail every time rather than only when it wins the race.
+    const HARNESS: &str = r#"
+        import { existsSync } from "node:fs";
+        const [extension, ready] = process.argv.slice(-2);
+        const handlers = {};
+        (await import(extension)).default({ on: (event, handler) => (handlers[event] = handler) });
+        const warnings = [];
+        process.on("exit", () => console.log(JSON.stringify(warnings)));
+        handlers.session_start({}, {
+          mode: "print",
+          hasUI: true,
+          ui: { notify: (text) => warnings.push(text) },
+          sessionManager: {
+            getSessionId: () => "s",
+            getSessionFile: () => {
+              while (!existsSync(ready)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+            },
+          },
+        });
+    "#;
+
+    /// Nothing the report does may end Pi: its exit status alone decides whether Pi warns, also
+    /// when it exits without reading its input, as it did outside a Rex pane, or cannot start.
+    #[test]
+    fn the_extension_survives_any_report_outcome() -> Result<()> {
+        // A version manager's `node` may be a shim that needs the `PATH` the harness replaces.
+        let node = std::process::Command::new("node")
+            .args(["-p", "process.execPath"])
+            .output()
+            .context("this test runs the Pi extension in Node")?;
+        let node = String::from_utf8(node.stdout)?.trim().to_owned();
+        let dir = tempfile::tempdir()?;
+        let extension = dir.path().join("rexume.ts");
+        std::fs::write(&extension, EXTENSION)?;
+        let ready = dir.path().join("ready");
+        let bin = dir.path().join("bin");
+        std::fs::create_dir(&bin)?;
+        let run = |report: Option<i32>| -> Result<Vec<String>> {
+            let _ = std::fs::remove_file(&ready);
+            let fake = bin.join("rexume");
+            match report {
+                Some(status) => {
+                    let script = format!(
+                        "#!/bin/sh\nexec 0<&-\n: > '{}'\nexit {status}\n",
+                        ready.display()
+                    );
+                    std::fs::write(&fake, script)?;
+                    std::fs::set_permissions(&fake, PermissionsExt::from_mode(0o755))?;
+                }
+                None => {
+                    let _ = std::fs::remove_file(&fake);
+                    std::fs::write(&ready, "")?;
+                }
+            }
+            let out = std::process::Command::new(&node)
+                .args(["--input-type=module", "-e", HARNESS])
+                .arg(&extension)
+                .arg(&ready)
+                .env("PATH", &bin)
+                .output()?;
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            anyhow::ensure!(out.status.success(), "Pi ended: {stderr}");
+            Ok(serde_json::from_slice(&out.stdout)?)
+        };
+        assert_eq!(run(Some(0))?, Vec::<String>::new());
+        for report in [Some(1), None] {
+            let warnings = run(report)?;
+            assert!(
+                matches!(&warnings[..], [w] if w.starts_with("rexume could not record this session")),
+                "{report:?}: {warnings:?}"
+            );
+        }
         Ok(())
     }
 }

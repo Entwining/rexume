@@ -85,3 +85,17 @@ fn a_failed_report_exits_0_so_the_session_it_reports_goes_on() {
         stderr(&output)
     );
 }
+
+/// A hook's agent writes the whole input whether or not the report needs it; input larger than a
+/// pipe holds fails the write if the report exits without reading it.
+#[test]
+fn a_report_outside_a_rex_pane_reads_its_input_before_it_exits() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().to_string_lossy();
+    let input = format!(
+        r#"{{"session_id": "s", "padding": "{}"}}"#,
+        "x".repeat(1 << 20)
+    );
+    let output = rexume(&["report", "pi", "--state-dir", &state], &[], &input);
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+}

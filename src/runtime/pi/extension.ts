@@ -19,6 +19,9 @@ export default function (pi: ExtensionAPI) {
     const report = execFile("rexume", ["report", "pi"], { timeout: 5000 }, (error) => {
       if (error && ctx.hasUI) ctx.ui.notify(`rexume could not record this session: ${error.message}`, "warning");
     });
+    // The exit status above is the outcome. Writing the input also fails when the report ends
+    // without reading it, and an unhandled stream error would end Pi.
+    report.stdin?.on("error", () => {});
     report.stdin?.end(
       JSON.stringify({
         session_id: id,
