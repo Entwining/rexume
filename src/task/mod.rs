@@ -9,6 +9,7 @@ mod follow;
 mod notice;
 mod outcome;
 mod register;
+mod request;
 #[cfg(test)]
 mod tests;
 mod wait;
@@ -21,14 +22,14 @@ use serde::Serialize;
 use serde_json::{Value, json};
 
 use crate::rex::{Cli, Rex, require_str};
-use crate::runtime::Runtime;
-use crate::store::{Store, lineage_of, now_ms};
+use crate::runtime::{Runtime, Tracker};
+use crate::store::{Store, lineage_of};
 
 pub use cleanup::retired_workers;
 pub use follow::{Follow, Interest};
 pub use notice::{orphaned_sends, undelivered};
 pub use outcome::block_gone;
-pub use register::{NewTask, add, rearm};
+pub use register::{MESSAGE_LIMIT, NewTask, add, next, refuse_too_large, release, send};
 pub use wait::wait;
 
 pub const VERSION: u32 = 1;
@@ -81,7 +82,10 @@ fn caller(store: &Store) -> Result<Caller> {
 
 const COLUMNS: &str = "t.id, t.title, r.round, r.state, t.result_file IS NULL, t.keep_pane,
   l.live_id, r.result_ref, r.note, r.finished_at, r.acked_at, t.pane_state, t.pane_closed_at,
-  t.pane_note";
+  t.pane_note, t.released_at, q.id, q.state, q.note";
+
+/// Joins the request of a round joined as `r` as `q`.
+const ROUND_REQUEST: &str = "LEFT JOIN request q ON q.task_id = r.task_id AND q.round = r.round";
 
 /// Joins the worker pane's current Rex block ID as `l`, on the instance bound as `?1`. A closed
 /// pane keeps its `live` row until the next server instance, so it is excluded here.
@@ -103,7 +107,18 @@ struct Task {
     note: Option<String>,
     finished_at: Option<i64>,
     acked_at: Option<i64>,
+    released_at: Option<i64>,
+    /// Filled in after the row is read, from the worker's record.
+    unread: Option<usize>,
+    request: Option<Request>,
     pane: Pane,
+}
+
+#[derive(Serialize)]
+struct Request {
+    id: String,
+    state: String,
+    note: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -132,6 +147,18 @@ impl Task {
             note: row.get(8)?,
             finished_at: row.get(9)?,
             acked_at: row.get(10)?,
+            released_at: row.get(14)?,
+            unread: None,
+            request: row
+                .get::<_, Option<String>>(15)?
+                .map(|id| -> rusqlite::Result<Request> {
+                    Ok(Request {
+                        id,
+                        state: row.get(16)?,
+                        note: row.get(17)?,
+                    })
+                })
+                .transpose()?,
             pane: Pane {
                 state: row.get(11)?,
                 closed_at: row.get(12)?,
@@ -141,7 +168,34 @@ impl Task {
     }
 }
 
-/// A task with one round's result, as `show`, `wait`, `ack`, `add`, and `rearm` print it.
+/// How many finished turns in an interactive worker's record no round took, as `task next` would
+/// take them, including an answer a closed pane's record leaves open; `None` for a run, a released
+/// task, a worker not bound yet, and a record that cannot be read or was replaced. Reads the
+/// record, so it runs outside any transaction.
+fn unread(conn: &Connection, id: &str) -> Result<Option<usize>> {
+    let found: Option<(Runtime, Option<String>, i64, bool)> = conn
+        .query_row(
+            "SELECT t.worker_runtime, c.transcript, t.position, t.pane_state = 'closed' FROM task t
+             JOIN conversation c ON c.runtime = t.worker_runtime AND c.native_id = t.worker_native_id
+             WHERE t.id = ?1 AND t.released_at IS NULL",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )
+        .optional()?;
+    let Some((runtime, Some(transcript), position, closed)) = found else {
+        return Ok(None);
+    };
+    let position = u64::try_from(position)?;
+    let taken = follow::taken(conn, id)?;
+    let mut tracker = Tracker::new(runtime, Path::new(&transcript), position, taken, None);
+    if let Err(e) = tracker.update() {
+        log::debug!("task {id}: the worker's record could not be read: {e:#}");
+        return Ok(None);
+    }
+    Ok((!tracker.replaced()).then(|| tracker.unread(closed)))
+}
+
+/// A task with one round's result, as every task command but `list` prints it.
 #[derive(Serialize)]
 struct Shown {
     version: u32,
@@ -153,10 +207,11 @@ struct Shown {
 pub fn list(state_dir: &Path) -> Result<Value> {
     let store = Store::open(state_dir)?;
     let caller = caller(&store)?;
-    let tasks: Vec<Task> = store
+    let mut tasks: Vec<Task> = store
         .conn()
         .prepare(&format!(
             "SELECT {COLUMNS} FROM task t JOIN task_round r ON r.task_id = t.id {LIVE_WORKER}
+             {ROUND_REQUEST}
              WHERE t.owner_runtime = ?2 AND t.owner_native_id = ?3 AND {LATEST_ROUND}
              ORDER BY t.created_at"
         ))?
@@ -165,6 +220,9 @@ pub fn list(state_dir: &Path) -> Result<Value> {
             Task::from_row,
         )?
         .collect::<rusqlite::Result<_>>()?;
+    for task in &mut tasks {
+        task.unread = unread(store.conn(), &task.id)?;
+    }
     let notices = notice::undelivered(store.conn(), Some((caller.runtime, &caller.native_id)))?;
     Ok(json!({ "version": VERSION, "tasks": tasks, "undelivered_notices": notices }))
 }
@@ -190,11 +248,11 @@ fn owned(conn: &Connection, id: &str, caller: &Caller) -> Result<()> {
 
 /// The TASK object for one round, the latest when `round` is `None`, with its result.
 fn shown(conn: &Connection, instance: &str, id: &str, round: Option<i64>) -> Result<Value> {
-    let found = conn
+    let mut found = conn
         .query_row(
             &format!(
                 "SELECT {COLUMNS}, r.result FROM task t JOIN task_round r ON r.task_id = t.id
-                 {LIVE_WORKER} WHERE t.id = ?2
+                 {LIVE_WORKER} {ROUND_REQUEST} WHERE t.id = ?2
                    AND r.round = COALESCE(?3, (SELECT MAX(round) FROM task_round WHERE task_id = t.id))"
             ),
             params![instance, id, round],
@@ -202,12 +260,13 @@ fn shown(conn: &Connection, instance: &str, id: &str, round: Option<i64>) -> Res
                 Ok(Shown {
                     version: VERSION,
                     task: Task::from_row(row)?,
-                    result: row.get(14)?,
+                    result: row.get(18)?,
                 })
             },
         )
         .optional()?
         .with_context(|| format!("task {id} has no round {}", round.unwrap_or_default()))?;
+    found.task.unread = unread(conn, id)?;
     Ok(serde_json::to_value(found)?)
 }
 
@@ -234,8 +293,7 @@ fn finished(state: &str) -> bool {
     !matches!(state, "running" | "blocked")
 }
 
-/// Records that the owner has a finished round's result. The daemon closes a disposable worker's
-/// pane afterwards, when that is still safe.
+/// Records that the owner has a finished round's result.
 pub fn ack(state_dir: &Path, id: &str, round: Option<i64>) -> Result<Value> {
     let mut store = Store::open(state_dir)?;
     let caller = caller(&store)?;
@@ -245,16 +303,7 @@ pub fn ack(state_dir: &Path, id: &str, round: Option<i64>) -> Result<Value> {
     if !finished(&state) {
         bail!("task {id} is {state}; ack it once the round has finished");
     }
-    tx.execute(
-        "UPDATE task_round SET acked_at = COALESCE(acked_at, ?1) WHERE task_id = ?2 AND round = ?3",
-        params![now_ms(), id, round],
-    )?;
-    // The owner has what a notice not yet sent would have told it.
-    tx.execute(
-        "UPDATE notice SET state = 'superseded', note = 'taken by task ack'
-         WHERE task_id = ?1 AND round = ?2 AND state = 'pending'",
-        params![id, round],
-    )?;
+    register::acknowledge(&tx, id, round, "taken by task ack")?;
     tx.commit()?;
     shown(store.conn(), &caller.instance, id, Some(round))
 }

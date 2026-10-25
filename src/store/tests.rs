@@ -22,7 +22,9 @@ fn open_creates_the_schema_once_and_reopens_without_writing() -> Result<()> {
 #[test]
 fn open_refuses_a_newer_schema_and_a_foreign_file() -> Result<()> {
     let (dir, store) = store();
-    store.conn().pragma_update(None, "user_version", 2)?;
+    store
+        .conn()
+        .pragma_update(None, "user_version", SCHEMA_VERSION + 1)?;
     drop(store);
     let newer = Store::open(dir.path()).err().unwrap().to_string();
     assert!(newer.contains("newer rexume"), "{newer}");
@@ -34,6 +36,93 @@ fn open_refuses_a_newer_schema_and_a_foreign_file() -> Result<()> {
     drop(conn);
     let foreign = Store::open(other.path()).err().unwrap().to_string();
     assert!(foreign.contains("not a state database"), "{foreign}");
+    Ok(())
+}
+
+fn definitions(conn: &Connection) -> Result<Vec<(String, String, Option<String>)>> {
+    Ok(conn
+        .prepare("SELECT type, name, sql FROM sqlite_schema ORDER BY type, name")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+#[test]
+fn open_upgrades_a_version_1_database_and_keeps_its_tasks() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let conn = Connection::open(dir.path().join("state.db"))?;
+    conn.execute_batch(include_str!("../../tests/fixtures/schema-v1.sql"))?;
+    // Task `i` is interactive: its worker reported for round 2 only, which is running from
+    // offset 250. Task `r` is a run whose acknowledged round left its pane being closed. Task `k`
+    // keeps its pane, so its acknowledged round did not release it. Task `u` was rearmed before
+    // its pane's next conversation reported.
+    conn.execute_batch(
+        "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+           VALUES ('claude', 'owner', 1, 0), ('claude', 'worker', 1, 0);
+         INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, worker_pid,
+           result_file, keep_pane, pane_state, created_at)
+           VALUES ('i', 'x', 'claude', 'owner', 'b1', 7, NULL, 0, 'open', 1),
+             ('r', 'y', 'claude', 'owner', 'b2', 8, '/r', 0, 'closing', 2),
+             ('k', 'z', 'claude', 'owner', 'b3', 9, NULL, 1, 'open', 3),
+             ('u', 'w', 'claude', 'owner', 'b4', 10, NULL, 0, 'open', 4);
+         INSERT INTO task_round (task_id, round, worker_runtime, worker_native_id, cursor, state,
+           finished_at, acked_at, created_at, result_ref, result)
+           VALUES ('i', 1, NULL, NULL, 100, 'completed', 3, 4, 1, 'm1', 'first'),
+             ('i', 2, 'claude', 'worker', 250, 'running', NULL, NULL, 5, NULL, NULL),
+             ('r', 1, NULL, NULL, 0, 'completed', 6, 7, 2, '/r', 'done'),
+             ('k', 1, 'claude', 'worker', 120, 'completed', 6, 7, 3, 'm2', 'kept'),
+             ('u', 1, 'claude', 'worker', 300, 'completed', 6, 7, 4, 'm3', 'before'),
+             ('u', 2, NULL, NULL, 300, 'running', NULL, NULL, 8, NULL, NULL);
+         INSERT INTO notice (id, task_id, round, state, sent_at, delivered_at)
+           VALUES ('n', 'i', 1, 'delivered', 3, 4);",
+    )?;
+    drop(conn);
+    let refused = Store::open_read_only(dir.path()).err().unwrap().to_string();
+    assert!(refused.contains("older schema"), "{refused}");
+
+    let store = Store::open(dir.path())?;
+    let (_fresh_dir, fresh) = self::store();
+    assert_eq!(definitions(store.conn())?, definitions(fresh.conn())?);
+    type Task = (String, Option<String>, i64, Option<i64>, String);
+    let tasks: Vec<Task> = store
+        .conn()
+        .prepare(
+            "SELECT id, worker_native_id, position, released_at, pane_state FROM task ORDER BY id",
+        )?
+        .query_map([], |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    assert_eq!(
+        tasks,
+        [
+            ("i".into(), Some("worker".into()), 250, None, "open".into()),
+            ("k".into(), Some("worker".into()), 120, None, "open".into()),
+            ("r".into(), None, 0, Some(7), "closing".into()),
+            ("u".into(), None, 0, None, "open".into())
+        ]
+    );
+    let rounds: Vec<(String, i64, String, Option<String>)> = store
+        .conn()
+        .prepare("SELECT task_id, round, state, result FROM task_round ORDER BY task_id, round")?
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    assert_eq!(rounds.len(), 6);
+    assert_eq!(rounds[0].3.as_deref(), Some("first"));
+    let notice: String =
+        store
+            .conn()
+            .query_row("SELECT state FROM notice WHERE id = 'n'", [], |row| {
+                row.get(0)
+            })?;
+    assert_eq!(notice, "delivered");
     Ok(())
 }
 

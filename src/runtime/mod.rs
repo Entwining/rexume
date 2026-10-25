@@ -17,7 +17,8 @@ use anyhow::{Result, bail};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use serde_json::{Map, Value};
 
-pub use lines::{Lines, Receipt, Tracker, last_turn};
+pub use lines::{Lines, Receipt, Taken, Tracker, last_turn};
+use lines::{Open, Sealed, Span};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Runtime {
@@ -78,17 +79,18 @@ impl Runtime {
         }
     }
 
-    /// Hands `text` to the conversation. An error means nothing was sent and it can be sent later.
-    pub fn send(self, target: &Target, state_dir: &Path, notice: &str, text: &str) -> Result<Sent> {
+    /// Hands `text`, a notice or a request with the ID `id`, to the conversation. An error means
+    /// nothing was sent and it can be sent later.
+    pub fn send(self, target: &Target, state_dir: &Path, id: &str, text: &str) -> Result<Sent> {
         match self {
             Self::Claude => claude::send(target, text),
             Self::Codex => codex::send(target, text),
-            Self::Pi => pi::send(target, state_dir, notice, text),
+            Self::Pi => pi::send(target, state_dir, id, text),
         }
     }
 
-    /// Whether a record is the conversation receiving a notice as input, not merely text that
-    /// mentions one; the notice's token in the record tells which notice it was.
+    /// Whether a record is the conversation receiving a notice or request as input, not merely
+    /// text that mentions one; the token in the record tells which it was.
     fn received(self, record: &Value) -> bool {
         match self {
             Self::Claude => claude::received(record),
@@ -150,7 +152,7 @@ impl Conversation {
     }
 }
 
-/// Where a notice goes.
+/// Where a notice or request goes.
 pub struct Target<'a> {
     pub native_id: &'a str,
     /// The occupant's `transport` object.
@@ -161,15 +163,28 @@ pub struct Target<'a> {
 pub enum Sent {
     /// Handed over; nothing confirms the conversation has it yet.
     Handed,
-    /// The runtime confirmed it holds the notice for the conversation.
+    /// The runtime confirmed it holds the message for the conversation, with what it said.
     Accepted(String),
     /// The send may or may not have happened; it must not be repeated.
     Unknown(String),
 }
 
-/// The text that identifies a notice in the owner's record.
-pub fn token(notice: &str) -> String {
-    format!("[rexume {notice}]")
+impl Sent {
+    /// The outbox state and note a send leaves. An error means nothing left, so the message goes
+    /// back to `pending` to be sent again.
+    pub fn recorded(sent: Result<Self>) -> (&'static str, Option<String>) {
+        match sent {
+            Ok(Self::Handed) => ("sent", None),
+            Ok(Self::Accepted(receipt)) => ("accepted", Some(receipt)),
+            Ok(Self::Unknown(why)) => ("unknown", Some(why)),
+            Err(e) => ("pending", Some(format!("{e:#}"))),
+        }
+    }
+}
+
+/// The text that identifies a notice or request in the receiving conversation's record.
+pub fn token(id: &str) -> String {
+    format!("[rexume {id}]")
 }
 
 /// The one prompt this tool sends to a conversation whose turn the server's end cut off. The
@@ -193,7 +208,7 @@ pub fn continuation_prompt(reference: &str, tasks: &[String]) -> String {
 /// How the last turn in a conversation's record stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Turn {
-    /// No turn after the cursor.
+    /// No turn after the offset read from.
     None,
     /// A prompt was accepted and nothing ended its turn: cut off, or still running. `since` is when
     /// the prompt was recorded, in Unix milliseconds, for a runtime that records nothing when its
@@ -227,12 +242,22 @@ enum Parser {
     Pi(pi::Parser),
 }
 
+/// Each runtime's parser keeps how the last turn stands and yields each turn as it finishes. A
+/// turn that a new one starts before anything ended it was cut off, and is never yielded.
 impl Parser {
-    fn feed(&mut self, record: &Value) {
+    fn feed(&mut self, record: &Value, span: Span, sealed: &mut Vec<Sealed>) {
         match self {
-            Self::Claude(p) => p.feed(record),
-            Self::Codex(p) => p.feed(record),
-            Self::Pi(p) => p.feed(record),
+            Self::Claude(p) => p.feed(record, span, sealed),
+            Self::Codex(p) => p.feed(record, span, sealed),
+            Self::Pi(p) => p.feed(record, span, sealed),
+        }
+    }
+
+    fn open(&self) -> Option<Open> {
+        match self {
+            Self::Claude(p) => p.open(),
+            Self::Codex(p) => p.open(),
+            Self::Pi(p) => p.open(),
         }
     }
 

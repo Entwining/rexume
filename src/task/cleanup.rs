@@ -1,6 +1,7 @@
-//! Closing an acknowledged disposable worker's pane, only while nothing has happened in it since
-//! its result. The daemon is the only closer: it claims the pane (`closing`) in a short
-//! transaction before it calls Rex, so `add` and `rearm` cannot hand the pane new work meanwhile.
+//! Closing a released disposable worker's pane, only while nothing has happened in it since its
+//! latest result. The daemon is the only closer: it claims the pane (`closing`) in a short
+//! transaction before it calls Rex, so `add` cannot hand the pane new work meanwhile, and a
+//! released task starts no more rounds.
 //! Rex has no conditional close, so a change in the moment between the last check and the close
 //! is not excluded.
 
@@ -16,7 +17,7 @@ use crate::rex::{CallError, Rex, items, root_status, str_at, time_at};
 use crate::runtime::{Runtime, Turn, last_turn};
 use crate::store::{Store, live_of};
 
-/// Acknowledged disposable workers whose panes, as last recorded, still show the worker as its
+/// Released disposable workers whose panes, as last recorded, still show the worker as its latest
 /// result left it. A restore leaves these out; any other pane, including one the user took over
 /// after the result, comes back.
 pub fn retired_workers(conn: &Connection) -> Result<Vec<String>> {
@@ -29,12 +30,12 @@ pub fn retired_workers(conn: &Connection) -> Result<Vec<String>> {
     Ok(retired)
 }
 
-/// Acknowledged disposable workers whose panes rexume may still close: no round of any task on
-/// the same pane is unfinished.
+/// Released disposable workers whose panes rexume may still close: no round of any task on the
+/// same pane is unfinished.
 pub(super) static DUE: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "SELECT t.id FROM task t JOIN task_round r ON r.task_id = t.id
-         WHERE t.keep_pane = 0 AND t.pane_state = 'open' AND r.acked_at IS NOT NULL AND {LATEST_ROUND}
+        "SELECT t.id FROM task t
+         WHERE t.keep_pane = 0 AND t.pane_state = 'open' AND t.released_at IS NOT NULL
            AND NOT EXISTS (SELECT 1 FROM task o JOIN task_round r ON r.task_id = o.id
                            WHERE o.worker_lineage = t.worker_lineage AND {OPEN})"
     )
@@ -52,15 +53,14 @@ pub(super) fn due(conn: &Connection) -> Result<Vec<String>> {
 pub(super) static CLAIM: LazyLock<String> = LazyLock::new(|| {
     format!(
         "UPDATE task SET pane_state = 'closing'
-         WHERE id = ?1 AND keep_pane = 0 AND pane_state = 'open'
-           AND EXISTS (SELECT 1 FROM task t JOIN task_round r ON r.task_id = t.id
-                       WHERE t.id = task.id AND r.acked_at IS NOT NULL AND {LATEST_ROUND})
+         WHERE id = ?1 AND keep_pane = 0 AND pane_state = 'open' AND released_at IS NOT NULL
            AND NOT EXISTS (SELECT 1 FROM task t JOIN task_round r ON r.task_id = t.id
                            WHERE t.worker_lineage = task.worker_lineage AND {OPEN})"
     )
 });
 
-/// What the latest round recorded when it finished.
+/// What the latest round recorded when it finished, and where the task stands in its worker's
+/// record.
 struct Taken {
     interactive: bool,
     worker: String,
@@ -68,7 +68,7 @@ struct Taken {
     finished_at: Option<i64>,
     status_at: Option<i64>,
     generation: Option<i64>,
-    cursor: i64,
+    position: i64,
     conversation: Option<(Runtime, String)>,
 }
 
@@ -76,8 +76,8 @@ fn taken(conn: &Connection, id: &str) -> Result<Taken> {
     Ok(conn.query_row(
         &format!(
             "SELECT t.result_file IS NULL, t.worker_lineage, t.worker_pid,
-               r.finished_at, r.finished_status_at, r.finished_generation, r.cursor,
-               r.worker_runtime, r.worker_native_id
+               r.finished_at, r.finished_status_at, r.finished_generation, t.position,
+               t.worker_runtime, t.worker_native_id
              FROM task t JOIN task_round r ON r.task_id = t.id WHERE t.id = ?1 AND {LATEST_ROUND}"
         ),
         params![id],
@@ -91,7 +91,7 @@ fn taken(conn: &Connection, id: &str) -> Result<Taken> {
                 finished_at: row.get(3)?,
                 status_at: row.get(4)?,
                 generation: row.get(5)?,
-                cursor: row.get(6)?,
+                position: row.get(6)?,
                 conversation: runtime.zip(native_id),
             })
         },
@@ -104,8 +104,8 @@ enum Untouched {
 }
 
 /// Whether the worker's pane, as recorded, is unchanged since its result: the same foreground
-/// generation (or none observed on either side) and status, the round's conversation still the
-/// pane's occupant and not reported since, and no turn in its record after the result.
+/// generation (or none observed on either side) and status, the task's conversation still the
+/// pane's occupant and not reported since, and no turn in its record after the task's position.
 fn untouched(conn: &Connection, id: &str) -> Result<Untouched> {
     let taken = taken(conn, id)?;
     let no = |reason: &str| Ok(Untouched::No(reason.to_owned()));
@@ -153,7 +153,7 @@ fn untouched(conn: &Connection, id: &str) -> Result<Untouched> {
         let turn = last_turn(
             runtime,
             Path::new(&transcript),
-            u64::try_from(taken.cursor)?,
+            u64::try_from(taken.position)?,
         )?;
         if turn != Some(Turn::None) {
             return no("the worker has a turn after its result");
@@ -172,7 +172,7 @@ enum Check {
     Later(String),
 }
 
-/// Closes an acknowledged disposable worker's pane only while it still shows the worker as the
+/// Closes a released disposable worker's pane only while it still shows the worker as the
 /// result left it, both as recorded and as the server reports it now, and is not the pane the
 /// user is looking at. A pane found in use is kept for good; a close put off goes back to `open`
 /// with the reason in `pane_note`. Returns what happened, for the log.

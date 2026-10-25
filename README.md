@@ -2,7 +2,7 @@
 
 rexume brings back your [Rex](https://www.superlogical.com/rex) sessions after the Rex server stops: sessions, tabs, split and floating panes, labels, and each pane's working directory, plus the Claude Code, Codex, or Pi conversation that was running in a pane, reopened with the model and effort it last used. A turn the server's end cut off continues once; a finished, cancelled, or waiting conversation reopens without a new turn. Panes you closed stay closed.
 
-It also lets an orchestrator agent hand work to a worker pane and get the result back: rexume records the task, tells the orchestrator when the worker finishes, even while the orchestrator is idle, and closes a disposable worker's pane once the result is acknowledged, unless someone has used the pane since.
+It also lets an orchestrator agent hand work to a worker pane and get the result back: rexume records the task, tells the orchestrator when the worker finishes, even while the orchestrator is idle, and closes a disposable worker's pane once the orchestrator releases it, unless someone has used the pane since.
 
 rexume is developed and tested only on Apple Silicon macOS, with the Rex app installed.
 
@@ -60,7 +60,7 @@ An orchestrator agent registers a worker pane right after starting it, then carr
 rexume task add --worker "$WORKER_BLOCK" --title 'review the parser'
 ```
 
-When the worker's turn ends, rexume saves its result and sends the orchestrator one notice. The orchestrator reads the result with `rexume task show ID` and then runs `rexume task ack ID`; the daemon then closes a disposable worker's pane, but only if nothing has happened in it since the result. To give the same worker another prompt, run `rexume task rearm ID` before sending it. A non-interactive run that writes its result to a file is registered with `--result-file PATH`, and the file is its result once the run exits 0. [docs/cli.md](docs/cli.md) lists every task command and its output.
+When the worker's turn ends, rexume saves its result and sends the orchestrator one notice. The orchestrator reads the result with `rexume task show ID` and acknowledges it with `rexume task ack ID`. To give the same worker a new prompt, it runs `rexume task send ID --message-file PATH`: rexume delivers the prompt to the worker's conversation itself, without typing into the pane, and the result is the turn that answers it. A turn the worker ends on its own, such as an interim report while it waits for CI, is collected with `rexume task next ID`, also when it finished before the command. Once the orchestrator is done with the worker, `rexume task release ID` lets the daemon close a disposable worker's pane, but only if nothing has happened in it since the result. A non-interactive run that writes its result to a file is registered with `--result-file PATH`, and the file is its result once the run exits 0. [docs/cli.md](docs/cli.md) lists every task command and its output.
 
 Run these from the orchestrator's own Rex pane: they find the orchestrator through `REX_BLOCK`. A worker should be started without `REX_SESSION` and with `REX_BLOCK`, as Rex sets it, so that it reports from its own pane.
 
@@ -85,13 +85,15 @@ This removes the two hooks (and any hook group left empty), the Pi extension if 
 
 ## Known limits
 
-Rex and Claude Code do not provide what these would need:
+Rex and the agents do not provide what these would need:
 
 - A close carries no reason, so rexume treats every close on a live server as yours, including one an app or script made.
 - Rex has no conditional close. Between rexume's check that a worker's pane is unused and the close, a person can still start typing in it.
 - Rex has no per-pane notification audience, so a worker's Done or Blocked indicator notifies you like any other pane.
 - `session.create` has no idempotency key. When the server does not answer a create, rexume waits for the new panes' claims instead of creating the session again; a session none of whose panes report stays `unknown`.
-- Claude Code applies its inbound-message rules to rexume's notices, which carry no permission class. With `crossSessionInbound` unset, an orchestrator that prompts for permissions receives them, but one that bypasses permission prompts holds each notice for your approval; `hold` and `refuse` hold or drop them. You can set it to `accept` to receive notices without approval, which also lets that session's other cross-session messages through; rexume does not change the setting.
+- Claude Code applies [its inbound-message rules](https://code.claude.com/docs/en/cross-session-messaging#control-inbound-messages) to rexume's notices and requests, which carry no permission class. With `crossSessionInbound` unset, a session that prompts for permissions receives them, but one that bypasses permission prompts holds each for your approval and drops it when you deny it or leave the approval unanswered for [`dialogExpiry`](https://code.claude.com/docs/en/settings-reference#dialogexpiry), five minutes by default; `hold` holds them until an `accept` applies, and `refuse` drops them. A held request that is dropped is never delivered: its round stays unfinished until the worker's pane closes, and rexume never sends it again. You can set it to `accept` to receive them without approval, which also lets that session's other cross-session messages through; rexume does not change the setting.
+- Pi 1.4.0 reports its `working` status once, when a turn starts, and Rex drops that status as soon as Pi shows the prompt or the answer, so a Pi pane shows no status during a turn. A Pi turn the server's end cut off therefore reopens without a new turn instead of continuing ([earendil-works/pi#11017](https://github.com/earendil-works/pi/issues/11017)).
+- Codex holds queued messages while a conversation's last turn was interrupted and no turn has run since, so a notice or request to it waits until someone gives it input. This was observed on Codex 0.164.0, and [openai/codex#56914](https://github.com/openai/codex/issues/56914) asks Codex to show when it holds them.
 
 This one is rexume's own trade-off:
 

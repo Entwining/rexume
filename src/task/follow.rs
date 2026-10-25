@@ -7,13 +7,13 @@ use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
-use super::evidence::{self, Evidence, Pane};
+use super::evidence::{self, Evidence, Pane, Reading};
 use super::outcome;
-use super::{OPEN, cleanup, notice};
+use super::{OPEN, cleanup, notice, request};
 use crate::rex::Rex;
-use crate::runtime::{Receipt, Runtime, Tracker};
+use crate::runtime::{Receipt, Runtime, Taken, Tracker};
 use crate::store::{Store, now_ms};
 
 /// What the daemon asks to be woken for: changes to these files and these processes' exits.
@@ -32,20 +32,24 @@ pub struct Follow {
     next_notice: Option<Instant>,
     /// When a round that only time can settle is read again.
     next_round: Option<Instant>,
-    /// Acknowledged workers whose close was tried since the server last changed a session's view.
+    /// Released workers whose close was tried since the server last changed a session's view.
     tried: HashSet<String>,
 }
 
-/// The rounds that have not finished, with the record each follows.
+/// The rounds that have not finished, with the record each follows and its request.
 pub(super) static OPEN_ROUNDS: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "SELECT r.task_id, r.round, t.result_file, t.worker_lineage, t.worker_pid, r.created_at,
-           r.worker_runtime, c.transcript, r.cursor
+        "SELECT r.task_id, r.round, t.result_file, t.worker_lineage, t.worker_pid, t.created_at,
+           t.worker_runtime, c.transcript, t.position, q.id
          FROM task_round r JOIN task t ON t.id = r.task_id
-         LEFT JOIN conversation c ON c.runtime = r.worker_runtime AND c.native_id = r.worker_native_id
+         LEFT JOIN conversation c ON c.runtime = t.worker_runtime AND c.native_id = t.worker_native_id
+         LEFT JOIN request q ON q.task_id = r.task_id AND q.round = r.round
          WHERE {OPEN}"
     )
 });
+
+/// The turns a task's rounds took, by where each starts and by its answer.
+pub(super) const TAKEN: &str = "SELECT turn_start, result_ref FROM task_round WHERE task_id = ?1";
 
 struct OpenRound {
     task: String,
@@ -56,7 +60,8 @@ struct OpenRound {
     created_at: i64,
     runtime: Option<Runtime>,
     transcript: Option<String>,
-    cursor: i64,
+    position: i64,
+    request: Option<String>,
 }
 
 impl Follow {
@@ -78,6 +83,7 @@ impl Follow {
     ) -> Result<Interest> {
         let mut interest = Interest::default();
         self.evaluate_open(store, &mut interest)?;
+        request::send_due(store, &mut interest)?;
         self.next_notice = notice::send_due(store, &mut interest)?;
         notice::settle(store, &mut self.receipts, &mut interest)?;
         if let Some((rex, instance)) = connected {
@@ -105,7 +111,8 @@ impl Follow {
                     created_at: row.get(5)?,
                     runtime: row.get(6)?,
                     transcript: row.get(7)?,
-                    cursor: row.get(8)?,
+                    position: row.get(8)?,
+                    request: row.get(9)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -133,22 +140,26 @@ impl Follow {
                     let path = PathBuf::from(transcript);
                     let tracker = match self.trackers.get_mut(&key) {
                         Some(tracker) if tracker.path() == path => tracker,
-                        _ => self
-                            .trackers
-                            .entry(key.clone())
-                            .insert_entry(Tracker::new(
+                        _ => {
+                            let position = u64::try_from(round.position)?;
+                            let taken = taken(store.conn(), &round.task)?;
+                            let tracker = Tracker::new(
                                 runtime,
                                 &path,
-                                u64::try_from(round.cursor)?,
-                            ))
-                            .into_mut(),
+                                position,
+                                taken,
+                                round.request.as_deref(),
+                            );
+                            self.trackers
+                                .entry(key.clone())
+                                .insert_entry(tracker)
+                                .into_mut()
+                        }
                     };
+                    tracker.update()?;
                     interest.files.insert(path);
                     kept.insert(key);
-                    Evidence::Turn {
-                        turn: tracker.update()?,
-                        end: tracker.end(),
-                    }
+                    Evidence::Turn(Reading::of(tracker))
                 }
             };
             evidence.push((round.task, round.round, shown));
@@ -175,9 +186,22 @@ impl Follow {
     }
 }
 
-/// Binds an interactive round registered before its worker reported to the conversation that
-/// reported from the pane since the round started, or that runs as its foreground program. The
-/// binding is made once; a conversation that takes over the pane later is not the round's.
+pub(super) fn taken(conn: &Connection, task: &str) -> Result<Taken> {
+    let rows: Vec<(Option<i64>, Option<String>)> = conn
+        .prepare_cached(TAKEN)?
+        .query_map(params![task], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut taken = Taken::default();
+    for (start, answer) in rows {
+        taken.starts.extend(start.map(u64::try_from).transpose()?);
+        taken.answers.extend(answer);
+    }
+    Ok(taken)
+}
+
+/// Binds an interactive task registered before its worker reported to the conversation that
+/// reported from the pane since the task was registered, or that runs as its foreground program.
+/// The binding is made once; a conversation that takes over the pane later is not the task's.
 fn bind(store: &mut Store, round: &mut OpenRound) -> Result<()> {
     let found: Option<(Runtime, String, Option<String>)> = store
         .conn()
@@ -194,26 +218,17 @@ fn bind(store: &mut Store, round: &mut OpenRound) -> Result<()> {
     let Some((runtime, native_id, transcript)) = found else {
         return Ok(());
     };
-    // The update binds only a round still unbound, so a binding made since the read stands. A
-    // rearmed round starts at the previous round's record length, which is no offset in another
-    // conversation's record.
+    // The update binds only a task still unbound, so a binding made since the read stands.
     let tx = store.write()?;
-    let cursor: Option<i64> = tx
-        .query_row(
-            "UPDATE task_round SET worker_runtime = ?1, worker_native_id = ?2,
-               cursor = CASE WHEN EXISTS (SELECT 1 FROM task_round p WHERE p.task_id = ?3
-                 AND p.round = ?4 - 1 AND p.worker_runtime = ?1 AND p.worker_native_id = ?2)
-                 THEN cursor ELSE 0 END
-             WHERE task_id = ?3 AND round = ?4 AND worker_runtime IS NULL RETURNING cursor",
-            params![runtime.as_str(), native_id, round.task, round.round],
-            |row| row.get(0),
-        )
-        .optional()?;
+    let bound = tx.execute(
+        "UPDATE task SET worker_runtime = ?1, worker_native_id = ?2
+         WHERE id = ?3 AND worker_runtime IS NULL",
+        params![runtime.as_str(), native_id, round.task],
+    )?;
     tx.commit()?;
-    if let Some(cursor) = cursor {
+    if bound == 1 {
         round.runtime = Some(runtime);
         round.transcript = transcript;
-        round.cursor = cursor;
     }
     Ok(())
 }

@@ -100,8 +100,8 @@ pub fn run(options: &Options) -> Result<()> {
         )?;
         tx.commit()?;
     }
-    for id in task::orphaned_sends(&mut store)? {
-        log::warn!("notice {id}: left mid-send by the previous daemon, now unknown");
+    for (kind, id) in task::orphaned_sends(&mut store)? {
+        log::warn!("{kind} {id}: left mid-send by the previous daemon, now unknown");
     }
     // Holding the lock, this process owns the socket path.
     let socket = options.state_dir.join("daemon.sock");

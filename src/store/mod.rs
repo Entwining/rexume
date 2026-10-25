@@ -4,6 +4,7 @@
 
 #[cfg(test)]
 mod tests;
+mod upgrade;
 
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
@@ -15,7 +16,7 @@ use rusqlite::{
 
 const SCHEMA: &str = include_str!("schema.sql");
 /// The `user_version` that `schema.sql` sets.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 /// The `application_id` that `schema.sql` sets: 'rexu' in ASCII.
 const APPLICATION_ID: i64 = 0x7265_7875;
 /// How long finished restores, tasks, and unused conversations are kept.
@@ -54,12 +55,16 @@ impl Store {
         conn.pragma_update(None, "journal_mode", "wal")?;
         conn.pragma_update(None, "synchronous", "normal")?;
         conn.pragma_update(None, "foreign_keys", true)?;
-        if !check_version(&conn, &path)? {
+        if check_version(&conn, &path)? != Found::Current {
             let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            // Another process may have created it between the check and the lock.
-            if !check_version(&tx, &path)? {
-                tx.execute_batch(SCHEMA)
-                    .context("failed to apply the schema")?;
+            // Another process may have created or upgraded it between the check and the lock.
+            match check_version(&tx, &path)? {
+                Found::Current => {}
+                Found::Empty => tx
+                    .execute_batch(SCHEMA)
+                    .context("failed to apply the schema")?,
+                Found::Older(version) => upgrade::from(&tx, version)
+                    .with_context(|| format!("failed to upgrade `{}`", path.display()))?,
             }
             tx.commit()?;
         }
@@ -78,8 +83,13 @@ impl Store {
         let conn = Connection::open_with_flags(&path, OpenFlags::SQLITE_OPEN_READ_ONLY)
             .with_context(|| format!("failed to open `{}`", path.display()))?;
         conn.busy_timeout(Duration::from_secs(5))?;
-        if !check_version(&conn, &path)? {
-            bail!("`{}` has no rexume state yet", path.display());
+        match check_version(&conn, &path)? {
+            Found::Current => {}
+            Found::Empty => bail!("`{}` has no rexume state yet", path.display()),
+            Found::Older(_) => bail!(
+                "`{}` has an older schema; any other rexume command upgrades it",
+                path.display()
+            ),
         }
         Ok(conn)
     }
@@ -108,13 +118,23 @@ impl Store {
     }
 }
 
-/// Whether the database holds this version's schema; `false` for a new, empty file. Anything
-/// else is an error, since writing to it could lose another program's or version's data.
-fn check_version(conn: &Connection, path: &Path) -> Result<bool> {
+#[derive(Debug, PartialEq, Eq)]
+enum Found {
+    Current,
+    /// A new, empty file.
+    Empty,
+    /// The schema of an earlier released version, which `upgrade` brings up to this one.
+    Older(i64),
+}
+
+/// Which schema the database holds. Anything but this version's, an earlier one's, or none is an
+/// error, since writing to it could lose another program's or version's data.
+fn check_version(conn: &Connection, path: &Path) -> Result<Found> {
     let pragma = |name| conn.pragma_query_value(None, name, |row| row.get::<_, i64>(0));
     let (application_id, version) = (pragma("application_id")?, pragma("user_version")?);
     match (application_id, version) {
-        (APPLICATION_ID, SCHEMA_VERSION) => Ok(true),
+        (APPLICATION_ID, SCHEMA_VERSION) => Ok(Found::Current),
+        (APPLICATION_ID, found) if (1..SCHEMA_VERSION).contains(&found) => Ok(Found::Older(found)),
         (APPLICATION_ID, found) if found > SCHEMA_VERSION => bail!(
             "`{}` was written by a newer rexume (schema {found}; this version knows \
              {SCHEMA_VERSION}); upgrade rexume",
@@ -125,7 +145,7 @@ fn check_version(conn: &Connection, path: &Path) -> Result<bool> {
                 row.get::<_, i64>(0)
             })? == 0 =>
         {
-            Ok(false)
+            Ok(Found::Empty)
         }
         _ => bail!(
             "`{}` is not a state database of this rexume version; move it away to start over",
@@ -300,9 +320,9 @@ pub fn sweep(tx: &Transaction, instance: &str, now: i64) -> Result<()> {
             AND NOT EXISTS (SELECT 1 FROM restore_slot s
                             WHERE s.runtime = conversation.runtime
                               AND s.native_id = conversation.native_id)
-            AND NOT EXISTS (SELECT 1 FROM task_round r
-                            WHERE r.worker_runtime = conversation.runtime
-                              AND r.worker_native_id = conversation.native_id)",
+            AND NOT EXISTS (SELECT 1 FROM task t
+                            WHERE t.worker_runtime = conversation.runtime
+                              AND t.worker_native_id = conversation.native_id)",
         params![cutoff],
     )?;
     Ok(())

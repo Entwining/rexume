@@ -5,7 +5,7 @@ use std::path::Path;
 use serde_json::json;
 
 use super::*;
-use crate::task::tests::task_world;
+use crate::task::tests::{ANSWER, ANSWER_2, DURATION, PROMPT, PROMPT_2, task_world};
 
 /// Task `t`'s completed first round and its notice `d` in `state`, to the owner idle in pane
 /// `a`, whose record is `transcript` and whose messaging socket is the returned listener.
@@ -43,7 +43,7 @@ fn notice(store: &Store) -> Result<(String, Option<String>)> {
 
 /// What the next daemon does with the notice on its start and through its first pass.
 fn restart_daemon(store: &mut Store) -> Result<(String, Option<String>)> {
-    assert_eq!(orphaned_sends(store)?, ["d"]);
+    assert_eq!(orphaned_sends(store)?, [("notice", "d".to_owned())]);
     let mut interest = Interest::default();
     send_due(store, &mut interest)?;
     settle(store, &mut HashMap::new(), &mut interest)?;
@@ -81,6 +81,12 @@ fn a_notice_goes_to_its_idle_owner_once_its_grace_after_the_round_has_passed() -
     let dir = tempfile::tempdir()?;
     let transcript = tempfile::NamedTempFile::new()?;
     let (mut store, listener) = notice_world(dir.path(), transcript.path(), "pending")?;
+    // The round took the worker's first turn; a second finished after it.
+    let worker = [PROMPT, ANSWER, DURATION, PROMPT_2, ANSWER_2, DURATION].join("\n") + "\n";
+    std::fs::write(dir.path().join("worker.jsonl"), worker)?;
+    store
+        .conn()
+        .execute_batch("UPDATE task_round SET turn_start = 0")?;
     store
         .conn()
         .execute("UPDATE task_round SET finished_at = ?1", params![now_ms()])?;
@@ -97,7 +103,9 @@ fn a_notice_goes_to_its_idle_owner_once_its_grace_after_the_round_has_passed() -
     assert!(send_due(&mut store, &mut interest)?.is_none());
     send_due(&mut store, &mut interest)?;
     assert_eq!(notice(&store)?.0, "sent");
-    assert!(listener.accept().is_ok());
+    let mut sent = String::new();
+    std::io::Read::read_to_string(&mut listener.accept()?.0, &mut sent)?;
+    assert!(sent.contains("The worker has 1 unread turn"), "{sent}");
     assert!(listener.accept().is_err(), "the notice was sent twice");
     Ok(())
 }

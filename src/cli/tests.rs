@@ -57,7 +57,7 @@ fn every_argument_is_documented() {
 
 #[test]
 fn examples_parse() {
-    for text in [EXAMPLES, TASK_EXAMPLES] {
+    for text in [EXAMPLES, task::EXAMPLES] {
         for line in text
             .lines()
             .map(str::trim)

@@ -5,15 +5,20 @@ use anyhow::Result;
 use rusqlite::params;
 use serde_json::Value;
 
-use super::follow::OPEN_ROUNDS;
+use super::follow::{Follow, OPEN_ROUNDS, TAKEN};
 use super::outcome::{self, WORKER_ROUNDS, block_gone};
-use super::register::start_round;
+use super::register::{Kind, start_round};
 use super::wait::register_waiter;
-use super::{cleanup, notice, shown};
+use super::{cleanup, notice, request, shown, unread};
 use crate::store::Store;
 
 pub(super) const PROMPT: &str = r#"{"type":"user","timestamp":"2026-10-24T15:29:45.738Z","message":{"role":"user","content":"Count"}}"#;
 pub(super) const ANSWER: &str = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}"#;
+/// What Claude Code writes after a turn's last record, which seals its answer.
+pub(super) const DURATION: &str = r#"{"type":"system","subtype":"turn_duration"}"#;
+pub(super) const PROMPT_2: &str =
+    r#"{"type":"user","message":{"role":"user","content":"Count again"}}"#;
+pub(super) const ANSWER_2: &str = r#"{"type":"assistant","message":{"id":"m2","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Again."}]}}"#;
 
 pub(super) fn record(lines: &[&str]) -> Result<tempfile::NamedTempFile> {
     let mut file = tempfile::NamedTempFile::new()?;
@@ -51,19 +56,18 @@ pub(super) fn task_world(
         "INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env, reported_at)
            VALUES ('b', 'claude', 'worker', 100, 0, 50);",
     )?;
-    tx.execute(
-        "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, worker_pid,
-           result_file, keep_pane, created_at) VALUES ('t', 'count', 'claude', 'owner', 'b', 100, ?1, 0, 0)",
-        params![result_file],
-    )?;
     let (runtime, native_id) = match result_file {
         None => (Some("claude"), Some("worker")),
         Some(_) => (None, None),
     };
     tx.execute(
-        "INSERT INTO task_round (task_id, round, worker_runtime, worker_native_id, cursor, state, created_at)
-         VALUES ('t', 1, ?1, ?2, 0, 'running', 0)",
-        params![runtime, native_id],
+        "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, worker_pid,
+           result_file, keep_pane, worker_runtime, worker_native_id, created_at)
+         VALUES ('t', 'count', 'claude', 'owner', 'b', 100, ?1, 0, ?2, ?3, 0)",
+        params![result_file, runtime, native_id],
+    )?;
+    tx.execute_batch(
+        "INSERT INTO task_round (task_id, round, state, created_at) VALUES ('t', 1, 'running', 0)",
     )?;
     tx.commit()?;
     Ok(store)
@@ -78,46 +82,90 @@ pub(super) fn round(store: &Store) -> Result<(String, Option<String>, Option<Str
 }
 
 #[test]
-fn a_new_round_needs_a_finished_one_and_an_interactive_pane_not_closing() -> Result<()> {
+fn a_new_round_needs_a_finished_one_on_an_unreleased_interactive_pane() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = record(&[PROMPT])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
-    let mut attempt = |change: &str| -> Result<i64> {
+    let next = Kind::Next { unread: None };
+    let mut attempt = |change: &str, kind: &Kind| -> Result<i64> {
         store.conn().execute_batch(change)?;
         let tx = store.write()?;
-        start_round(&tx, "t", None, 0)
+        let round = start_round(&tx, "t", kind)?;
+        tx.commit()?;
+        Ok(round)
     };
     let error = |result: Result<i64>| result.err().map(|e| e.to_string()).unwrap_or_default();
-    assert!(error(attempt("")).contains("is running"));
+    assert!(error(attempt("", &next)).contains("is running"));
     let finished = "UPDATE task_round SET state = 'completed', result = 'Done.', result_ref = 'm1',
                       finished_at = 1;";
     // Another task on the same pane holds it for a close.
     assert!(
-        error(attempt(&format!(
-            "{finished} INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage,
-               keep_pane, pane_state, created_at) VALUES ('u', 'x', 'claude', 'owner', 'b', 0, 'closing', 0)"
-        )))
+        error(attempt(
+            &format!(
+                "{finished} INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage,
+                   keep_pane, released_at, pane_state, created_at)
+                 VALUES ('u', 'x', 'claude', 'owner', 'b', 0, 1, 'closing', 0)"
+            ),
+            &next
+        ))
         .contains("is closing")
     );
+    let closed = "DELETE FROM task WHERE id = 'u';
+                  UPDATE task SET pane_state = 'closed', pane_closed_at = 2";
+    assert!(error(attempt(closed, &next)).contains("no turn is unread"));
+    assert!(error(attempt("", &Kind::Request("go"))).contains("is closed"));
+    // A closed pane's record still holds turns no round took.
+    assert_eq!(attempt("", &Kind::Next { unread: Some(1) })?, 2);
     assert!(
         error(attempt(
-            "UPDATE task SET pane_state = 'closed', pane_closed_at = 2"
+            "UPDATE task SET pane_state = 'open', pane_closed_at = NULL, released_at = 3",
+            &next
         ))
-        .contains("is closed")
+        .contains("is released")
     );
     assert!(
         error(attempt(
-            "UPDATE task SET pane_state = 'open', pane_closed_at = NULL, result_file = '/r'"
+            "UPDATE task SET released_at = NULL, worker_runtime = NULL, worker_native_id = NULL,
+               result_file = '/r'",
+            &next
         ))
-        .contains("cannot be rearmed")
+        .contains("non_interactive")
     );
     assert_eq!(
         attempt(
-            "DELETE FROM task WHERE id = 'u';
-             UPDATE task SET result_file = NULL, pane_state = 'kept', pane_note = 'in use'"
+            &format!(
+                "{finished} UPDATE task SET result_file = NULL, worker_runtime = 'claude',
+                   worker_native_id = 'worker', pane_state = 'kept', pane_note = 'in use'"
+            ),
+            &Kind::Request("go")
         )?,
-        2
+        3
     );
+    let (acked, request): (bool, String) = store.conn().query_row(
+        "SELECT r.acked_at IS NOT NULL, q.text FROM task_round r
+         JOIN request q ON q.task_id = r.task_id AND q.round = 3 WHERE r.round = 2",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert!(acked);
+    assert_eq!(request, "go");
+    Ok(())
+}
+
+/// Turns the worker finishes after its task was released are no round's, so none is unread.
+#[test]
+fn a_released_task_has_no_unread_turns() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut transcript = record(&[PROMPT, ANSWER, DURATION])?;
+    let mut store = task_world(dir.path(), transcript.path(), None)?;
+    Follow::default().pass(&mut store, None)?;
+    writeln!(transcript, "{PROMPT_2}\n{ANSWER_2}\n{DURATION}")?;
+    transcript.flush()?;
+    assert_eq!(unread(store.conn(), "t")?, Some(1));
+    store
+        .conn()
+        .execute_batch("UPDATE task SET released_at = 2")?;
+    assert_eq!(unread(store.conn(), "t")?, None);
     Ok(())
 }
 
@@ -136,13 +184,15 @@ fn a_waiter_replaces_only_the_dead_waiter_it_saw() -> Result<()> {
     Ok(())
 }
 
+/// A round no record can finish, here one whose worker never reported, ends with its pane.
 #[test]
-fn a_closed_worker_pane_ends_its_open_round_and_every_task_on_it() -> Result<()> {
+fn a_closed_worker_pane_ends_its_unbound_round_and_every_task_on_it() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = record(&[PROMPT])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
     store.conn().execute_batch(
-        "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
+        "UPDATE task SET worker_runtime = NULL, worker_native_id = NULL;
+         INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
            pane_state, pane_note, created_at)
          VALUES ('k', 'earlier', 'claude', 'owner', 'b', 0, 'kept', 'in use', 0);
          INSERT INTO live (instance_id, live_id, lineage) VALUES ('i1', 'block:b', 'b');",
@@ -178,7 +228,7 @@ fn a_closed_worker_pane_ends_its_open_round_and_every_task_on_it() -> Result<()>
 fn every_pass_statement_uses_an_index() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let store = Store::open(dir.path())?;
-    let statements: [(&str, &str, bool); 9] = [
+    let statements: [(&str, &str, bool); 14] = [
         ("OPEN_ROUNDS", &OPEN_ROUNDS, true),
         ("outcome::ROUND", &outcome::ROUND, false),
         ("WORKER_ROUNDS", &WORKER_ROUNDS, true),
@@ -188,6 +238,11 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
         ("notice::SENT", notice::SENT, false),
         ("notice::READY_OWNER", notice::READY_OWNER, false),
         ("notice::CLAIM", notice::CLAIM, false),
+        ("TAKEN", TAKEN, false),
+        ("request::PENDING", &request::PENDING, true),
+        ("request::WORKER", request::WORKER, false),
+        ("request::CLAIM", &request::CLAIM, false),
+        ("request::SENT_TO_PI", &request::SENT_TO_PI, true),
     ];
     for (name, sql, partial) in statements {
         let mut plan = store.conn().prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;

@@ -5,8 +5,8 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-// rexume writes each notice for this conversation as `<notice>.json` in the conversation's inbox,
-// and reads `<notice>.accepted` as the receipt that Pi holds it.
+// rexume writes each notice or request for this conversation as `<id>.json` in the conversation's
+// inbox, and reads `<id>.accepted` as the receipt that Pi holds it.
 const inboxRoot = join(homedir(), ".local/state/rexume/inbox");
 
 export default function (pi: ExtensionAPI) {
@@ -49,7 +49,7 @@ export default function (pi: ExtensionAPI) {
         const accepted = pending.replace(/\.json$/, ".accepted");
         try {
           const { text } = JSON.parse(readFileSync(pending, "utf8"));
-          // Claiming the file before sending keeps a notice from reaching Pi twice; a notice Pi
+          // Claiming the file before sending keeps a message from reaching Pi twice; a message Pi
           // refused goes back for the next change.
           renameSync(pending, accepted);
           try {
@@ -59,7 +59,7 @@ export default function (pi: ExtensionAPI) {
             throw error;
           }
         } catch (error) {
-          if (ctx.hasUI) ctx.ui.notify(`rexume could not deliver notice ${name}: ${error}`, "warning");
+          if (ctx.hasUI) ctx.ui.notify(`rexume could not deliver message ${name}: ${error}`, "warning");
         }
       }
     };
@@ -67,7 +67,7 @@ export default function (pi: ExtensionAPI) {
       mkdirSync(inbox, { recursive: true });
       watcher = watch(inbox, drain);
     } catch (error) {
-      if (ctx.hasUI) ctx.ui.notify(`rexume cannot watch its inbox for notices: ${error}`, "warning");
+      if (ctx.hasUI) ctx.ui.notify(`rexume cannot watch its inbox for messages: ${error}`, "warning");
       return;
     }
     drain();

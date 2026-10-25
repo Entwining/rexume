@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
-use super::{Conversation, Sent, Target, Turn, content_texts, text_at};
+use super::{Conversation, Open, Sealed, Sent, Span, Target, Turn, content_texts, text_at};
 
 /// The extension `rexume install` writes into Pi's extensions directory.
 pub const EXTENSION: &str = include_str!("pi/extension.ts");
@@ -15,7 +15,7 @@ pub const EXTENSION: &str = include_str!("pi/extension.ts");
 /// the rest of its first line changes.
 pub const WRITTEN_BY: &str = "// Written by `rexume install`";
 
-/// The `customType` of the notices the extension passes to Pi.
+/// The `customType` of the notices and requests the extension passes to Pi.
 const NOTICE: &str = "rexume";
 
 /// Pi reopens a session from its file; before its first message it has written none, and then the
@@ -53,24 +53,24 @@ pub fn inbox(state_dir: &Path, native_id: &str) -> PathBuf {
     state_dir.join("inbox").join(native_id.replace('/', "_"))
 }
 
-/// The extension takes each notice from the conversation's inbox, renames it to `.accepted`, and
+/// The extension takes each message from the conversation's inbox, renames it to `.accepted`, and
 /// passes it to Pi, which records it as a `custom_message`.
-pub fn send(target: &Target, state_dir: &Path, notice: &str, text: &str) -> Result<Sent> {
+pub fn send(target: &Target, state_dir: &Path, id: &str, text: &str) -> Result<Sent> {
     let dir = inbox(state_dir, target.native_id);
     std::fs::create_dir_all(&dir)
         .with_context(|| format!("failed to create `{}`", dir.display()))?;
     // Written whole under a name the extension ignores, then renamed into view.
     let mut file = tempfile::NamedTempFile::with_prefix_in(".", &dir)?;
     file.write_all(json!({ "text": text }).to_string().as_bytes())?;
-    file.persist(dir.join(format!("{notice}.json")))?;
+    file.persist(dir.join(format!("{id}.json")))?;
     Ok(Sent::Handed)
 }
 
-/// Whether the extension took the notice from the inbox: Pi holds it, but the conversation may not
-/// have taken it in yet.
-pub fn accepted(state_dir: &Path, native_id: &str, notice: &str) -> bool {
+/// Whether the extension took the message from the inbox: Pi holds it, but the conversation may
+/// not have taken it in yet.
+pub fn accepted(state_dir: &Path, native_id: &str, id: &str) -> bool {
     inbox(state_dir, native_id)
-        .join(format!("{notice}.accepted"))
+        .join(format!("{id}.accepted"))
         .exists()
 }
 
@@ -85,43 +85,65 @@ pub fn received(record: &Value) -> bool {
 #[derive(Default)]
 pub struct Parser {
     turn: Option<Turn>,
+    /// Where the turn not yet yielded starts.
+    open: Option<u64>,
 }
 
 impl Parser {
-    pub fn feed(&mut self, record: &Value) {
-        match record.get("type").and_then(Value::as_str) {
-            Some("message") => {}
-            // A notice the extension passes to Pi starts a turn of its own.
-            Some("custom_message") if received(record) => {
-                self.turn = Some(Turn::Open { since: None });
-                return;
-            }
+    pub fn feed(&mut self, record: &Value, span: Span, sealed: &mut Vec<Sealed>) {
+        let message = match record.get("type").and_then(Value::as_str) {
+            Some("message") => record.get("message"),
+            // A notice or request the extension passes to Pi starts a turn of its own.
+            Some("custom_message") if received(record) => return self.start(span),
             _ => return,
-        }
-        let Some(message) = record.get("message") else {
+        };
+        let Some(message) = message else {
             return;
         };
-        match message.get("role").and_then(Value::as_str) {
-            Some("user") => self.turn = Some(Turn::Open { since: None }),
-            Some("assistant") => {
-                self.turn = Some(match message.get("stopReason").and_then(Value::as_str) {
-                    Some("stop") => Turn::Completed {
-                        reference: text_at(record, "/id"),
-                        text: content_texts(message.get("content")).join("\n"),
-                    },
-                    Some("aborted") => Turn::Cancelled,
-                    Some("error") => Turn::Failed {
-                        text: text_at(message, "/errorMessage"),
-                    },
-                    _ => Turn::Open { since: None },
-                });
-            }
-            _ => {}
-        }
+        let ended = match message.get("role").and_then(Value::as_str) {
+            Some("user") => return self.start(span),
+            Some("assistant") => match message.get("stopReason").and_then(Value::as_str) {
+                Some("stop") => Turn::Completed {
+                    reference: text_at(record, "/id"),
+                    text: content_texts(message.get("content")).join("\n"),
+                },
+                Some("aborted") => Turn::Cancelled,
+                Some("error") => Turn::Failed {
+                    text: text_at(message, "/errorMessage"),
+                },
+                _ => {
+                    self.turn = Some(Turn::Open { since: None });
+                    self.open.get_or_insert(span.start);
+                    return;
+                }
+            },
+            _ => return,
+        };
+        self.turn = Some(ended.clone());
+        sealed.push(Sealed {
+            turn: ended,
+            span: Span {
+                start: self.open.take().unwrap_or(span.start),
+                end: span.end,
+            },
+        });
+    }
+
+    fn start(&mut self, span: Span) {
+        self.turn = Some(Turn::Open { since: None });
+        self.open = Some(span.start);
     }
 
     pub fn turn(&self) -> Turn {
         self.turn.clone().unwrap_or(Turn::None)
+    }
+
+    pub fn open(&self) -> Option<Open> {
+        self.open.map(|start| Open {
+            start,
+            since: None,
+            answer: None,
+        })
     }
 }
 

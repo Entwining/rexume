@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use super::{Conversation, Lines, Sent, Target, Turn, text_at};
+use super::{Conversation, Lines, Open, Sealed, Sent, Span, Target, Turn, text_at};
 
 /// `codex resume` takes the configured defaults rather than the conversation's own settings, so
 /// they are passed on the command line.
@@ -89,41 +89,59 @@ pub fn received(record: &Value) -> bool {
 #[derive(Default)]
 pub struct Parser {
     turn: Option<Turn>,
+    /// Where the turn not yet yielded starts.
+    open: Option<u64>,
 }
 
 impl Parser {
-    pub fn feed(&mut self, record: &Value) {
+    pub fn feed(&mut self, record: &Value, span: Span, sealed: &mut Vec<Sealed>) {
         if record.get("type").and_then(Value::as_str) != Some("event_msg") {
             return;
         }
         let Some(payload) = record.get("payload") else {
             return;
         };
-        match payload.get("type").and_then(Value::as_str) {
-            Some("task_started") => self.turn = Some(Turn::Open { since: None }),
-            Some("task_complete") => {
-                self.turn = Some(Turn::Completed {
-                    reference: text_at(payload, "/turn_id"),
-                    text: text_at(payload, "/last_agent_message"),
-                });
+        let ended = match payload.get("type").and_then(Value::as_str) {
+            Some("task_started") => {
+                self.turn = Some(Turn::Open { since: None });
+                self.open = Some(span.start);
+                return;
             }
+            Some("task_complete") => Turn::Completed {
+                reference: text_at(payload, "/turn_id"),
+                text: text_at(payload, "/last_agent_message"),
+            },
             Some("turn_aborted") => {
-                self.turn = Some(
-                    if payload.get("reason").and_then(Value::as_str) == Some("interrupted") {
-                        Turn::Cancelled
-                    } else {
-                        Turn::Failed {
-                            text: text_at(payload, "/reason"),
-                        }
-                    },
-                );
+                if payload.get("reason").and_then(Value::as_str) == Some("interrupted") {
+                    Turn::Cancelled
+                } else {
+                    Turn::Failed {
+                        text: text_at(payload, "/reason"),
+                    }
+                }
             }
-            _ => {}
-        }
+            _ => return,
+        };
+        self.turn = Some(ended.clone());
+        sealed.push(Sealed {
+            turn: ended,
+            span: Span {
+                start: self.open.take().unwrap_or(span.start),
+                end: span.end,
+            },
+        });
     }
 
     pub fn turn(&self) -> Turn {
         self.turn.clone().unwrap_or(Turn::None)
+    }
+
+    pub fn open(&self) -> Option<Open> {
+        self.open.map(|start| Open {
+            start,
+            since: None,
+            answer: None,
+        })
     }
 }
 

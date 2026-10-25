@@ -1,4 +1,4 @@
-//! Registering a worker pane for a task, and each round after the first.
+//! Registering a worker pane for a task, each round after the first, and releasing the worker.
 
 use std::path::Path;
 
@@ -6,9 +6,9 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
-use super::{LATEST_ROUND, caller, finished, owned, round_state, shown};
+use super::{caller, finished, owned, round_state, shown, unread};
 use crate::runtime::Runtime;
-use crate::store::{Store, ensure_lineage, live_of, new_id, now_ms};
+use crate::store::{Store, ensure_lineage, new_id, now_ms};
 
 pub struct NewTask<'a> {
     pub worker: &'a str,
@@ -49,9 +49,11 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
         Some(pid) if new.result_file.is_none() => occupant_of(&tx, &worker, pid)?,
         _ => None,
     };
+    let (runtime, native_id) = bound.map(|(r, n)| (r.as_str(), n)).unzip();
     tx.execute(
         "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, worker_pid,
-           result_file, keep_pane, created_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)",
+           result_file, keep_pane, worker_runtime, worker_native_id, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
         params![
             id,
             new.title,
@@ -61,15 +63,17 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
             foreground,
             new.result_file.map(|f| f.to_string_lossy().into_owned()),
             new.keep_pane,
+            runtime,
+            native_id,
             now,
         ],
     )?;
-    insert_round(&tx, &id, 1, bound.as_ref(), 0, now)?;
+    insert_round(&tx, &id, 1, now)?;
     tx.commit()?;
     shown(store.conn(), &caller.instance, &id, None)
 }
 
-/// The conversation whose process `pid` last reported from the pane, which a round follows.
+/// The conversation whose process `pid` last reported from the pane, which the task follows.
 fn occupant_of(conn: &Connection, lineage: &str, pid: i64) -> Result<Option<(Runtime, String)>> {
     Ok(conn
         .query_row(
@@ -93,109 +97,146 @@ fn refuse_closing(conn: &Connection, lineage: &str, block: &str) -> Result<()> {
     Ok(())
 }
 
-fn insert_round(
-    tx: &Transaction,
-    id: &str,
-    round: i64,
-    bound: Option<&(Runtime, String)>,
-    cursor: i64,
-    now: i64,
-) -> Result<()> {
-    let (runtime, native_id) = bound.map(|(r, n)| (r.as_str(), n.as_str())).unzip();
+fn insert_round(tx: &Transaction, id: &str, round: i64, now: i64) -> Result<()> {
     tx.execute(
-        "INSERT INTO task_round (task_id, round, worker_runtime, worker_native_id, cursor, state,
-           created_at) VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6)",
-        params![id, round, runtime, native_id, cursor, now],
+        "INSERT INTO task_round (task_id, round, state, created_at)
+         VALUES (?1, ?2, 'running', ?3)",
+        params![id, round, now],
     )?;
     Ok(())
 }
 
-/// Starts the next round with the same worker pane: only a turn the worker finishes after now
-/// counts.
-pub fn rearm(state_dir: &Path, id: &str) -> Result<Value> {
+/// The largest message `task send` takes: Codex receives it as one argument, and a command's
+/// arguments and environment share about 1 MiB.
+pub const MESSAGE_LIMIT: u64 = 256 * 1024;
+
+pub fn refuse_too_large(len: usize) -> Result<()> {
+    if u64::try_from(len)? > MESSAGE_LIMIT {
+        bail!("the message is larger than {} KiB", MESSAGE_LIMIT / 1024);
+    }
+    Ok(())
+}
+
+/// How a round after the first chooses its turn.
+pub(super) enum Kind<'a> {
+    /// The earliest finished turn no round took, from a closed pane too while turns are unread.
+    Next { unread: Option<usize> },
+    /// The turn that takes in this message, which rexume delivers.
+    Request(&'a str),
+}
+
+/// Starts the next round with the earliest finished turn no round has taken.
+pub fn next(state_dir: &Path, id: &str) -> Result<Value> {
     let mut store = Store::open(state_dir)?;
-    let mut caller = caller(&store)?;
+    let caller = caller(&store)?;
     owned(store.conn(), id, &caller)?;
-    let worker: String = store.conn().query_row(
-        "SELECT worker_lineage FROM task WHERE id = ?1",
-        params![id],
-        |row| row.get(0),
-    )?;
-    let block = live_of(store.conn(), &caller.instance, &worker)?
-        .with_context(|| format!("the worker pane of task {id} is not on the server"))?;
-    let session = caller
-        .rex
-        .block_session(&block)?
-        .with_context(|| format!("the worker pane of task {id} is not on the server"))?;
-    let process = caller.rex.block_method(&session, &block, "process")?;
-    let foreground = process.pointer("/foreground/pid").and_then(Value::as_i64);
-    let conn = store.conn();
-    // A round finishing after the length below is read would leave its turn after the cursor.
-    latest_finished(conn, id)?;
-    let bound = foreground.map_or(Ok(None), |pid| occupant_of(conn, &worker, pid))?;
-    // The round starts from the record's length now, read outside the transaction: the bound
-    // conversation's, or the previous round's while the worker has not reported yet.
-    let transcript: Option<String> = conn
-        .query_row(
-            &format!(
-                "SELECT c.transcript FROM task t JOIN task_round r ON r.task_id = t.id
-                 JOIN conversation c ON c.runtime = COALESCE(?2, r.worker_runtime)
-                   AND c.native_id = COALESCE(?3, r.worker_native_id)
-                 WHERE t.id = ?1 AND {LATEST_ROUND}"
-            ),
-            params![
-                id,
-                bound.as_ref().map(|(r, _)| r.as_str()),
-                bound.as_ref().map(|(_, n)| n.as_str())
-            ],
-            |row| row.get(0),
-        )
-        .optional()?
-        .flatten();
-    let cursor = transcript
-        .and_then(|t| std::fs::metadata(t).ok())
-        .map_or(0, |m| m.len());
+    let unread = unread(store.conn(), id)?;
     let tx = store.write()?;
-    let round = start_round(&tx, id, bound.as_ref(), i64::try_from(cursor)?)?;
+    let round = start_round(&tx, id, &Kind::Next { unread })?;
     tx.commit()?;
     shown(store.conn(), &caller.instance, id, Some(round))
 }
 
-/// Inserts the task's next round after checking it can take one, and returns its number.
-pub(super) fn start_round(
-    tx: &Transaction,
-    id: &str,
-    bound: Option<&(Runtime, String)>,
-    cursor: i64,
-) -> Result<i64> {
+/// Starts the next round with a request the daemon delivers to the worker.
+pub fn send(state_dir: &Path, id: &str, message: &str) -> Result<Value> {
+    refuse_too_large(message.len())?;
+    let mut store = Store::open(state_dir)?;
+    let caller = caller(&store)?;
+    owned(store.conn(), id, &caller)?;
+    let tx = store.write()?;
+    let round = start_round(&tx, id, &Kind::Request(message))?;
+    tx.commit()?;
+    shown(store.conn(), &caller.instance, id, Some(round))
+}
+
+/// Records that the orchestrator is done with the worker and acknowledges the latest round; only a
+/// released task's pane is ever closed. Releasing again changes nothing.
+pub fn release(state_dir: &Path, id: &str) -> Result<Value> {
+    let mut store = Store::open(state_dir)?;
+    let caller = caller(&store)?;
+    owned(store.conn(), id, &caller)?;
+    let unread = unread(store.conn(), id)?;
+    let tx = store.write()?;
+    let round = latest_finished(&tx, id)?;
+    if let Some(count @ 1..) = unread {
+        bail!("task {id} has unread turns ({count}); take them with `task next` first");
+    }
+    tx.execute(
+        "UPDATE task SET released_at = COALESCE(released_at, ?1) WHERE id = ?2",
+        params![now_ms(), id],
+    )?;
+    acknowledge(&tx, id, round, "taken by task release")?;
+    tx.commit()?;
+    shown(store.conn(), &caller.instance, id, Some(round))
+}
+
+/// Records the owner's acknowledgement of a finished round; a notice not yet sent for it is
+/// dropped, since the owner has the result.
+pub(super) fn acknowledge(tx: &Transaction, id: &str, round: i64, by: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE task_round SET acked_at = COALESCE(acked_at, ?1) WHERE task_id = ?2 AND round = ?3",
+        params![now_ms(), id, round],
+    )?;
+    tx.execute(
+        "UPDATE notice SET state = 'superseded', note = ?1
+         WHERE task_id = ?2 AND round = ?3 AND state = 'pending'",
+        params![by, id, round],
+    )?;
+    Ok(())
+}
+
+/// Inserts the task's next round after checking it can take one, acknowledges the round before
+/// it, and returns its number.
+pub(super) fn start_round(tx: &Transaction, id: &str, kind: &Kind) -> Result<i64> {
     // Another task on the same pane may hold it for a close.
-    let (interactive, closed, closing): (bool, bool, bool) = tx.query_row(
-        "SELECT t.result_file IS NULL, t.pane_state = 'closed',
+    let (interactive, released, closed, closing): (bool, bool, bool, bool) = tx.query_row(
+        "SELECT t.result_file IS NULL, t.released_at IS NOT NULL, t.pane_state = 'closed',
            EXISTS (SELECT 1 FROM task o WHERE o.worker_lineage = t.worker_lineage
                    AND o.pane_state = 'closing')
          FROM task t WHERE t.id = ?1",
         params![id],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
-    if !interactive {
-        bail!("task {id} is non_interactive and cannot be rearmed");
+    if released {
+        bail!("task {id} is released, so it starts no more rounds");
     }
-    if closed {
-        bail!("the worker pane of task {id} is closed, so it cannot be rearmed");
+    if !interactive {
+        bail!("task {id} is non_interactive, so it has only one round");
     }
     if closing {
-        bail!("rexume is closing the worker pane of task {id}, so it cannot be rearmed");
+        bail!("rexume is closing the worker pane of task {id}");
+    }
+    match kind {
+        Kind::Request(_) if closed => bail!("the worker pane of task {id} is closed"),
+        Kind::Next {
+            unread: None | Some(0),
+        } if closed => {
+            bail!("the worker pane of task {id} is closed and no turn is unread");
+        }
+        _ => {}
     }
     let round = latest_finished(tx, id)?;
-    insert_round(tx, id, round + 1, bound, cursor, now_ms())?;
+    let by = match kind {
+        Kind::Next { .. } => "taken by task next",
+        Kind::Request(_) => "taken by task send",
+    };
+    acknowledge(tx, id, round, by)?;
+    insert_round(tx, id, round + 1, now_ms())?;
+    if let Kind::Request(message) = kind {
+        tx.execute(
+            "INSERT INTO request (id, task_id, round, text) VALUES (?1, ?2, ?3, ?4)",
+            params![new_id(), id, round + 1, message],
+        )?;
+    }
     Ok(round + 1)
 }
 
-/// The task's latest round, which must have finished before another starts.
+/// The task's latest round, which must have finished before another starts or the task is
+/// released.
 fn latest_finished(conn: &Connection, id: &str) -> Result<i64> {
     let (round, state) = round_state(conn, id, None)?;
     if !finished(&state) {
-        bail!("task {id} is {state}; rearm it once the round has finished");
+        bail!("task {id} is {state}; wait until the round has finished");
     }
     Ok(round)
 }

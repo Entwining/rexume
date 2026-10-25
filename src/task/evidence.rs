@@ -7,15 +7,15 @@ use std::io::{ErrorKind, Read};
 use anyhow::Result;
 use rusqlite::{OptionalExtension, params};
 
-use crate::runtime::Turn;
+use crate::runtime::{Tracker, Turn};
 
 /// The largest result file a non-interactive round saves.
 const RESULT_LIMIT: u64 = 1 << 20;
 
 /// What a round's worker showed, read before the transaction that judges it.
 pub(super) enum Evidence {
-    /// An interactive worker's last turn after the round's cursor, with the offset after it.
-    Turn { turn: Turn, end: u64 },
+    /// What an interactive worker's record shows for the round.
+    Turn(Reading),
     /// A non-interactive run's pane and, once the pane showed it exited 0, its result file: the
     /// text, or why there is none. Only the daemon writes `block`, so the pane read before the
     /// transaction is the one inside it.
@@ -23,6 +23,50 @@ pub(super) enum Evidence {
         pane: Pane,
         file: Option<Result<String, String>>,
     },
+}
+
+/// A turn a round can take, with the task's position once it is taken.
+pub(super) struct Take {
+    pub turn: Turn,
+    pub start: u64,
+    pub position: u64,
+}
+
+/// An interactive worker's record as the round's tracker read it.
+pub(super) struct Reading {
+    /// The round's turn, once one finished.
+    pub chosen: Option<Take>,
+    /// The turn left open where the record ends, when it could be the round's: only the worker's
+    /// pane closing or its process going idle ends it. `since` is when it started.
+    pub open: Option<(Take, Option<i64>)>,
+    /// The record shows the round's request received.
+    pub received: bool,
+    /// The record was replaced or cut.
+    pub replaced: bool,
+}
+
+impl Reading {
+    pub fn of(tracker: &Tracker) -> Self {
+        let chosen = tracker.chosen().map(|sealed| Take {
+            turn: sealed.turn.clone(),
+            start: sealed.span.start,
+            position: tracker.position_after(sealed.span),
+        });
+        let open = tracker.open().map(|(open, since)| {
+            let take = Take {
+                turn: open.turn,
+                start: open.span.start,
+                position: tracker.position_after(open.span),
+            };
+            (take, since)
+        });
+        Self {
+            chosen,
+            open,
+            received: tracker.received(),
+            replaced: tracker.replaced(),
+        }
+    }
 }
 
 /// Reads a non-interactive run's result file, bounded by `RESULT_LIMIT`.

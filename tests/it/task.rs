@@ -47,6 +47,59 @@ fn failure(output: &Output) -> (Option<i32>, String) {
     )
 }
 
+const DURATION: &str = r#"{"type":"system","subtype":"turn_duration"}"#;
+
+/// The content of the next message a listening messaging socket receives.
+fn message(listener: &UnixListener, what: &str) -> String {
+    let stream = wait_until(what, WAIT, || {
+        listener.accept().ok().map(|(stream, _)| stream)
+    });
+    stream.set_nonblocking(false).unwrap();
+    let mut line = String::new();
+    BufReader::new(stream).read_line(&mut line).unwrap();
+    let message: Value = serde_json::from_str(&line).unwrap();
+    message["message"]["content"].as_str().unwrap().to_owned()
+}
+
+/// The acknowledged worker takes a new request: rexume delivers it to the worker's socket, and the
+/// round's result is the turn that took it in.
+fn next_request_round(
+    server: &Server,
+    state: &Path,
+    owner: &str,
+    id: &str,
+    worker_record: &Path,
+    worker_listener: &UnixListener,
+) {
+    let sent = task(
+        server,
+        state,
+        owner,
+        &["send", id, "--message", "Fix the nit"],
+    );
+    assert_eq!(sent["round"], 2);
+    let request = sent["request"]["id"].as_str().unwrap();
+    let text = message(worker_listener, "the request");
+    assert_eq!(text, format!("[rexume {request}] Fix the nit"));
+    let received = json!({ "type": "user", "isMeta": true, "turnOrigin": "peer", "origin": { "kind": "peer" },
+        "message": { "role": "user", "content": format!("Another Claude session sent a message:\n{text}") } });
+    append(worker_record, &received.to_string());
+    append(
+        worker_record,
+        r#"{"type":"assistant","message":{"id":"m2","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Fixed."}]}}"#,
+    );
+    append(worker_record, DURATION);
+    let waited = task(server, state, owner, &["wait", id, "--timeout", "20"]);
+    assert_eq!(
+        (
+            waited["result"].as_str(),
+            waited["request"]["state"].as_str(),
+            waited["unread"].as_u64()
+        ),
+        (Some("Fixed."), Some("delivered"), Some(0))
+    );
+}
+
 fn append(path: &Path, line: &str) {
     let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
     writeln!(file, "{line}").unwrap();
@@ -58,7 +111,7 @@ fn append(path: &Path, line: &str) {
     clippy::too_many_lines,
     reason = "a scenario reads as one fixture, its calls, and its assertions"
 )]
-fn a_finished_worker_notifies_its_idle_owner_once_and_closes_after_ack() {
+fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     let (owner_record, worker_record) = (
@@ -70,6 +123,9 @@ fn a_finished_worker_notifies_its_idle_owner_once_and_closes_after_ack() {
     let socket = dir.path().join("owner.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     listener.set_nonblocking(true).unwrap();
+    let worker_socket = dir.path().join("worker.sock");
+    let worker_listener = UnixListener::bind(&worker_socket).unwrap();
+    worker_listener.set_nonblocking(true).unwrap();
 
     let server = Server::start(dir.path(), None);
     let _daemon = Daemon::start(&server, &state);
@@ -102,7 +158,13 @@ fn a_finished_worker_notifies_its_idle_owner_once_and_closes_after_ack() {
             pids[0],
             Some(socket.to_string_lossy().into_owned()),
         ),
-        ("worker", &worker_record, worker, pids[1], None),
+        (
+            "worker",
+            &worker_record,
+            worker,
+            pids[1],
+            Some(worker_socket.to_string_lossy().into_owned()),
+        ),
     ] {
         conn.execute(
             "INSERT INTO conversation (runtime, native_id, transcript, resumable, reported_at)
@@ -158,16 +220,11 @@ fn a_finished_worker_notifies_its_idle_owner_once_and_closes_after_ack() {
         &worker_record,
         r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Looks good."}]}}"#,
     );
+    append(&worker_record, DURATION);
 
     // The notice reaches the owner's message socket once, after the grace a waiting owner gets.
-    let stream = wait_until("the notice", WAIT, || {
-        listener.accept().ok().map(|(stream, _)| stream)
-    });
-    stream.set_nonblocking(false).unwrap();
-    let mut line = String::new();
-    BufReader::new(stream).read_line(&mut line).unwrap();
-    let notice: Value = serde_json::from_str(&line).unwrap();
-    let text = notice["message"]["content"].as_str().unwrap();
+    let notice = message(&listener, "the notice");
+    let text = notice.as_str();
     assert!(text.contains(&id), "{text}");
     let shown = task(&server, &state, owner, &["show", &id]);
     assert_eq!(
@@ -186,7 +243,34 @@ fn a_finished_worker_notifies_its_idle_owner_once_and_closes_after_ack() {
 
     let acked = task(&server, &state, owner, &["ack", &id]);
     assert!(acked["acked_at"].is_i64());
-    // The daemon, the only closer, closes the unused disposable worker after the ack.
+    next_request_round(
+        &server,
+        &state,
+        owner,
+        &id,
+        &worker_record,
+        &worker_listener,
+    );
+    // A turn the user had the worker finish is unread, so the worker is not released before
+    // `task next` takes it.
+    append(
+        &worker_record,
+        r#"{"type":"user","message":{"role":"user","content":"And the docs?"}}"#,
+    );
+    append(
+        &worker_record,
+        r#"{"type":"assistant","message":{"id":"m3","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Docs too."}]}}"#,
+    );
+    append(&worker_record, DURATION);
+    let (code, stderr) = failure(&run_task(&server, &state, owner, &["release", &id]));
+    assert_eq!(code, Some(1));
+    assert!(stderr.contains("unread turns (1)"), "{stderr}");
+    assert_eq!(task(&server, &state, owner, &["next", &id])["round"], 3);
+    let waited = task(&server, &state, owner, &["wait", &id, "--timeout", "20"]);
+    assert_eq!(waited["result"].as_str(), Some("Docs too."));
+    let released = task(&server, &state, owner, &["release", &id]);
+    assert!(released["released_at"].is_i64());
+    // The daemon, the only closer, closes the unused disposable worker once it is released.
     wait_until("the daemon to close the worker's pane", WAIT, || {
         query::<String>(
             &state,

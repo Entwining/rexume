@@ -3,22 +3,23 @@
 
 use std::sync::LazyLock;
 
-use anyhow::Result;
+use anyhow::{Result, bail};
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use super::OPEN;
-use super::evidence::{Evidence, Pane};
+use super::evidence::{Evidence, Pane, Reading, Take};
 use crate::runtime::Turn;
 use crate::store::{self, new_id, now_ms};
 
-/// Claude Code can write the end of a turn after its idle status, so an idle status ends a prompt
+/// Claude Code can write the end of a turn after its idle status, so an idle status ends a turn
 /// the record leaves open only once the record still shows it open this long after the status.
 const IDLE_GRACE_MS: i64 = 3000;
 
 /// One round, if it is still open, with what `evaluate` needs to judge it.
 pub(super) static ROUND: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "SELECT t.worker_lineage, t.worker_pid, t.result_file, r.worker_runtime, r.worker_native_id
+        "SELECT t.worker_lineage, t.worker_pid, t.result_file, t.worker_runtime, t.worker_native_id,
+           t.pane_state = 'closed'
          FROM task t JOIN task_round r ON r.task_id = t.id
          WHERE t.id = ?1 AND r.round = ?2 AND {OPEN}"
     )
@@ -37,6 +38,7 @@ pub(super) fn evaluate(
         Option<i64>,
         Option<String>,
         Option<(String, String)>,
+        bool,
     );
     let row: Option<Row> = tx
         .prepare_cached(&ROUND)?
@@ -48,16 +50,17 @@ pub(super) fn evaluate(
                 row.get(1)?,
                 row.get(2)?,
                 runtime.zip(native_id),
+                row.get(5)?,
             ))
         })
         .optional()?;
-    let Some((worker, worker_pid, result_file, bound)) = row else {
+    let Some((worker, worker_pid, result_file, bound, closed)) = row else {
         return Ok(None);
     };
     match evidence {
-        Evidence::Turn { turn, end } => {
+        Evidence::Turn(reading) => {
             let pane = Pane::read(tx, &worker)?;
-            let pid = match bound {
+            let process = match bound {
                 Some((runtime, native_id)) => tx
                     .prepare_cached(
                         "SELECT pid, reported_at FROM occupant
@@ -69,7 +72,12 @@ pub(super) fn evaluate(
                     .optional()?,
                 None => None,
             };
-            interactive_outcome(tx, id, round, &pane, pid, turn, end)
+            let worker = Worker {
+                closed,
+                pane,
+                process,
+            };
+            interactive_outcome(tx, id, round, &worker, reading)
         }
         Evidence::Run {
             file: Some(read), ..
@@ -110,9 +118,17 @@ pub(super) fn evaluate(
     }
 }
 
-/// Whether the process that accepted the prompt recorded at `since` went idle after it. A process
-/// started after the prompt, such as one reopening the conversation after a restart, reports idle
-/// on its own start, which does not end the earlier turn.
+/// An interactive worker as recorded: whether its pane closed, the pane, and the pid and report
+/// time of the task's conversation while it is the pane's occupant.
+struct Worker {
+    closed: bool,
+    pane: Pane,
+    process: Option<(i64, i64)>,
+}
+
+/// Whether the process that wrote the turn started at `since` went idle after it. A process
+/// started after it, such as one reopening the conversation after a restart, reports idle on its
+/// own start, which does not end the earlier turn.
 fn idle_after(pane: &Pane, (pid, reported_at): (i64, i64), since: i64) -> bool {
     pane.status.as_deref() == Some("idle")
         && pane.status_pid == Some(pid)
@@ -120,21 +136,76 @@ fn idle_after(pane: &Pane, (pid, reported_at): (i64, i64), since: i64) -> bool {
         && pane.status_at.is_some_and(|at| at > since)
 }
 
-/// An interactive worker's result is the turn its conversation record shows, not its status: a
-/// worker that went idle may have been cancelled or be waiting on a question. The status counts
-/// only for a prompt the record leaves open, which the bound conversation's process going idle
-/// after it ends unanswered. `process` is that process's pid and report time while it is the
-/// pane's occupant.
+/// An interactive round's result is the turn its tracker chose from the worker's record, not the
+/// worker's status: a worker that went idle may have been cancelled or be waiting on a question.
+/// A turn the record leaves open is taken only once nothing more can come of it: the pane closed,
+/// or the process that wrote it went idle after it.
 fn interactive_outcome(
     tx: &Transaction,
     id: &str,
     round: i64,
-    pane: &Pane,
-    process: Option<(i64, i64)>,
-    turn: Turn,
-    end: u64,
+    worker: &Worker,
+    reading: Reading,
 ) -> Result<Option<i64>> {
-    match turn {
+    if reading.received {
+        tx.prepare_cached(
+            "UPDATE request SET state = 'delivered'
+             WHERE task_id = ?1 AND round = ?2 AND state IN ('sent', 'accepted', 'unknown')",
+        )?
+        .execute(params![id, round])?;
+    }
+    if reading.replaced {
+        let note = "the worker's record was replaced or cut, so its turns after the task's \
+                    position can no longer be told apart";
+        finish(tx, id, round, "failed", None, Some(note))?;
+        return Ok(None);
+    }
+    if let Some(take) = reading.chosen {
+        take_turn(tx, id, round, take, None)?;
+        return Ok(None);
+    }
+    if let Some((take, since)) = reading.open {
+        let answered = matches!(take.turn, Turn::Completed { .. });
+        if worker.closed && answered {
+            take_turn(tx, id, round, take, None)?;
+            return Ok(None);
+        }
+        if let Some(since) = since
+            && !worker.closed
+            && worker
+                .process
+                .is_some_and(|process| idle_after(&worker.pane, process, since))
+        {
+            let due = worker.pane.status_at.unwrap_or(since) + IDLE_GRACE_MS;
+            if now_ms() < due {
+                return Ok(Some(due));
+            }
+            let note = (!answered).then_some("the worker went idle without answering");
+            take_turn(tx, id, round, take, note)?;
+            return Ok(None);
+        }
+    }
+    if worker.closed {
+        let note = "the worker's pane closed before it finished";
+        finish(tx, id, round, "worker_closed", None, Some(note))?;
+        return Ok(None);
+    }
+    let state = if worker.pane.status.as_deref() == Some("blocked") {
+        "blocked"
+    } else {
+        "running"
+    };
+    tx.prepare_cached(
+        "UPDATE task_round SET state = ?1 WHERE task_id = ?2 AND round = ?3 AND state != ?1",
+    )?
+    .execute(params![state, id, round])?;
+    Ok(None)
+}
+
+/// Finishes a round with the turn it takes, records the turn as taken, and moves the task's
+/// position, all in the transaction that writes the round's notice.
+fn take_turn(tx: &Transaction, id: &str, round: i64, take: Take, note: Option<&str>) -> Result<()> {
+    match take.turn {
         Turn::Completed { reference, text } => finish(
             tx,
             id,
@@ -152,45 +223,20 @@ fn interactive_outcome(
             round,
             "cancelled",
             None,
-            Some("the worker's turn was cancelled"),
+            Some(note.unwrap_or("the worker's turn was cancelled")),
         )?,
         Turn::Failed { text } => finish(tx, id, round, "failed", None, Some(&text))?,
-        Turn::Open { since: Some(since) }
-            if process.is_some_and(|process| idle_after(pane, process, since)) =>
-        {
-            let due = pane.status_at.unwrap_or(since) + IDLE_GRACE_MS;
-            if now_ms() < due {
-                return Ok(Some(due));
-            }
-            finish(
-                tx,
-                id,
-                round,
-                "cancelled",
-                None,
-                Some("the worker went idle without answering"),
-            )?;
-        }
-        Turn::Open { .. } | Turn::None => {
-            let state = if pane.status.as_deref() == Some("blocked") {
-                "blocked"
-            } else {
-                "running"
-            };
-            tx.prepare_cached(
-                "UPDATE task_round SET state = ?1 WHERE task_id = ?2 AND round = ?3 AND state != ?1",
-            )?
-            .execute(params![state, id, round])?;
-            return Ok(None);
-        }
+        Turn::Open { .. } | Turn::None => bail!("a round can take only a turn that ended"),
     }
-    // A turn after the cursor is activity in the worker's pane, so the turn that ended the round
-    // must not count as one.
     tx.execute(
-        "UPDATE task_round SET cursor = ?1 WHERE task_id = ?2 AND round = ?3",
-        params![i64::try_from(end)?, id, round],
+        "UPDATE task_round SET turn_start = ?1 WHERE task_id = ?2 AND round = ?3",
+        params![i64::try_from(take.start)?, id, round],
     )?;
-    Ok(None)
+    tx.execute(
+        "UPDATE task SET position = ?1 WHERE id = ?2",
+        params![i64::try_from(take.position)?, id],
+    )?;
+    Ok(())
 }
 
 /// A finished round's result, as the worker's record or result file gave it.
@@ -236,14 +282,22 @@ fn finish(
         "INSERT INTO notice (id, task_id, round, state) VALUES (?1, ?2, ?3, 'pending')",
         params![new_id(), id, round],
     )?;
+    tx.execute(
+        "UPDATE request SET state = 'superseded', note = 'the round ended before it was sent'
+         WHERE task_id = ?1 AND round = ?2 AND state = 'pending'",
+        params![id, round],
+    )?;
     Ok(())
 }
 
-/// The rounds a closed worker pane leaves unfinished.
+/// The rounds a closed worker pane leaves unfinished that no record can finish: a run's, and an
+/// interactive worker's whose conversation is unbound or reported no record. The others take a
+/// turn the record already shows, on the daemon's next pass.
 pub(super) static WORKER_ROUNDS: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT t.id, r.round FROM task t JOIN task_round r ON r.task_id = t.id
-         WHERE t.worker_lineage = ?1 AND {OPEN}"
+         LEFT JOIN conversation c ON c.runtime = t.worker_runtime AND c.native_id = t.worker_native_id
+         WHERE t.worker_lineage = ?1 AND {OPEN} AND c.transcript IS NULL"
     )
 });
 
@@ -279,3 +333,6 @@ pub fn block_gone(tx: &Transaction, lineage: &str) -> Result<()> {
     on_worker_closed(tx, lineage)?;
     store::forget_block(tx, lineage)
 }
+
+#[cfg(test)]
+mod tests;

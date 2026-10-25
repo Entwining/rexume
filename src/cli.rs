@@ -3,14 +3,13 @@
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
-use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
 use serde_json::{Value, json};
 
 use crate::runtime::Runtime;
-use crate::{daemon, gate, install, report, rex, status, store, task};
+use crate::{daemon, gate, install, report, rex, status, store};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None, after_help = EXAMPLES)]
@@ -25,14 +24,6 @@ Examples:
   rexume status
   rexume task add --worker \"$WORKER_BLOCK\" --title 'review the parser'
   rexume task show 0192f3a0-7c1e-7a2b-9c3d-1e2f3a4b5c6d";
-
-const TASK_EXAMPLES: &str = "\
-Examples:
-  rexume task add --worker \"$WORKER_BLOCK\" --title 'review the parser'
-  rexume task add --worker \"$WORKER_BLOCK\" --title 'run the suite' --result-file /tmp/suite.md
-  rexume task wait ID --timeout 300
-  rexume task show ID --round 2
-  rexume task ack ID";
 
 /// The exit status of `task wait` when its timeout passes first, as coreutils `timeout` uses.
 const TIMED_OUT: u8 = 124;
@@ -118,10 +109,10 @@ enum Command {
     /// Run these from the orchestrator's own Rex pane: they find the orchestrator through
     /// REX_BLOCK and the conversation last recorded there, and refuse a task another conversation
     /// owns.
-    #[command(after_help = TASK_EXAMPLES)]
+    #[command(after_help = task::EXAMPLES)]
     Task {
         #[command(subcommand)]
-        command: TaskCommand,
+        command: task::Command,
         #[command(flatten)]
         state: StateDir,
     },
@@ -149,92 +140,12 @@ enum Command {
     },
 }
 
-#[derive(clap::Args)]
-struct TaskId {
-    /// The task ID that `task add` printed
-    #[arg(value_name = "ID")]
-    id: String,
-}
-
-#[derive(clap::Args)]
-struct Round {
-    /// The round, as a notice names it, instead of the latest
-    #[arg(long, value_name = "N")]
-    round: Option<i64>,
-}
-
-#[derive(Subcommand)]
-enum TaskCommand {
-    /// Register a worker pane working on a task for this conversation
-    ///
-    /// Without --result-file the worker is an interactive conversation, and its next finished
-    /// turn is the result; with it, the worker is a non-interactive run, and the file is the
-    /// result once the run exits 0. Register a worker right after starting it; before prompting
-    /// it again, use `task rearm`.
-    Add {
-        /// The Rex block ID of the worker's pane, as REX_BLOCK gives it there
-        #[arg(long, value_name = "BLOCK")]
-        worker: String,
-        /// A short name for the task, shown in notices and in `task list`
-        #[arg(long, value_name = "TEXT")]
-        title: String,
-        /// Read the result from this file when the worker exits (an absolute path)
-        #[arg(long, value_name = "PATH", value_parser = absolute_path)]
-        result_file: Option<PathBuf>,
-        /// Keep the worker's pane after its result is acknowledged
-        #[arg(long)]
-        keep_pane: bool,
-    },
-    /// List this conversation's tasks with their latest round
-    List,
-    /// Show one task with a round's result
-    Show {
-        #[command(flatten)]
-        task: TaskId,
-        #[command(flatten)]
-        round: Round,
-    },
-    /// Wait until the task's latest round finishes, then show it
-    ///
-    /// Exits 124 when the timeout passes first; the task is still printed, with `timed_out` true.
-    Wait {
-        #[command(flatten)]
-        task: TaskId,
-        /// How long to wait before giving up
-        #[arg(long, value_name = "SECONDS", default_value_t = 600)]
-        timeout: u64,
-    },
-    /// Acknowledge a finished round's result, so the daemon closes an unused disposable worker
-    ///
-    /// Fails while the round is still running or blocked. A notice not yet sent for the round is
-    /// dropped, since its owner has the result.
-    Ack {
-        #[command(flatten)]
-        task: TaskId,
-        #[command(flatten)]
-        round: Round,
-    },
-    /// Start the next round with the same interactive worker
-    ///
-    /// Only a turn the worker finishes after now counts as the new round's result.
-    Rearm(TaskId),
-}
-
 fn color(text: &str) -> Result<String, &'static str> {
     match text.as_bytes() {
         [b'#', hex @ ..] if hex.len() == 6 && hex.iter().all(u8::is_ascii_hexdigit) => {
             Ok(text.to_owned())
         }
         _ => Err("not a color written as #rrggbb"),
-    }
-}
-
-fn absolute_path(text: &str) -> Result<PathBuf, &'static str> {
-    let path = PathBuf::from(text);
-    if path.is_absolute() {
-        Ok(path)
-    } else {
-        Err("not an absolute path")
     }
 }
 
@@ -312,35 +223,9 @@ fn run(command: Command) -> Result<Option<Value>> {
             daemon::run(&options).map(|()| None)
         }
         Command::Status(state) => status::run(&state.resolve()?).map(Some),
-        Command::Task { command, state } => run_task(command, &state.resolve()?).map(Some),
+        Command::Task { command, state } => task::run(command, &state.resolve()?).map(Some),
         Command::Relay { socket, token } => rex::relay::run(&socket, &token).map(|()| None),
         Command::Report { .. } | Command::Gate { .. } => unreachable!("handled in main"),
-    }
-}
-
-fn run_task(command: TaskCommand, dir: &std::path::Path) -> Result<Value> {
-    match command {
-        TaskCommand::Add {
-            worker,
-            title,
-            result_file,
-            keep_pane,
-        } => task::add(
-            dir,
-            &task::NewTask {
-                worker: &worker,
-                title: &title,
-                result_file: result_file.as_deref(),
-                keep_pane,
-            },
-        ),
-        TaskCommand::List => task::list(dir),
-        TaskCommand::Show { task, round } => task::show(dir, &task.id, round.round),
-        TaskCommand::Wait { task, timeout } => {
-            task::wait(dir, &task.id, Duration::from_secs(timeout))
-        }
-        TaskCommand::Ack { task, round } => task::ack(dir, &task.id, round.round),
-        TaskCommand::Rearm(task) => task::rearm(dir, &task.id),
     }
 }
 
@@ -389,5 +274,6 @@ const PATH_ESCAPES: percent_encoding::AsciiSet = percent_encoding::CONTROLS
     .add(b'?')
     .add(b'#');
 
+mod task;
 #[cfg(test)]
 mod tests;

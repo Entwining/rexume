@@ -1,6 +1,6 @@
 //! The outbox of notices to task owners. A notice leaves `pending` through exactly one claimant:
 //! the running daemon, which marks it `sending` before it sends, or the owner's own `task wait`
-//! or `task ack`. A send that may have happened is never repeated; only the owner's record
+//! or acknowledgement. A send that may have happened is never repeated; only the owner's record
 //! settles it.
 
 use std::collections::{HashMap, HashSet};
@@ -20,7 +20,7 @@ use crate::store::{Store, now_ms};
 /// in the owner's turn can take the result first.
 const GRACE_MS: i64 = 3000;
 
-fn text(due: &Due) -> String {
+fn text(due: &Due, unread: Option<usize>) -> String {
     let Due {
         notice,
         task,
@@ -31,18 +31,25 @@ fn text(due: &Due) -> String {
         ..
     } = due;
     let token = runtime::token(notice);
+    let unread = match unread {
+        Some(0) | None => String::new(),
+        Some(1) => format!(" The worker has 1 unread turn, which `rexume task next {task}` takes."),
+        Some(n) => format!(
+            " The worker has {n} unread turns, which `rexume task next {task}` takes in order."
+        ),
+    };
     if round_state == "completed" {
         format!(
             "{token} Worker task {task} \"{title}\" finished round {round}. Read its result with \
              `rexume task show {task} --round {round}`, then acknowledge it with \
-             `rexume task ack {task} --round {round}`."
+             `rexume task ack {task} --round {round}`.{unread}"
         )
     } else {
         let reason = note.as_ref().map_or(String::new(), |n| format!(" ({n})"));
         format!(
             "{token} Worker task {task} \"{title}\" ended round {round} without a result: \
              {round_state}{reason}. Check it with `rexume task show {task} --round {round}`; once \
-             it is dealt with, acknowledge it with `rexume task ack {task} --round {round}`."
+             it is dealt with, acknowledge it with `rexume task ack {task} --round {round}`.{unread}"
         )
     }
 }
@@ -100,6 +107,7 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
         let Some(owner) = ready_owner(store.conn(), &due.task)? else {
             continue;
         };
+        let unread = super::unread(store.conn(), &due.task)?;
         let tx = store.write()?;
         let claimed = claim(&tx, &due.notice, due.waiter)?;
         tx.commit()?;
@@ -110,23 +118,17 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
             native_id: &owner.native_id,
             transport: &owner.transport,
         };
-        // An error means nothing was sent, so the notice can be sent later.
-        let (state, note) = match owner
-            .runtime
-            .send(&target, store.dir(), &due.notice, &text(&due))
-        {
-            Ok(Sent::Handed) => ("sent", None),
-            Ok(Sent::Accepted(receipt)) => ("accepted", Some(receipt)),
-            Ok(Sent::Unknown(why)) => ("unknown", Some(why)),
-            Err(e) => ("pending", Some(format!("{e:#}"))),
-        };
+        let (state, note) = Sent::recorded(owner.runtime.send(
+            &target,
+            store.dir(),
+            &due.notice,
+            &text(&due, unread),
+        ));
         log::info!("notice {} for task {}: {state}", due.notice, due.task);
         let tx = store.write()?;
         tx.execute(
-            "UPDATE notice SET state = ?1, note = ?2,
-               sent_at = CASE WHEN ?1 = 'pending' THEN NULL ELSE ?3 END
-             WHERE id = ?4",
-            params![state, note, now_ms(), due.notice],
+            "UPDATE notice SET state = ?1, note = ?2 WHERE id = ?3",
+            params![state, note, due.notice],
         )?;
         tx.commit()?;
     }
@@ -145,20 +147,32 @@ pub(super) fn claim(tx: &Transaction, notice: &str, seen_waiter: Option<i64>) ->
     Ok(tx.execute(CLAIM, params![notice, seen_waiter])? == 1)
 }
 
-/// Notices a stopped daemon left mid-send. Only the daemon holding the state directory's lock
-/// claims a notice for sending, so once the next one holds it, a notice still marked as sending
-/// may or may not have reached its owner. It becomes unknown: never sent again, settled only by
-/// the owner's own record. Returns their IDs.
-pub fn orphaned_sends(store: &mut Store) -> Result<Vec<String>> {
+/// Notices and requests a stopped daemon left mid-send. Only the daemon holding the state
+/// directory's lock claims either for sending, so once the next one holds it, one still marked as
+/// sending may or may not have reached its receiver. It becomes unknown: never sent again, settled
+/// only by the receiver's own record. Returns each one's kind and ID.
+pub fn orphaned_sends(store: &mut Store) -> Result<Vec<(&'static str, String)>> {
     let tx = store.write()?;
-    let orphaned = tx
-        .prepare(
-            "UPDATE notice SET state = 'unknown',
-               note = 'the daemon stopped while sending it, so it may or may not have arrived'
-             WHERE state = 'sending' RETURNING id",
-        )?
-        .query_map([], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
+    let mut orphaned = Vec::new();
+    for (kind, statement) in [
+        (
+            "notice",
+            "UPDATE notice SET state = 'unknown', note = ?1 WHERE state = 'sending' RETURNING id",
+        ),
+        (
+            "request",
+            "UPDATE request SET state = 'unknown', note = ?1 WHERE state = 'sending' RETURNING id",
+        ),
+    ] {
+        let ids = tx
+            .prepare(statement)?
+            .query_map(
+                ["the daemon stopped while sending it, so it may or may not have arrived"],
+                |row| row.get(0),
+            )?
+            .collect::<rusqlite::Result<Vec<String>>>()?;
+        orphaned.extend(ids.into_iter().map(|id| (kind, id)));
+    }
     tx.commit()?;
     Ok(orphaned)
 }
@@ -268,13 +282,12 @@ pub(super) fn settle(
     if delivered.is_empty() && accepted.is_empty() {
         return Ok(());
     }
-    let now = now_ms();
     let tx = store.write()?;
     for id in &delivered {
         tx.execute(
-            "UPDATE notice SET state = 'delivered', delivered_at = ?1
-             WHERE id = ?2 AND state IN ('sent', 'accepted', 'unknown')",
-            params![now, id],
+            "UPDATE notice SET state = 'delivered'
+             WHERE id = ?1 AND state IN ('sent', 'accepted', 'unknown')",
+            params![id],
         )?;
     }
     for (id, _) in &accepted {

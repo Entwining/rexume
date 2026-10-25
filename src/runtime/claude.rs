@@ -6,7 +6,7 @@ use std::os::unix::net::UnixStream;
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
-use super::{Conversation, Sent, Target, Turn, content_texts, text_at};
+use super::{Conversation, Open, Sealed, Sent, Span, Target, Turn, content_texts, text_at};
 use crate::rex::time_at;
 
 /// Claude Code takes the model and effort of a resumed session from the command line; its session
@@ -59,20 +59,45 @@ const INTERRUPT: &str = "[Request interrupted by user";
 
 /// Claude Code writes the user's cancel as a user text `[Request interrupted by user]` (or `... for
 /// tool use]`) and ends an answered turn with an assistant message whose `stop_reason` is
-/// `end_turn`; a turn cut off by the terminal's end leaves neither.
+/// `end_turn`; a turn cut off by the terminal's end leaves neither. It writes each content block
+/// of a message as its own record, each carrying the message's final `stop_reason`, so an answer
+/// has ended only once a record that is not part of its message follows; normally that is the
+/// turn's duration, written right after.
 #[derive(Default)]
 pub struct Parser {
     turn: Option<Turn>,
     /// The message ID and texts of the answer being written.
     answer: Option<(String, Vec<String>)>,
+    /// Where the turn not yet yielded starts, and when its first record was written.
+    open: Option<(u64, Option<i64>)>,
+    /// The offset after the answer's last record so far, once one carried `end_turn`.
+    ending: Option<u64>,
 }
 
 impl Parser {
-    pub fn feed(&mut self, record: &Value) {
+    pub fn feed(&mut self, record: &Value, span: Span, sealed: &mut Vec<Sealed>) {
         if record.get("isSidechain").and_then(Value::as_bool) == Some(true) {
             return;
         }
-        match record.get("type").and_then(Value::as_str) {
+        let kind = record.get("type").and_then(Value::as_str);
+        if let Some(end) = self.ending {
+            let message_id = text_at(record, "/message/id");
+            let same = kind == Some("assistant")
+                && self
+                    .answer
+                    .as_ref()
+                    .is_some_and(|(id, _)| *id == message_id);
+            if !same {
+                self.ending = None;
+                if let (Some((start, _)), Some(turn)) = (self.open.take(), self.turn.clone()) {
+                    sealed.push(Sealed {
+                        turn,
+                        span: Span { start, end },
+                    });
+                }
+            }
+        }
+        match kind {
             Some("user") => {
                 let content = record.pointer("/message/content");
                 // Every turn start, typed or delivered from another session, carries `turnOrigin`;
@@ -86,47 +111,85 @@ impl Parser {
                 {
                     self.turn = Some(Turn::Cancelled);
                     self.answer = None;
+                    if let Some((start, _)) = self.open.take() {
+                        sealed.push(Sealed {
+                            turn: Turn::Cancelled,
+                            span: Span {
+                                start,
+                                end: span.end,
+                            },
+                        });
+                    }
                 } else if starts_turn {
-                    self.turn = Some(Turn::Open {
-                        since: time_at(record, "/timestamp"),
-                    });
+                    let since = time_at(record, "/timestamp");
+                    self.turn = Some(Turn::Open { since });
                     self.answer = None;
+                    self.open = Some((span.start, since));
                 }
             }
-            Some("assistant") => {
-                let message_id = text_at(record, "/message/id");
-                let texts = content_texts(record.pointer("/message/content"));
-                if record.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true) {
-                    self.turn = Some(Turn::Failed {
-                        text: texts.join("\n"),
-                    });
-                    self.answer = None;
-                    return;
-                }
-                match &mut self.answer {
-                    Some((id, collected)) if *id == message_id => collected.extend(texts),
-                    _ => self.answer = Some((message_id, texts)),
-                }
-                if record
-                    .pointer("/message/stop_reason")
-                    .and_then(Value::as_str)
-                    == Some("end_turn")
-                {
-                    let (reference, text) = self.answer.clone().unwrap_or_default();
-                    self.turn = Some(Turn::Completed {
-                        reference,
-                        text: text.join("\n"),
-                    });
-                } else if matches!(self.turn, Some(Turn::Completed { .. })) {
-                    self.turn = Some(Turn::Open { since: None });
-                }
-            }
+            Some("assistant") => self.assistant(record, span, sealed),
             _ => {}
+        }
+    }
+
+    fn assistant(&mut self, record: &Value, span: Span, sealed: &mut Vec<Sealed>) {
+        let message_id = text_at(record, "/message/id");
+        let texts = content_texts(record.pointer("/message/content"));
+        let start = self.open.map_or(span.start, |(start, _)| start);
+        if record.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true) {
+            let failed = Turn::Failed {
+                text: texts.join("\n"),
+            };
+            self.turn = Some(failed.clone());
+            self.answer = None;
+            self.open = None;
+            sealed.push(Sealed {
+                turn: failed,
+                span: Span {
+                    start,
+                    end: span.end,
+                },
+            });
+            return;
+        }
+        self.open
+            .get_or_insert((start, time_at(record, "/timestamp")));
+        match &mut self.answer {
+            Some((id, collected)) if *id == message_id => collected.extend(texts),
+            _ => self.answer = Some((message_id, texts)),
+        }
+        // A record reaching here while the answer is ending is another part of its message.
+        if self.ending.is_some()
+            || record
+                .pointer("/message/stop_reason")
+                .and_then(Value::as_str)
+                == Some("end_turn")
+        {
+            let (reference, text) = self.answer.clone().unwrap_or_default();
+            self.turn = Some(Turn::Completed {
+                reference,
+                text: text.join("\n"),
+            });
+            self.ending = Some(span.end);
+        } else if matches!(self.turn, Some(Turn::Completed { .. })) {
+            self.turn = Some(Turn::Open { since: None });
         }
     }
 
     pub fn turn(&self) -> Turn {
         self.turn.clone().unwrap_or(Turn::None)
+    }
+
+    pub fn open(&self) -> Option<Open> {
+        let (start, since) = self.open?;
+        Some(Open {
+            start,
+            since,
+            answer: self
+                .ending
+                .zip(self.turn.clone())
+                .map(|(end, turn)| (turn, end)),
+        })
     }
 }
 
@@ -145,53 +208,4 @@ fn is_prompt(content: Option<&Value>) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::super::tests::{ANSWER, PROMPT, transcript};
-    use super::super::{Runtime, last_turn};
-    use super::*;
-
-    const THINKING: &str = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":null,"content":[{"type":"thinking","thinking":""}]}}"#;
-    const TOOL_USE: &str = r#"{"type":"assistant","message":{"id":"m0","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash"}]}}"#;
-    const TOOL_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#;
-    const CANCEL: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
-    const API_REQUEST: &str = r#"{"type":"api-request"}"#;
-    const PEER: &str = r#"{"type":"user","isMeta":true,"turnOrigin":"peer","message":{"role":"user","content":"Another Claude session sent a message:\n[rexume d1] done"}}"#;
-    const CONTEXT: &str = r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"<system-reminder>context</system-reminder>"}}"#;
-
-    fn turn(lines: &[&str]) -> Result<Option<Turn>> {
-        last_turn(Runtime::Claude, transcript(lines).path(), 0)
-    }
-
-    #[test]
-    fn turn_states_follow_the_records() -> Result<()> {
-        let open = Some(Turn::Open { since: None });
-        assert_eq!(turn(&[PROMPT, TOOL_USE, TOOL_RESULT, API_REQUEST])?, open);
-        assert_eq!(
-            turn(&[PROMPT, THINKING, ANSWER])?,
-            Some(Turn::Completed {
-                reference: "m1".into(),
-                text: "Done.".into()
-            })
-        );
-        assert_eq!(turn(&[PROMPT, THINKING, CANCEL])?, Some(Turn::Cancelled));
-        assert_eq!(turn(&[PROMPT, ANSWER, PROMPT])?, open);
-        assert_eq!(turn(&[PROMPT, ANSWER, PEER])?, open);
-        assert!(matches!(
-            turn(&[PROMPT, ANSWER, CONTEXT])?,
-            Some(Turn::Completed { .. })
-        ));
-        Ok(())
-    }
-
-    #[test]
-    fn an_open_prompt_carries_when_it_was_recorded() -> Result<()> {
-        let prompt = r#"{"type":"user","timestamp":"2026-10-24T15:29:45.738Z","turnOrigin":"human","message":{"role":"user","content":"Count"}}"#;
-        assert_eq!(
-            turn(&[prompt])?,
-            Some(Turn::Open {
-                since: Some(1_792_855_785_738)
-            })
-        );
-        Ok(())
-    }
-}
+mod tests;
