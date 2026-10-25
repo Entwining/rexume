@@ -1,0 +1,42 @@
+[package]
+name = "rexume"
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.99.1"
+description = "Restores Rex sessions and their agent conversations after the server restarts, and carries worker-task results back to the orchestrator"
+publish = false
+license = "MIT"
+repository = "https://github.com/Entwining/rexume"
+
+[lints.rust]
+# Only src/proc.rs may use unsafe code, for libc::proc_pidinfo; AGENTS.md records why.
+unsafe_code = "deny"
+
+[lints.clippy]
+allow_attributes = "warn"
+allow_attributes_without_reason = "warn"
+dbg_macro = "warn"
+expect_used = "warn"
+todo = "warn"
+too_many_lines = "warn"
+undocumented_unsafe_blocks = "deny"
+unwrap_used = "warn"
+
+[dependencies]
+anyhow = "=1.0.104"
+chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
+clap = { version = "=4.6.7", features = ["derive", "wrap_help"] }
+env_logger = { version = "=0.11.11", default-features = false, features = ["humantime"] }
+libc = "=0.2.191"
+log = "=0.4.34"
+nix = { version = "=0.31.3", default-features = false, features = ["event", "poll", "signal", "user"] }
+percent-encoding = "=2.3.2"
+plist = "=1.10.3"
+rusqlite = { version = "=0.41.0", features = ["bundled", "serde_json"] }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.154", features = ["preserve_order"] }
+shlex = "=2.0.1"
+tempfile = "=3.27.0"
+thiserror = "=2.0.21"
+uuid = { version = "=1.29.0", default-features = false, features = ["std", "v7"] }
+which = "=8.0.6"

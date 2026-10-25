@@ -1,0 +1,104 @@
+# rexume
+
+rexume brings back your [Rex](https://www.superlogical.com/rex) sessions after the Rex server stops: sessions, tabs, split and floating panes, labels, and each pane's working directory, plus the Claude Code, Codex, or Pi conversation that was running in a pane, reopened with the model and effort it last used. A turn the server's end cut off continues once; a finished, cancelled, or waiting conversation reopens without a new turn. Panes you closed stay closed.
+
+It also lets an orchestrator agent hand work to a worker pane and get the result back: rexume records the task, tells the orchestrator when the worker finishes, even while the orchestrator is idle, and closes a disposable worker's pane once the result is acknowledged, unless someone has used the pane since.
+
+rexume is developed and tested only on Apple Silicon macOS, with the Rex app installed.
+
+## Install
+
+```sh
+brew install entwining/tap/rexume
+```
+
+To build from source instead, you need Rust at or above the `rust-version` in `Cargo.toml` and a C compiler for the bundled SQLite (the Xcode Command Line Tools):
+
+```sh
+cargo install --locked --git https://github.com/Entwining/rexume --root ~/.local
+```
+
+This installs `~/.local/bin/rexume`; put that directory on `PATH`, because the session hooks run `rexume` by name. From a checkout, use `--path .` instead of `--git`.
+
+Installing the program does not change anything else. Then install rexume's hooks and its background job:
+
+```sh
+rexume install
+```
+
+`install` writes four things and prints what it did as JSON:
+
+| What | Where | Identified by |
+| --- | --- | --- |
+| Claude Code `SessionStart` hook | `~/.claude/settings.json` | its command, `rexume report claude` |
+| Codex `SessionStart` hook | `~/.codex/hooks.json` | its command, `rexume report codex` |
+| Pi extension | `~/.pi/agent/extensions/rexume.ts` | its path and first line |
+| LaunchAgent `io.github.entwining.rexume`, which runs `rexume daemon` | `~/Library/LaunchAgents/io.github.entwining.rexume.plist` | its label |
+
+A runtime whose directory does not exist is skipped; if you install Claude Code, Codex, or Pi later, run `rexume install` again once it is set up. Running `install` again changes only what is missing or different, keeps every other hook and setting, and reloads the LaunchAgent only when its file changed or it is not loaded. Codex runs a new hook only after you approve it: open `/hooks` in Codex and trust the `rexume report codex` entry.
+
+The daemon uses the first `rex` on `PATH` and the server in `REX_SERVER`, or the Rex app's default server; pass `--rex` or `--server` to `install` to choose others. It keeps the `PATH` you ran `install` with, which is how it finds `codex` to send notices. Restored terminals answer color queries before the app shows them only if they know your theme, so pass your terminal's colors as `--theme-foreground '#rrggbb' --theme-background '#rrggbb'`. The daemon logs to `~/Library/Logs/rexume.log`.
+
+Agents started before `install` are recorded from their next session start. Upgrading the program, with `brew upgrade` or by installing over it, is enough: the daemon notices that its executable was replaced and launchd starts the new one.
+
+## What comes back, and what does not
+
+When the daemon sees a server go away and a new one start, it recreates every saved session that the new server does not already have. Each pane starts with one of:
+
+- the conversation, reopened as it was, when it was still the pane's program;
+- the conversation with one prompt to continue, when it was working and its own record shows a turn nothing ended;
+- its reopen command typed but not run, when the conversation had already left the pane, or another pane reopens the same conversation;
+- a login shell in the pane's directory, for anything else, including a Claude Code or Codex conversation that had no prompt yet. Other programs are not restarted.
+
+Every restored pane first runs `rexume gate`, which claims the pane's place in the restore before it starts anything, so a conversation is never started twice. A reopened conversation gets the permission mode its runtime's own resume restores; rexume does not record one.
+
+## Hand work to a worker
+
+An orchestrator agent registers a worker pane right after starting it, then carries on:
+
+```sh
+rexume task add --worker "$WORKER_BLOCK" --title 'review the parser'
+```
+
+When the worker's turn ends, rexume saves its result and sends the orchestrator one notice. The orchestrator reads the result with `rexume task show ID` and then runs `rexume task ack ID`; the daemon then closes a disposable worker's pane, but only if nothing has happened in it since the result. To give the same worker another prompt, run `rexume task rearm ID` before sending it. A non-interactive run that writes its result to a file is registered with `--result-file PATH`, and the file is its result once the run exits 0. [docs/cli.md](docs/cli.md) lists every task command and its output.
+
+Run these from the orchestrator's own Rex pane: they find the orchestrator through `REX_BLOCK`. A worker should be started without `REX_SESSION` and with `REX_BLOCK`, as Rex sets it, so that it reports from its own pane.
+
+## Check on it
+
+`launchctl print gui/$(id -u)/io.github.entwining.rexume` shows whether the daemon runs; its log shows each restore and why each pane started the way it did. `rexume status` lists restores that did not complete and notices not yet confirmed as delivered:
+
+- `failed`: the server refused to create the session.
+- `unknown`: the server did not answer the create, and no pane of the session reported.
+- `partial`: a floating layer was refused, or may exist without any of its panes having reported.
+
+rexume does not request an unanswered create or layer again, because doing so could duplicate panes; check the session in the Rex app and recreate what is missing. [docs/design.md](docs/design.md) describes these states.
+
+## Uninstall
+
+```sh
+rexume uninstall
+```
+
+This removes the two hooks (and any hook group left empty), the Pi extension if `install` wrote it, and the LaunchAgent, which stops the daemon. It keeps `~/.local/state/rexume`, which holds saved layouts, recorded conversations, and task results; delete that directory to remove them too. Then remove the program with `brew uninstall rexume`, or delete `~/.local/bin/rexume`.
+
+## Known limits
+
+These come from what Rex and the agents expose today:
+
+- A close carries no reason, so rexume treats every close on a live server as yours, including one an app or script made.
+- Rex has no conditional close. Between rexume's check that a worker's pane is unused and the close, a person can still start typing in it.
+- Rex has no per-pane notification audience, so a worker's Done or Blocked indicator notifies you like any other pane.
+- `session.create` has no idempotency key. When the server does not answer a create, rexume waits for the new panes' claims instead of creating the session again; a session none of whose panes report stays `unknown`. When the reply is lost, a pane can also start a shell instead of its conversation.
+- The daemon reads a session's layout at once after a change but at most once per 300 ms, so a change made within 300 ms of the previous read is lost if the server crashes before that interval ends.
+- Claude Code applies its inbound-message rules to rexume's notices, which carry no permission class. With `crossSessionInbound` unset, an orchestrator that prompts for permissions receives them, but one that bypasses permission prompts holds each notice for your approval; `hold` and `refuse` hold or drop them.
+
+## Documentation
+
+- [docs/cli.md](docs/cli.md): commands, JSON outputs, exit codes, and how `install` recognizes its entries.
+- [docs/design.md](docs/design.md): what the daemon saves, how a restore and a task move through their states, and why.
+- [AGENTS.md](AGENTS.md): goals, decisions, and how to change and validate the code.
+
+## License
+
+[MIT](LICENSE)

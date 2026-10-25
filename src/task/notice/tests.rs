@@ -1,0 +1,147 @@
+use std::io::Write as _;
+use std::os::unix::net::UnixListener;
+use std::path::Path;
+
+use serde_json::json;
+
+use super::*;
+use crate::task::tests::task_world;
+
+/// Task `t`'s completed first round and its notice `d` in `state`, to the owner idle in pane
+/// `a`, whose record is `transcript` and whose messaging socket is the returned listener.
+fn notice_world(dir: &Path, transcript: &Path, state: &str) -> Result<(Store, UnixListener)> {
+    let socket = dir.join("owner.sock");
+    let listener = UnixListener::bind(&socket)?;
+    listener.set_nonblocking(true)?;
+    let store = task_world(dir, &dir.join("worker.jsonl"), None)?;
+    store.conn().execute(
+        "UPDATE conversation SET transcript = ?1 WHERE native_id = 'owner'",
+        params![transcript.to_string_lossy()],
+    )?;
+    store.conn().execute(
+        "UPDATE occupant SET transport = json_object('messaging_socket', ?1) WHERE block_lineage = 'a'",
+        params![socket.to_string_lossy()],
+    )?;
+    store.conn().execute(
+        "UPDATE task_round SET state = 'completed', result = 'Done.', result_ref = 'm1', finished_at = 0",
+        [],
+    )?;
+    store.conn().execute(
+        "INSERT INTO notice (id, task_id, round, state) VALUES ('d', 't', 1, ?1)",
+        params![state],
+    )?;
+    Ok((store, listener))
+}
+
+fn notice(store: &Store) -> Result<(String, Option<String>)> {
+    Ok(store
+        .conn()
+        .query_row("SELECT state, note FROM notice WHERE id = 'd'", [], |row| {
+            Ok((row.get(0)?, row.get(1)?))
+        })?)
+}
+
+/// What the next daemon does with the notice on its start and through its first pass.
+fn restart_daemon(store: &mut Store) -> Result<(String, Option<String>)> {
+    assert_eq!(orphaned_sends(store)?, ["d"]);
+    let mut interest = Interest::default();
+    send_due(store, &mut interest)?;
+    settle(store, &mut HashMap::new(), &mut interest)?;
+    notice(store)
+}
+
+#[test]
+fn a_notice_left_mid_send_settles_from_the_owners_receipt() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut transcript = tempfile::NamedTempFile::new()?;
+    let receipt = json!({ "type": "user", "origin": { "kind": "peer" }, "message": { "role": "user",
+        "content": format!("Another Claude session sent a message:\n{} Worker task t finished.", runtime::token("d")) } });
+    writeln!(transcript, "{receipt}")?;
+    transcript.flush()?;
+    let (mut store, listener) = notice_world(dir.path(), transcript.path(), "sending")?;
+    assert_eq!(restart_daemon(&mut store)?.0, "delivered");
+    assert!(listener.accept().is_err(), "the notice was sent again");
+    Ok(())
+}
+
+#[test]
+fn a_notice_left_mid_send_without_a_receipt_stays_unknown_and_unsent() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = tempfile::NamedTempFile::new()?;
+    let (mut store, listener) = notice_world(dir.path(), transcript.path(), "sending")?;
+    let (state, note) = restart_daemon(&mut store)?;
+    assert_eq!(state, "unknown");
+    assert!(note.is_some_and(|n| n.contains("daemon stopped")));
+    assert!(listener.accept().is_err(), "the notice was sent again");
+    Ok(())
+}
+
+#[test]
+fn a_notice_goes_to_its_idle_owner_once_its_grace_after_the_round_has_passed() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = tempfile::NamedTempFile::new()?;
+    let (mut store, listener) = notice_world(dir.path(), transcript.path(), "pending")?;
+    store
+        .conn()
+        .execute("UPDATE task_round SET finished_at = ?1", params![now_ms()])?;
+    let mut interest = Interest::default();
+    assert!(send_due(&mut store, &mut interest)?.is_some());
+    assert!(
+        listener.accept().is_err(),
+        "the notice was sent within its grace"
+    );
+    store.conn().execute(
+        "UPDATE task_round SET finished_at = ?1",
+        params![now_ms() - GRACE_MS - 1],
+    )?;
+    assert!(send_due(&mut store, &mut interest)?.is_none());
+    send_due(&mut store, &mut interest)?;
+    assert_eq!(notice(&store)?.0, "sent");
+    assert!(listener.accept().is_ok());
+    assert!(listener.accept().is_err(), "the notice was sent twice");
+    Ok(())
+}
+
+#[test]
+fn a_failed_send_stays_pending_and_is_listed_with_its_reason() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = tempfile::NamedTempFile::new()?;
+    let (mut store, listener) = notice_world(dir.path(), transcript.path(), "pending")?;
+    assert!(undelivered(store.conn(), None)?.is_empty());
+    drop(listener);
+    std::fs::remove_file(dir.path().join("owner.sock"))?;
+    send_due(&mut store, &mut Interest::default())?;
+    let listed = undelivered(store.conn(), None)?;
+    assert_eq!(listed.len(), 1);
+    assert_eq!(listed[0]["state"], "pending");
+    assert!(
+        listed[0]["note"]
+            .as_str()
+            .is_some_and(|n| n.contains("failed to connect"))
+    );
+    Ok(())
+}
+
+#[test]
+fn a_registered_waiter_keeps_the_notice_from_the_daemon() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = tempfile::NamedTempFile::new()?;
+    let (mut store, listener) = notice_world(dir.path(), transcript.path(), "pending")?;
+    let alive = i64::from(std::process::id());
+    store
+        .conn()
+        .execute("UPDATE task_round SET waiter_pid = ?1", params![alive])?;
+    let mut interest = Interest::default();
+    send_due(&mut store, &mut interest)?;
+    assert!(interest.pids.contains(&alive));
+    assert!(
+        listener.accept().is_err(),
+        "the notice was sent past a live waiter"
+    );
+    // A waiter that registered after the daemon saw a dead one, or none, also holds it.
+    let tx = store.write()?;
+    assert!(!claim(&tx, "d", None)?);
+    assert!(!claim(&tx, "d", Some(alive + 1))?);
+    assert!(claim(&tx, "d", Some(alive))?);
+    Ok(())
+}

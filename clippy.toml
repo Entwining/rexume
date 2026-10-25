@@ -1,0 +1,5 @@
+allow-expect-in-tests = true
+allow-unwrap-in-tests = true
+disallowed-methods = [
+  { path = "std::process::exit", reason = "cli::main returns ExitCode; gate::run is the one exec-or-die site and carries an expect" },
+]

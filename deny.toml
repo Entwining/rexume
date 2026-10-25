@@ -1,0 +1,21 @@
+[graph]
+targets = ["aarch64-apple-darwin"]
+
+[advisories]
+ignore = []
+
+[licenses]
+allow = ["MIT", "Apache-2.0"]
+exceptions = [
+    { allow = ["Zlib"], crate = "foldhash" },
+    { allow = ["Unicode-3.0"], crate = "unicode-ident" },
+]
+
+[bans]
+multiple-versions = "warn"
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

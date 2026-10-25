@@ -1,0 +1,7 @@
+# Apache-2.0 comes first for dual-licensed crates: a binary distributed under it needs the license text and any NOTICE file,
+# while MIT also needs each copyright notice, and cargo-about keeps license files but not the copyright headers in source files.
+accepted = ["Apache-2.0", "MIT", "Zlib", "Unicode-3.0"]
+targets = ["aarch64-apple-darwin"]
+ignore-build-dependencies = true
+ignore-dev-dependencies = true
+private = { ignore = true }
