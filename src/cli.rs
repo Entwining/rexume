@@ -65,10 +65,10 @@ struct Server {
     #[arg(long, value_name = "ADDRESS")]
     server: Option<String>,
     /// The foreground color restored terminals start with, as `#rrggbb`
-    #[arg(long, value_name = "COLOR", requires = "theme_background")]
+    #[arg(long, value_name = "COLOR", requires = "theme_background", value_parser = color)]
     theme_foreground: Option<String>,
     /// The background color restored terminals start with, as `#rrggbb`
-    #[arg(long, value_name = "COLOR", requires = "theme_foreground")]
+    #[arg(long, value_name = "COLOR", requires = "theme_foreground", value_parser = color)]
     theme_background: Option<String>,
 }
 
@@ -218,6 +218,15 @@ enum TaskCommand {
     ///
     /// Only a turn the worker finishes after now counts as the new round's result.
     Rearm(TaskId),
+}
+
+fn color(text: &str) -> Result<String, &'static str> {
+    match text.as_bytes() {
+        [b'#', hex @ ..] if hex.len() == 6 && hex.iter().all(u8::is_ascii_hexdigit) => {
+            Ok(text.to_owned())
+        }
+        _ => Err("not a color written as #rrggbb"),
+    }
 }
 
 fn absolute_path(text: &str) -> Result<PathBuf, &'static str> {

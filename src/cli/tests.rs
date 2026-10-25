@@ -86,3 +86,39 @@ fn help_fits_in_100_columns() {
     check(&mut Args::command(), &mut problems);
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
+
+#[test]
+fn theme_colors_must_be_written_as_rrggbb() {
+    for command in ["install", "daemon"] {
+        let parse = |color: &str| {
+            Args::command().try_get_matches_from([
+                "rexume",
+                command,
+                "--theme-foreground",
+                color,
+                "--theme-background",
+                "#000000",
+            ])
+        };
+        assert!(parse("#a0B1c2").is_ok(), "{command}");
+        for bad in [
+            "",
+            "#fff",
+            "a0b1c2",
+            "#a0b1c",
+            "#a0b1c2d",
+            "#g0b1c2",
+            "#a0b1c２",
+        ] {
+            let error = parse(bad)
+                .err()
+                .unwrap_or_else(|| panic!("{command} took {bad:?}"));
+            assert_eq!(
+                error.kind(),
+                clap::error::ErrorKind::ValueValidation,
+                "{command}"
+            );
+            assert_eq!(error.exit_code(), 2, "{command}");
+        }
+    }
+}

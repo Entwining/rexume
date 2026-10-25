@@ -12,7 +12,7 @@ Each JSON object carries `version`, which changes only when a field changes mean
 rexume install [--rex PATH] [--server ADDRESS] [--theme-foreground COLOR --theme-background COLOR]
 ```
 
-Installs the session hooks, the Pi extension, and the LaunchAgent, as the README describes. `--rex` defaults to the first `rex` on `PATH` and fails when there is none; `--server` defaults to `REX_SERVER`, then `unix://$HOME/Library/Application%20Support/rex/server.sock`. The LaunchAgent runs this executable by the path install was started with (`rexume` found on `PATH` is used as that path, not resolved further), so a package manager that replaces the file keeps the job working. The job runs with install's own `PATH`, through which the daemon finds `codex` to send notices; run `install` again if `codex` moves.
+Installs the session hooks, the Pi extension, and the LaunchAgent, as the README describes. `--rex` defaults to the first `rex` on `PATH` and fails when there is none; `--server` defaults to `REX_SERVER`, then `unix://$HOME/Library/Application%20Support/rex/server.sock`. The LaunchAgent runs this executable by the path install was started with (`rexume` found on `PATH` is used as that path, not resolved further), so a package manager that replaces the file keeps the job working. The theme colors are the ones restored terminals start with, each written as `#rrggbb` with hex digits in either case; any other value is a usage error, here and for `daemon`. The job runs with install's own `PATH`, through which the daemon finds `codex` to send notices; run `install` again if `codex` moves.
 
 ```json
 { "version": 1, "claude_hook": "created", "claude_hook_note": null, "codex_hook": "unchanged", "codex_hook_note": null,
