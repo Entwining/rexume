@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -328,37 +328,50 @@ pub fn last_turn(runtime: Runtime, transcript: &Path, cursor: u64) -> Result<Opt
     Ok((!lines.skipped).then(|| parser.turn()))
 }
 
-/// Finds notices' receipts in one owner record, reading only what was added since the last
-/// check; one reader serves every notice sent to that record.
-pub struct Receipt {
-    runtime: Runtime,
-    lines: Lines,
-}
-
-impl Receipt {
-    pub fn new(runtime: Runtime, transcript: &Path) -> Self {
-        Self {
-            runtime,
-            lines: Lines::new(transcript, 0),
+/// The last whole record in a conversation file that holds `needle` and that `pick` accepts, read
+/// backwards from the end, so finding a setting the runtime writes near the end costs little
+/// however long the record is. Only lines holding `needle` are parsed; a line without its newline
+/// yet is skipped, and a file that does not exist holds no records.
+pub fn last_record<T>(
+    path: &Path,
+    needle: &str,
+    pick: impl Fn(&Value) -> Option<T>,
+) -> Result<Option<T>> {
+    const BLOCK: u64 = 64 * 1024;
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let needle = needle.as_bytes();
+    let mut pos = file.metadata()?.len();
+    // The end of the earliest line read so far, whose start lies before `pos`.
+    let mut carry = Vec::new();
+    // No newline has been read yet, so what was read is a record still being written.
+    let mut unfinished = true;
+    while pos > 0 {
+        let start = pos.saturating_sub(BLOCK);
+        let mut chunk = vec![0; usize::try_from(pos - start)?];
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut chunk)?;
+        chunk.append(&mut carry);
+        let mut lines: Vec<&[u8]> = chunk.split(|b| *b == b'\n').collect();
+        if unfinished {
+            unfinished = lines.len() == 1;
+            lines.pop();
         }
-    }
-
-    /// The notices among `pending` whose receipt the records added since the last check show.
-    /// A notice's token appears only once it was sent, so a record read before cannot hold it.
-    pub fn found(&mut self, pending: &[String]) -> Result<HashSet<String>> {
-        let tokens: Vec<(String, &String)> = pending.iter().map(|id| (token(id), id)).collect();
-        let mut found = HashSet::new();
-        for record in self.lines.read()? {
-            let record = record?;
-            if !self.runtime.received(&record) {
+        if start > 0 && !lines.is_empty() {
+            carry = lines.remove(0).to_vec();
+        }
+        for line in lines.iter().rev() {
+            if !line.windows(needle.len()).any(|w| w == needle) {
                 continue;
             }
-            for (needle, id) in &tokens {
-                if mentions(&record, needle) {
-                    found.insert((*id).clone());
-                }
+            if let Some(found) = serde_json::from_slice(line).ok().and_then(|r| pick(&r)) {
+                return Ok(Some(found));
             }
         }
-        Ok(found)
+        pos = start;
     }
+    Ok(None)
 }

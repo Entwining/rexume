@@ -2,27 +2,53 @@
 
 use std::io::Write;
 use std::os::unix::net::UnixStream;
+use std::path::Path;
 
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
+use super::lines::last_record;
 use super::{Conversation, Open, Sealed, Sent, Span, Target, Turn, content_texts, text_at};
 use crate::rex::time_at;
 
 /// Claude Code takes the model and effort of a resumed session from the command line; its session
-/// start leaves them out on resume, so the reported launch settings are what reopen it.
+/// start leaves them out on resume, so the reported launch settings are what reopen it. Its resume
+/// starts a session that was bypassing permissions in a new session's mode, and a Manual one in a
+/// settings `defaultMode`, so the mode the record shows is passed too.
 pub fn resume_argv(c: &Conversation) -> Vec<String> {
     let mut argv = vec![
         "claude".to_owned(),
         "--resume".to_owned(),
         c.native_id.clone(),
     ];
-    for (key, flag) in [("model", "--model"), ("effort", "--effort")] {
+    for (key, flag) in [
+        ("model", "--model"),
+        ("effort", "--effort"),
+        ("permission_mode", "--permission-mode"),
+    ] {
         if let Some(value) = c.setting(key) {
             argv.extend([flag.to_owned(), value.to_owned()]);
         }
     }
     argv
+}
+
+/// The permission mode the conversation was last in. Claude Code writes it on each prompt and in
+/// a `permission-mode` entry when a turn ends and when the session exits, so a mode changed after
+/// the last prompt is there too.
+pub fn settings(transcript: &Path, conversation: &mut Conversation) -> Result<()> {
+    let mode = last_record(transcript, "\"permissionMode\"", |record| {
+        if record.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+            return None;
+        }
+        record.get("permissionMode")?.as_str().map(str::to_owned)
+    })?;
+    if let Some(mode) = mode {
+        conversation
+            .settings
+            .insert("permission_mode".to_owned(), mode.into());
+    }
+    Ok(())
 }
 
 /// Claude Code delivers a line on its session socket as a message from another session, and

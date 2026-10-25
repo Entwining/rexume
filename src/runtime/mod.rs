@@ -6,6 +6,7 @@ mod claude;
 mod codex;
 mod lines;
 pub mod pi;
+mod receipt;
 #[cfg(test)]
 mod tests;
 
@@ -17,8 +18,9 @@ use anyhow::{Result, bail};
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use serde_json::{Map, Value};
 
-pub use lines::{Lines, Receipt, Taken, Tracker, last_turn};
+pub use lines::{Lines, Taken, Tracker, last_turn};
 use lines::{Open, Sealed, Span};
+pub use receipt::Receipt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
 pub enum Runtime {
@@ -70,7 +72,7 @@ impl Runtime {
             return Ok(());
         };
         match self {
-            Self::Claude => Ok(()),
+            Self::Claude => claude::settings(Path::new(&transcript), conversation),
             Self::Codex => codex::settings(Path::new(&transcript), conversation),
             Self::Pi => {
                 pi::settings(Path::new(&transcript), conversation);
