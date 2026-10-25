@@ -3,7 +3,7 @@
 
 use std::collections::HashSet;
 use std::fs::File;
-use std::io::{BufRead, BufReader, Seek, SeekFrom};
+use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
 use std::os::unix::fs::MetadataExt;
 use std::path::{Path, PathBuf};
 
@@ -186,4 +186,52 @@ impl Receipt {
         }
         Ok(found)
     }
+}
+
+/// The last whole record in a conversation file that holds `needle` and that `pick` accepts, read
+/// backwards from the end, so finding a setting the runtime writes near the end costs little
+/// however long the record is. Only lines holding `needle` are parsed; a line without its newline
+/// yet is skipped, and a file that does not exist holds no records.
+pub fn last_record<T>(
+    path: &Path,
+    needle: &str,
+    pick: impl Fn(&Value) -> Option<T>,
+) -> Result<Option<T>> {
+    const BLOCK: u64 = 64 * 1024;
+    let mut file = match File::open(path) {
+        Ok(file) => file,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(e) => return Err(e.into()),
+    };
+    let needle = needle.as_bytes();
+    let mut pos = file.metadata()?.len();
+    // The end of the earliest line read so far, whose start lies before `pos`.
+    let mut carry = Vec::new();
+    // No newline has been read yet, so what was read is a record still being written.
+    let mut unfinished = true;
+    while pos > 0 {
+        let start = pos.saturating_sub(BLOCK);
+        let mut chunk = vec![0; usize::try_from(pos - start)?];
+        file.seek(SeekFrom::Start(start))?;
+        file.read_exact(&mut chunk)?;
+        chunk.append(&mut carry);
+        let mut lines: Vec<&[u8]> = chunk.split(|b| *b == b'\n').collect();
+        if unfinished {
+            unfinished = lines.len() == 1;
+            lines.pop();
+        }
+        if start > 0 && !lines.is_empty() {
+            carry = lines.remove(0).to_vec();
+        }
+        for line in lines.iter().rev() {
+            if !line.windows(needle.len()).any(|w| w == needle) {
+                continue;
+            }
+            if let Some(found) = serde_json::from_slice(line).ok().and_then(|r| pick(&r)) {
+                return Ok(Some(found));
+            }
+        }
+        pos = start;
+    }
+    Ok(None)
 }

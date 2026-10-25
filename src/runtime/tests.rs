@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::io::Write;
 
+use super::lines::last_record;
 use super::*;
 
 pub(super) fn settings(pairs: &[(&str, &str)]) -> Map<String, Value> {
@@ -140,5 +141,33 @@ fn a_long_record_reads_the_same_as_a_short_one() -> Result<()> {
         }
     );
     assert_eq!(tracker.end(), std::fs::metadata(file.path())?.len());
+    Ok(())
+}
+
+#[test]
+fn the_last_record_is_found_across_read_blocks_and_not_in_an_unfinished_line() -> Result<()> {
+    let pick = |r: &Value| r.get("mode").and_then(Value::as_str).map(str::to_owned);
+    let pad = "x".repeat(100_000);
+    let mut file = transcript(&[
+        r#"{"mode":"old"}"#,
+        // Longer than a read block, so it is found only by joining blocks.
+        &format!(r#"{{"mode":"last","pad":"{pad}"}}"#),
+        &format!(r#"{{"other":"{pad}"}}"#),
+        r#"{"mode":"broken"#,
+    ]);
+    // Also longer than a read block, so no newline is found in the first block read.
+    write!(file, r#"{{"mode":"unfinished","pad":"{pad}"}}"#)?;
+    file.flush()?;
+    assert_eq!(
+        last_record(file.path(), "\"mode\"", pick)?.as_deref(),
+        Some("last")
+    );
+    let none = transcript(&[&format!(r#"{{"other":"{pad}"}}"#)]);
+    assert_eq!(last_record(none.path(), "\"mode\"", pick)?, None);
+    let dir = tempfile::tempdir()?;
+    assert_eq!(
+        last_record(&dir.path().join("absent"), "\"mode\"", pick)?,
+        None
+    );
     Ok(())
 }

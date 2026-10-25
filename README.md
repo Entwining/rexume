@@ -50,7 +50,7 @@ When the daemon sees a server go away and a new one start, it recreates every sa
 - its reopen command typed but not run, when the conversation had already left the pane, or another pane reopens the same conversation;
 - a login shell in the pane's directory, for anything else, including a Claude Code or Codex conversation that had no prompt yet. Other programs are not restarted.
 
-Every restored pane first runs `rexume gate`, which claims the pane's place in the restore before it starts anything, so a conversation is never started twice. A reopened conversation gets the permission mode its runtime's own resume restores; rexume does not record one.
+Every restored pane first runs `rexume gate`, which claims the pane's place in the restore before it starts anything, so a conversation is never started twice. A reopened conversation keeps its permission mode: a Claude Code conversation reopens in the mode its record last shows, including bypass mode, which Claude Code's own resume does not bring back; Codex restores its approval policy and permissions itself; Pi has no permission modes.
 
 ## Hand work to a worker
 

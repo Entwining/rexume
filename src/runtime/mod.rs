@@ -69,7 +69,7 @@ impl Runtime {
             return Ok(());
         };
         match self {
-            Self::Claude => Ok(()),
+            Self::Claude => claude::settings(Path::new(&transcript), conversation),
             Self::Codex => codex::settings(Path::new(&transcript), conversation),
             Self::Pi => {
                 pi::settings(Path::new(&transcript), conversation);
