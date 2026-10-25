@@ -1,6 +1,6 @@
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use serde_json::{Value, json};
 
@@ -9,7 +9,9 @@ use crate::common::REXUME;
 const LABEL: &str = "io.github.entwining.rexume";
 
 /// A home directory with Claude Code, Codex, and Pi set up, and a `launchctl` that records its
-/// calls and keeps the job's loaded state in a file instead of reaching launchd.
+/// calls and keeps the job in a file instead of reaching launchd. It behaves as launchd does:
+/// `bootstrap` starts the job's process, `bootout` only sends it `SIGTERM`, the job stays loaded
+/// until that process exits, and `bootstrap` fails while it is loaded.
 struct Home {
     dir: tempfile::TempDir,
 }
@@ -36,33 +38,60 @@ impl Home {
             json!({ "hooks": { "SessionStart": [rex_hook] } }).to_string(),
         )
         .unwrap();
+        // The job takes a moment to exit after `SIGTERM`, as the daemon does, and is unloaded
+        // only then.
+        let job = dir.path().join("job");
         let launchctl = home.join("bin/launchctl");
-        std::fs::write(
-            &launchctl,
-            format!(
+        for (path, script) in [
+            (
+                &job,
                 r#"#!/bin/sh
+trap 'kill $sleeper; sleep 0.3; rm "$1"; exit 0' TERM
+echo $$ > "$1"
+while :; do sleep 60 & sleeper=$!; wait $sleeper; done
+"#
+                .to_owned(),
+            ),
+            (
+                &launchctl,
+                format!(
+                    r#"#!/bin/sh
 echo "$*" >> '{log}'
 case "$1" in
-  print) test -e '{loaded}' ;;
-  bootstrap) touch '{loaded}' ;;
-  bootout) rm '{loaded}' ;;
+  print) test -e '{loaded}' && printf '\tpid = %s\n' "$(cat '{loaded}')" ;;
+  bootstrap)
+    if test -e '{loaded}'; then echo 'Bootstrap failed: 5: Input/output error' >&2; exit 5; fi
+    '{job}' '{loaded}' < /dev/null > /dev/null 2>&1 &
+    until test -e '{loaded}'; do sleep 0.01; done ;;
+  bootout)
+    if test -e '{fail}'; then rm '{fail}'; echo 'Boot-out failed: 5: Input/output error' >&2; exit 5; fi
+    kill -TERM "$(cat '{loaded}')" ;;
 esac
 "#,
-                log = dir.path().join("launchctl.log").display(),
-                loaded = dir.path().join("loaded").display(),
+                    log = dir.path().join("launchctl.log").display(),
+                    loaded = dir.path().join("loaded").display(),
+                    job = job.display(),
+                    fail = dir.path().join("fail-bootout").display(),
+                ),
             ),
-        )
-        .unwrap();
-        std::fs::set_permissions(&launchctl, std::fs::Permissions::from_mode(0o755)).unwrap();
+        ] {
+            std::fs::write(path, script).unwrap();
+            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+        }
         Self { dir }
+    }
+
+    fn job(&self) -> Option<i32> {
+        let pid = std::fs::read_to_string(self.dir.path().join("loaded")).ok()?;
+        pid.trim().parse().ok()
     }
 
     fn home(&self) -> PathBuf {
         self.dir.path().join("home")
     }
 
-    fn run(&self, args: &[&str]) -> Value {
-        let output = Command::new(REXUME)
+    fn output(&self, args: &[&str]) -> Output {
+        Command::new(REXUME)
             .args(args)
             .env_clear()
             .env("HOME", self.home())
@@ -71,7 +100,11 @@ esac
                 format!("{}:/usr/bin:/bin", self.home().join("bin").display()),
             )
             .output()
-            .unwrap();
+            .unwrap()
+    }
+
+    fn run(&self, args: &[&str]) -> Value {
+        let output = self.output(args);
         assert!(
             output.status.success(),
             "{args:?}: {}",
@@ -80,7 +113,7 @@ esac
         serde_json::from_slice(&output.stdout).unwrap()
     }
 
-    fn install(&self, theme: &[&str]) -> Value {
+    fn install_args<'a>(theme: &[&'a str]) -> Vec<&'a str> {
         let mut args = vec![
             "install",
             "--rex",
@@ -89,7 +122,11 @@ esac
             "unix:///tmp/rex.sock",
         ];
         args.extend(theme);
-        self.run(&args)
+        args
+    }
+
+    fn install(&self, theme: &[&str]) -> Value {
+        self.run(&Self::install_args(theme))
     }
 
     fn targets(&self) -> Vec<(PathBuf, Option<Vec<u8>>)> {
@@ -115,6 +152,14 @@ esac
             .lines()
             .filter(|line| line.starts_with(verb))
             .count()
+    }
+}
+
+impl Drop for Home {
+    fn drop(&mut self) {
+        if let Some(pid) = self.job() {
+            let _ = Command::new("kill").arg(pid.to_string()).status();
+        }
     }
 }
 
@@ -223,4 +268,26 @@ fn a_runtime_that_is_not_set_up_is_skipped_with_a_note() {
     let out = home.install(&[]);
     let out = outcomes(&out);
     assert_eq!(out[2], ("skipped", Some("`~/.pi/agent` does not exist")));
+}
+
+/// A reload that fails part way leaves the plist differing or the job not loaded, so the next
+/// install finishes it instead of finding nothing to do.
+#[test]
+fn the_next_install_finishes_a_reload_that_failed() {
+    let home = Home::new();
+    home.install(&[]);
+    let theme = [
+        "--theme-foreground",
+        "#eeeeee",
+        "--theme-background",
+        "#222222",
+    ];
+    std::fs::write(home.dir.path().join("fail-bootout"), "").unwrap();
+    let failed = home.output(&Home::install_args(&theme));
+    assert!(!failed.status.success());
+    assert_eq!(home.install(&theme)["launch_agent"], "updated");
+    assert_eq!(
+        (home.launchctl("bootout"), home.launchctl("bootstrap")),
+        (2, 2)
+    );
 }

@@ -2,11 +2,18 @@
 
 use std::io::ErrorKind;
 use std::path::Path;
-use std::process::{Command, Stdio};
+use std::process::Command;
+use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
 use super::{Install, LABEL, Targets, write};
+use crate::kqueue::Kqueue;
+
+/// How long a stop waits for the daemon to exit. The daemon exits on `SIGTERM` once `rex do` has
+/// ended, and launchd kills a job that outlives its exit timeout, so this only bounds a stop
+/// that neither ends.
+const EXIT_DEADLINE: Duration = Duration::from_secs(30);
 
 /// Writes the plist when its parsed content differs, and loads the job when the plist changed or
 /// the job is not loaded: a loaded job keeps the definition it was loaded with.
@@ -24,15 +31,17 @@ pub(super) fn install(install: &Install, targets: &Targets) -> Result<&'static s
     wanted.to_writer_xml(&mut bytes)?;
     bytes.push(b'\n');
     let changed = current.as_ref() != Some(&wanted);
-    if changed {
-        write(&targets.plist, &bytes)?;
-    }
-    let loaded = loaded()?;
-    if !changed && loaded {
+    let job = loaded()?;
+    if !changed && job.is_some() {
         return Ok("unchanged");
     }
-    if loaded {
-        launchctl(&["bootout", &service()])?;
+    // Stopping the old job before writing means that whichever step fails, the plist still
+    // differs or the job is not loaded, and the next install finishes the reload.
+    if let Some(job) = job {
+        stop(&job)?;
+    }
+    if changed {
+        write(&targets.plist, &bytes)?;
     }
     launchctl(&["bootstrap", &domain(), &targets.plist.to_string_lossy()])?;
     Ok(if current.is_none() {
@@ -44,8 +53,34 @@ pub(super) fn install(install: &Install, targets: &Targets) -> Result<&'static s
 
 /// Stops the job when launchd has it loaded.
 pub(super) fn unload() -> Result<()> {
-    if loaded()? {
-        launchctl(&["bootout", &service()])?;
+    if let Some(job) = loaded()? {
+        stop(&job)?;
+    }
+    Ok(())
+}
+
+/// launchd's loaded copy of the job.
+struct Loaded {
+    /// The daemon's process, while it runs.
+    pid: Option<i64>,
+}
+
+/// Boots the job out and returns once launchd no longer has it. `bootout` returns as soon as
+/// launchd has sent `SIGTERM`, and the job stays loaded until its process exits, so a `bootstrap`
+/// before then fails with `5: Input/output error`; a job with no process is gone at once.
+fn stop(job: &Loaded) -> Result<()> {
+    let kq = Kqueue::new()?;
+    // Watched before the bootout, so that an exit in between is not missed.
+    let running = match job.pid {
+        Some(pid) => kq.exit(pid, 0)?,
+        None => false,
+    };
+    launchctl(&["bootout", &service()])?;
+    if running && kq.wait(Some(EXIT_DEADLINE))?.is_empty() {
+        bail!(
+            "the daemon did not exit within {}s of `launchctl bootout`",
+            EXIT_DEADLINE.as_secs()
+        );
     }
     Ok(())
 }
@@ -102,14 +137,19 @@ fn service() -> String {
     format!("{}/{LABEL}", domain())
 }
 
-fn loaded() -> Result<bool> {
-    let status = Command::new("launchctl")
+fn loaded() -> Result<Option<Loaded>> {
+    let output = Command::new("launchctl")
         .args(["print", &service()])
-        .stdout(Stdio::null())
-        .stderr(Stdio::null())
-        .status()
+        .output()
         .context("failed to run `launchctl`")?;
-    Ok(status.success())
+    if !output.status.success() {
+        return Ok(None);
+    }
+    // The service's own properties are indented by one tab, those of its sections by more.
+    let pid = String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .find_map(|line| line.strip_prefix("\tpid = ")?.parse().ok());
+    Ok(Some(Loaded { pid }))
 }
 
 fn launchctl(args: &[&str]) -> Result<()> {

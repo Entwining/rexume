@@ -33,7 +33,7 @@ Each field has a `_note` beside it, which says why when the value needs a reason
 - **Hooks.** A hook in any `hooks.SessionStart` group of `~/.claude/settings.json` or `~/.codex/hooks.json` is rexume's when its `command`, split as a shell would, is exactly three words: a path whose file name is `rexume`, `report`, and the runtime (`claude` or `codex`). Any path to `rexume` counts, so a hook written by a configuration manager as `/opt/homebrew/bin/rexume report claude` is kept as it is. When none is present, install appends a new group, `{"hooks": [{"type": "command", "command": "rexume report claude", "timeout": 5}]}` for Claude Code and `{"hooks": [{"command": "rexume report codex", "timeout": 5, "type": "command"}]}` for Codex, and leaves every other key, group, and hook in place and in order.
 - **Codex trust.** Codex keys its approval of a hook by the hook's position in `hooks.json`. Install appends and never moves existing groups, so hooks you already trusted stay trusted, and only the appended entry waits for approval in `/hooks`.
 - **Pi extension.** `~/.pi/agent/extensions/rexume.ts` is rewritten whenever its bytes differ from the extension this version ships. Uninstall removes it only when its first line is the one install writes.
-- **LaunchAgent.** The job is the label `io.github.entwining.rexume` in `gui/$UID`, defined by `~/Library/LaunchAgents/io.github.entwining.rexume.plist`, which runs `rexume daemon` and logs to `~/Library/Logs/rexume.log`. Install compares the plist it would write with the one on disk by their parsed content, writes it when they differ, and boots the job out and in again only when the plist changed or the job is not loaded; otherwise launchd is not touched.
+- **LaunchAgent.** The job is the label `io.github.entwining.rexume` in `gui/$UID`, defined by `~/Library/LaunchAgents/io.github.entwining.rexume.plist`, which runs `rexume daemon` and logs to `~/Library/Logs/rexume.log`. Install compares the plist it would write with the one on disk by their parsed content, writes it when they differ, and boots the job out and in again only when the plist changed or the job is not loaded; otherwise launchd is not touched. A reload waits up to 30 seconds for the running daemon to exit after `launchctl bootout`, because launchd keeps the job loaded until then, and writes the new plist only once the old job is gone, so a reload that fails leaves the plist differing or the job unloaded, and the next install finishes it.
 
 The Pi extension and the plist hold nothing of the user's, so they are replaced whole and no backup is kept; the plist is written from install's flags and its `PATH`. Files are replaced through a rename that keeps their permissions; a symbolic link is followed and its target replaced.
 
@@ -43,7 +43,7 @@ The Pi extension and the plist hold nothing of the user's, so they are replaced 
 rexume uninstall
 ```
 
-Removes rexume's hooks and any `SessionStart` group they leave empty, the Pi extension when install wrote it, and the plist, and boots the job out, which stops the daemon. The state directory and the executable stay.
+Removes rexume's hooks and any `SessionStart` group they leave empty, the Pi extension when install wrote it, and the plist, and boots the job out, returning once the daemon has exited. The state directory and the executable stay.
 
 ```json
 { "version": 1, "claude_hook": "removed", "claude_hook_note": null, "codex_hook": "absent", "codex_hook_note": null,
