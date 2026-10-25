@@ -50,6 +50,7 @@ Each gives its reason; reopen one only with evidence that the reason no longer h
 - A change to the event loop, restore planning, or task transitions reruns the `--ignored` scenarios. A change that could affect speed or memory runs `cargo test --release --test it bench -- --ignored --nocapture` for the change and for its baseline commit, on the same otherwise idle machine, and compares the two reports; `docs/design.md` explains them.
 - A regression test for a bug must fail without the fix; check that once by reverting the fix.
 - Commits follow Conventional Commits.
+- Releases stay at `0.1.x`, breaking changes included, until the maintainer approves another version.
 - Releases are tag-driven. Bump `version` in `Cargo.toml`, add `docs/releases/VERSION.md` (the publish workflow refuses a tag without it), and push a `vVERSION` tag; the workflow reruns the checks, creates the GitHub Release, and asks `Entwining/homebrew-tap` to update its formula. The formula runs `make build`, so packaging changes belong there.
 
 ## Environment traps
