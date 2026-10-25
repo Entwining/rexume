@@ -1,0 +1,45 @@
+{
+  "$schema": "https://docs.renovatebot.com/renovate-schema.json",
+  "extends": ["github>Entwining/renovate-config"],
+  "description": [
+    "semanticCommits: this repository writes Conventional Commits subjects itself, so Renovate follows the same convention."
+  ],
+  "semanticCommits": "enabled",
+  "packageRules": [
+    {
+      "description": "Workflows name actions by version tag and .github/workflows/actions.lock pins each to a commit. Renovate regenerates the lockfile with its action updates and would turn the digests config:best-practices pins back into version references.",
+      "matchManagers": ["github-actions"],
+      "pinDigests": false
+    },
+    {
+      "description": "CI runs every action, runner, and CI tool on the pull request itself, so their majors merge once checks pass. create-github-app-token runs only on a tag push, which no pull request exercises.",
+      "matchManagers": ["github-actions", "custom.regex"],
+      "matchPackageNames": ["!actions/create-github-app-token"],
+      "matchUpdateTypes": ["major"],
+      "groupName": "CI major updates",
+      "automerge": true
+    },
+    {
+      "description": "With warnings denied, a new Clippy, linter, or cargo-about release can fail CI. Keep these updates out of the routine group so a failure blocks only them; CI runs these tools on the pull request, so their majors and breaking updates also merge once checks pass.",
+      "matchPackageNames": ["rust", "cargo-deny", "cargo-about", "github.com/rhysd/actionlint"],
+      "groupName": "Rust toolchain and linters",
+      "automerge": true
+    },
+    {
+      "description": "rusqlite bundles SQLite, the storage engine of the state database every restore and task reads; a bad release needs its own revert, so its updates stay out of the routine group.",
+      "matchManagers": ["cargo"],
+      "matchPackageNames": ["rusqlite"],
+      "groupName": "SQLite"
+    }
+  ],
+  "customManagers": [
+    {
+      "customType": "regex",
+      "description": "The cargo manager leaves rust-version alone. Without this manager, a toolchain bump would leave the MSRV behind rust-toolchain.toml.",
+      "managerFilePatterns": ["/^Cargo\\.toml$/"],
+      "matchStrings": ["rust-version = \"(?<currentValue>[^\"]+)\""],
+      "depNameTemplate": "rust",
+      "datasourceTemplate": "rust-version"
+    }
+  ]
+}

@@ -1,0 +1,59 @@
+name: Publish
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+# A release in progress finishes; a second push of the same tag waits.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  check:
+    uses: ./.github/workflows/check.yml
+
+  release:
+    needs: check
+    runs-on: macos-26
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Verify tag and release notes
+        env:
+          VERSION: ${{ needs.check.outputs.version }}
+        run: |
+          test -n "$VERSION" && test "$GITHUB_REF_NAME" = "v$VERSION"
+          test -s "docs/releases/$VERSION.md"
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # An existing release is a completed write; continue only with its tap notification.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            printf 'Release %s already exists; skipping creation\n' "$GITHUB_REF_NAME"
+          else
+            gh release create "$GITHUB_REF_NAME" \
+              --notes-file "docs/releases/${GITHUB_REF_NAME#v}.md" \
+              --verify-tag --repo "$GITHUB_REPOSITORY"
+          fi
+      - uses: actions/create-github-app-token@v3.2.0
+        id: tap-token
+        with:
+          client-id: ${{ vars.TAP_CLIENT_ID }}
+          private-key: ${{ secrets.TAP_APP_PRIVATE_KEY }}
+          owner: Entwining
+          repositories: homebrew-tap
+          # A repository dispatch needs only this; the token gets nothing else the app may hold.
+          permission-contents: write
+      - name: Ask the tap to pick up this version
+        env:
+          GH_TOKEN: ${{ steps.tap-token.outputs.token }}
+        run: gh api repos/Entwining/homebrew-tap/dispatches -f event_type=rexume-release

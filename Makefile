@@ -1,6 +1,6 @@
 CARGO ?= cargo
 
-.PHONY: build check
+.PHONY: build check version
 
 target_dir = $(or $(CARGO_TARGET_DIR),target)
 
@@ -15,6 +15,10 @@ build:
 	$(CARGO) fetch --locked
 	$(CARGO) about generate --frozen --fail --output-file "$(OUT)/LICENSE-THIRD-PARTY.md" about.hbs 2> "$(target_dir)/cargo-about.log" || { cat "$(target_dir)/cargo-about.log" >&2; exit 1; }
 	@cat "$(target_dir)/cargo-about.log" >&2; ! grep -Eq 'WARN|ERROR' "$(target_dir)/cargo-about.log"
+
+# The package version, which a release tag and its notes must match.
+version:
+	@$(CARGO) metadata --locked --no-deps --format-version 1 | jq -er '.packages[0].version'
 
 # The checks CI runs; cargo-deny fetches the RustSec advisory database, so this needs network access.
 check:

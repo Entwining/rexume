@@ -1,0 +1,70 @@
+name: Check
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+    outputs:
+      version:
+        description: The package version the checked build reports.
+        value: ${{ jobs.check.outputs.version }}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: macos-26
+    timeout-minutes: 20
+    outputs:
+      version: ${{ steps.package.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain
+        run: rustup show active-toolchain
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          cache-bin: false
+      - uses: taiki-e/install-action@v2.87.27
+        with:
+          tool: cargo-deny@${{ env.CARGO_DENY_VERSION }},cargo-about@${{ env.CARGO_ABOUT_VERSION }}
+          fallback: none
+        env:
+          # renovate: datasource=crate depName=cargo-deny
+          CARGO_DENY_VERSION: 0.20.2
+          # renovate: datasource=crate depName=cargo-about
+          CARGO_ABOUT_VERSION: 0.9.2
+      # install-action has no actionlint, and wrapper actions skip the provenance check.
+      - name: Lint workflows
+        run: |
+          archive="$RUNNER_TEMP/actionlint_${ACTIONLINT_VERSION#v}_darwin_arm64.tar.gz"
+          gh release download "$ACTIONLINT_VERSION" --repo rhysd/actionlint --pattern "${archive##*/}" --output "$archive"
+          gh attestation verify "$archive" --repo rhysd/actionlint
+          tar -xzf "$archive" -C "$RUNNER_TEMP" actionlint
+          "$RUNNER_TEMP/actionlint"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # renovate: datasource=go depName=github.com/rhysd/actionlint
+          ACTIONLINT_VERSION: v1.7.12
+      # cargo-deny fetches the RustSec advisory database; this check requires network access.
+      - name: Check dependencies, formatting, lints, and tests
+        run: |
+          test "$(uname -m)" = arm64
+          make check
+      # Homebrew bottles ship this package's license notices, so a license
+      # the configuration cannot place would otherwise fail only at release.
+      - name: Build the package
+        id: package
+        run: |
+          make build OUT="$RUNNER_TEMP/package"
+          version=$(make -s version)
+          test "$("$RUNNER_TEMP/package/bin/rexume" --version)" = "rexume $version"
+          test -s "$RUNNER_TEMP/package/LICENSE-THIRD-PARTY.md"
+          printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
