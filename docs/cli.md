@@ -90,7 +90,7 @@ Run by the session-start hooks with the hook's JSON on stdin, which it reads who
 | --- | --- |
 | `claude` | `session_id`, `transcript_path`, `model`, `effort`; a start with `agent_id` is a subagent's or an in-process teammate's and is ignored |
 | `codex` | `session_id`, `transcript_path`, `model`, `effort`; a start without `transcript_path` is unmarked: Codex keeps no record of its guardian reviews and side conversations, nor of an ephemeral `codex exec` run |
-| `pi` | `session_id`, `session_file`, `mode`, `provider`, `model`, `thinking`; a start outside `tui` mode is unmarked, which covers SDK sessions an extension creates and `pi -p`, `--mode json`, and `--mode rpc` runs, and only a `tui` session with a file can be reopened |
+| `pi` | `session_id`, `session_file`, `session_file_size` (the file's length when the session started; without it the report measures the file itself), `mode`, `provider`, `model`, `thinking`; a start outside `tui` mode is unmarked, which covers SDK sessions an extension creates and `pi -p`, `--mode json`, and `--mode rpc` runs, and only a `tui` session with a file can be reopened |
 
 A Claude Code conversation also records `CLAUDE_CODE_MESSAGING_SOCKET`, through which notices reach it.
 
@@ -109,7 +109,7 @@ The task commands run from the orchestrator's own Rex pane: they find the callin
 | `task ack ID [--round N]` | Records that the owner has a finished round's result; a notice not yet sent for it is dropped. Fails while the round is `running` or `blocked`. | `TASK` |
 | `task release ID` | Ends the task and acknowledges its latest round; the daemon then closes a disposable worker's pane if it is unused, for a non-interactive task too. Fails while a round is unfinished or the worker's record shows unread turns. | `TASK` |
 
-An interactive task's first round takes the earliest finished turn in the worker's record, also one that finished before `add`, so a worker that resumed an earlier conversation whose record holds its turns hands back the first of them. A non-interactive run's result file must hold UTF-8 text, at most 1 MiB and not empty; a run that exits 0 with a file that is missing, unreadable, empty, or larger fails its round, with the reason in `note`.
+An interactive task's first round takes the first turn the worker's process finished, also one that finished before `add`, and none of the turns a resumed conversation's record already held; a process that answered other prompts first hands back the first of those, and a conversation forked in Claude Code the first turn it copied. A non-interactive run's result file must hold UTF-8 text, at most 1 MiB and not empty; a run that exits 0 with a file that is missing, unreadable, empty, or larger fails its round, with the reason in `note`.
 
 A message is the text itself or a file's contents, at most 256 KiB, read when the command runs.
 
@@ -118,7 +118,7 @@ A message is the text itself or a file's contents, at most 256 KiB, read when th
 - `worker` is the pane's current Rex block ID, or `null` once it is not on the server.
 - `result_ref` is, for a completed round, the record ID of an interactive worker's answer or a non-interactive run's result file.
 - `note` says why the round ended without a result.
-- `unread` is the number of finished turns in an interactive worker's record that no round has taken, which `task next` takes in order, counting an answer a closed pane's record leaves open as finished. It is `null` for a non-interactive or released task, before the worker's conversation is known, and when its record cannot be read or was replaced.
+- `unread` is the number of finished turns in an interactive worker's record, from where the task started reading it, that no round has taken, which `task next` takes in order, counting an answer a closed pane's record leaves open as finished. It is `null` for a non-interactive or released task, before the worker's conversation is known, and when its record cannot be read or was replaced.
 - `request` is `null` except for a request round, where it is `{id, state, note}`. `state` is `pending`, `sending`, `sent`, `accepted`, `unknown`, `delivered`, or `superseded`, with a NOTICE's meanings: `delivered` once the worker's own record shows the request, and `superseded` when the round ended before the request was sent, which is then never sent. `note` says why a request still waits or how its send went.
 - `pane` is `{state, closed_at, note}`. `state` is `open` while the pane exists and rexume has neither closed nor given it up (a `--keep-pane` pane stays `open`), `closing` during a close attempt after the task was released, `closed` once the pane is gone, or `kept` when it was used or restored after the result and is left to whoever uses it. `note` says why a pane was kept or a close put off.
 

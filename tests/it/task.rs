@@ -121,7 +121,13 @@ fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
         dir.path().join("worker.jsonl"),
     );
     std::fs::write(&owner_record, "").unwrap();
-    std::fs::write(&worker_record, "").unwrap();
+    // The worker resumed a conversation whose record already holds a turn.
+    let earlier = format!(
+        "{}\n{}\n{DURATION}\n",
+        r#"{"type":"user","message":{"role":"user","content":"Review the plan"}}"#,
+        r#"{"type":"assistant","message":{"id":"m0","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Plan approved."}]}}"#,
+    );
+    std::fs::write(&worker_record, &earlier).unwrap();
     let socket = dir.path().join("owner.sock");
     let listener = UnixListener::bind(&socket).unwrap();
     listener.set_nonblocking(true).unwrap();
@@ -152,13 +158,14 @@ fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
 
     // What each agent's session-start hook would have reported.
     let conn = db(&state);
-    for (native_id, record, block, pid, socket) in [
+    for (native_id, record, block, pid, socket, start) in [
         (
             "owner",
             &owner_record,
             owner,
             pids[0],
             Some(socket.to_string_lossy().into_owned()),
+            0,
         ),
         (
             "worker",
@@ -166,6 +173,7 @@ fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
             worker,
             pids[1],
             Some(worker_socket.to_string_lossy().into_owned()),
+            earlier.len(),
         ),
     ] {
         conn.execute(
@@ -175,10 +183,11 @@ fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
         )
         .unwrap();
         conn.execute(
-            "INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env, reported_at, transport)
+            "INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env, reported_at,
+               transport, start_position)
              VALUES (?1, 'claude', ?2, ?3, 1, 0,
-                     CASE WHEN ?4 IS NOT NULL THEN json_object('messaging_socket', ?4) END)",
-            params![block, native_id, pid, socket],
+                     CASE WHEN ?4 IS NOT NULL THEN json_object('messaging_socket', ?4) END, ?5)",
+            params![block, native_id, pid, socket, i64::try_from(start).unwrap()],
         )
         .unwrap();
     }

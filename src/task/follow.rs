@@ -225,35 +225,38 @@ pub(super) fn taken(conn: &Connection, task: &str) -> Result<Taken> {
 }
 
 /// Binds an interactive task registered before its worker reported to the conversation that
-/// reported from the pane since the task was registered, or that runs as its foreground program.
-/// The binding is made once; a conversation that takes over the pane later is not the task's.
+/// reported from the pane since the task was registered, or that runs as its foreground program,
+/// from the report's start position. The binding is made once; a conversation that takes over the
+/// pane later is not the task's.
 fn bind(store: &mut Store, round: &mut OpenRound) -> Result<()> {
-    let found: Option<(Runtime, String, Option<String>)> = store
+    let found: Option<(Runtime, String, Option<String>, i64)> = store
         .conn()
         .prepare_cached(
-            "SELECT o.runtime, o.native_id, c.transcript FROM occupant o
+            "SELECT o.runtime, o.native_id, c.transcript, o.start_position FROM occupant o
              JOIN conversation c ON c.runtime = o.runtime AND c.native_id = o.native_id
              LEFT JOIN block b ON b.lineage = o.block_lineage
-             WHERE o.block_lineage = ?1 AND (o.reported_at >= ?2 OR o.pid = b.fg_pid)",
+             WHERE o.block_lineage = ?1 AND (o.reported_at >= ?2
+               OR (o.pid = b.fg_pid AND (o.instance_id IS NULL OR o.instance_id = b.instance_id)))",
         )?
         .query_row(params![round.worker, round.created_at], |row| {
-            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })
         .optional()?;
-    let Some((runtime, native_id, transcript)) = found else {
+    let Some((runtime, native_id, transcript, position)) = found else {
         return Ok(());
     };
     // The update binds only a task still unbound, so a binding made since the read stands.
     let tx = store.write()?;
     let bound = tx.execute(
-        "UPDATE task SET worker_runtime = ?1, worker_native_id = ?2
-         WHERE id = ?3 AND worker_runtime IS NULL",
-        params![runtime.as_str(), native_id, round.task],
+        "UPDATE task SET worker_runtime = ?1, worker_native_id = ?2, position = ?3
+         WHERE id = ?4 AND worker_runtime IS NULL",
+        params![runtime.as_str(), native_id, position, round.task],
     )?;
     tx.commit()?;
     if bound == 1 {
         round.runtime = Some(runtime);
         round.transcript = transcript;
+        round.position = position;
     }
     Ok(())
 }

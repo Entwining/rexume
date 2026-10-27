@@ -12,6 +12,8 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
     match version {
         1 => from_v1(tx)?,
         2 => rebuild(tx, &["notice", "request", "task_round", "task"])?,
+        // Version 4 adds `occupant.start_position`.
+        3 => return rebuild(tx, &["occupant"]),
         _ => bail!("schema {version} has no upgrade"),
     }
     // Version 3 drops the start that typed the reopen command: such a slot starts a shell.
@@ -114,3 +116,6 @@ fn from_v1(tx: &Transaction) -> Result<()> {
     )?;
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

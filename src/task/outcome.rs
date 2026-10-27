@@ -70,11 +70,13 @@ pub(super) fn evaluate(
                 Some((runtime, native_id)) => tx
                     .prepare_cached(
                         "SELECT pid, reported_at FROM occupant
-                         WHERE block_lineage = ?1 AND runtime = ?2 AND native_id = ?3",
+                         WHERE block_lineage = ?1 AND runtime = ?2 AND native_id = ?3
+                           AND (instance_id IS NULL OR instance_id = ?4)",
                     )?
-                    .query_row(params![worker, runtime, native_id], |row| {
-                        Ok((row.get(0)?, row.get(1)?))
-                    })
+                    .query_row(
+                        params![worker, runtime, native_id, pane.instance_id],
+                        |row| Ok((row.get(0)?, row.get(1)?)),
+                    )
                     .optional()?,
                 None => None,
             };
@@ -129,7 +131,7 @@ pub(super) fn evaluate(
 }
 
 /// An interactive worker as recorded: whether its pane closed, the pane, and the pid and report
-/// time of the task's conversation while it is the pane's occupant.
+/// time of the task's conversation while it is the pane's occupant on the pane's instance.
 struct Worker {
     closed: bool,
     pane: Pane,

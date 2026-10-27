@@ -48,14 +48,18 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
     refuse_closing(&tx, &worker, new.worker)?;
     refuse_stopped(&tx, &caller.instance, asked_at)?;
     let bound = match foreground {
-        Some(pid) if new.result_file.is_none() => occupant_of(&tx, &worker, pid)?,
+        Some(pid) if new.result_file.is_none() => occupant_of(&tx, &worker, &caller.instance, pid)?,
         _ => None,
     };
-    let (runtime, native_id) = bound.map(|(r, n)| (r.as_str(), n)).unzip();
+    let (runtime, native_id, position) = match bound {
+        Some((runtime, native_id, position)) => (Some(runtime.as_str()), Some(native_id), position),
+        None => (None, None, 0),
+    };
     tx.execute(
         "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, worker_pid,
-           worker_instance_id, result_file, keep_pane, worker_runtime, worker_native_id, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+           worker_instance_id, result_file, keep_pane, worker_runtime, worker_native_id, position,
+           created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
         params![
             id,
             new.title,
@@ -68,6 +72,7 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
             new.keep_pane,
             runtime,
             native_id,
+            position,
             now,
         ],
     )?;
@@ -76,13 +81,21 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
     shown(store.conn(), &caller.instance, &id, None)
 }
 
-/// The conversation whose process `pid` last reported from the pane, which the task follows.
-fn occupant_of(conn: &Connection, lineage: &str, pid: i64) -> Result<Option<(Runtime, String)>> {
+/// The conversation whose process `pid` on `instance` last reported from the pane, which the task
+/// follows, and where in its record the task starts. A report from before version 3 names no
+/// instance.
+fn occupant_of(
+    conn: &Connection,
+    lineage: &str,
+    instance: &str,
+    pid: i64,
+) -> Result<Option<(Runtime, String, i64)>> {
     Ok(conn
         .query_row(
-            "SELECT runtime, native_id FROM occupant WHERE block_lineage = ?1 AND pid = ?2",
-            params![lineage, pid],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            "SELECT runtime, native_id, start_position FROM occupant
+             WHERE block_lineage = ?1 AND pid = ?2 AND (instance_id IS NULL OR instance_id = ?3)",
+            params![lineage, pid, instance],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?)
 }

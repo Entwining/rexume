@@ -183,6 +183,7 @@ pub(super) const READY_OWNER: &str = "SELECT o.runtime, o.native_id, o.transport
   JOIN block b ON b.lineage = o.block_lineage
   JOIN epoch e ON e.id = (SELECT MAX(id) FROM epoch)
   WHERE t.id = ?1 AND e.ended_at IS NULL AND e.instance_id = b.instance_id AND b.fg_pid = o.pid
+    AND (o.instance_id IS NULL OR o.instance_id = b.instance_id)
     AND (b.status IS NULL OR b.status NOT IN ('working', 'blocked'))
   ORDER BY o.reported_at DESC LIMIT 1";
 

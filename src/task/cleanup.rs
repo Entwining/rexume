@@ -111,8 +111,8 @@ enum Untouched {
 
 /// Whether the worker's pane, as recorded, is unchanged since its result. A run's pane still shows
 /// the run's exit; an interactive worker's has the same foreground generation (or none observed
-/// on either side) and status, the task's conversation still the pane's occupant and not reported
-/// since, and no turn in its record after the task's position.
+/// on either side) and status, the task's conversation still the pane's occupant on the pane's
+/// instance and not reported since, and no turn in its record after the task's position.
 fn untouched(conn: &Connection, id: &str) -> Result<Untouched> {
     let taken = taken(conn, id)?;
     let no = |reason: &str| Ok(Untouched::No(reason.to_owned()));
@@ -161,13 +161,13 @@ fn untouched(conn: &Connection, id: &str) -> Result<Untouched> {
         .query_row(
             "SELECT o.runtime, o.native_id, o.reported_at, c.transcript FROM occupant o
              JOIN conversation c ON c.runtime = o.runtime AND c.native_id = o.native_id
-             WHERE o.block_lineage = ?1",
-            params![taken.worker],
+             WHERE o.block_lineage = ?1 AND (o.instance_id IS NULL OR o.instance_id = ?2)",
+            params![taken.worker, instance],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()?;
     let Some((o_runtime, o_native_id, reported_at, transcript)) = occupant else {
-        return no("the worker's conversation is not recorded");
+        return no("no conversation reported in the worker's pane on its instance");
     };
     if o_runtime != runtime || o_native_id != native_id || reported_at > finished_at {
         return no("a conversation started in the worker's pane after its result");

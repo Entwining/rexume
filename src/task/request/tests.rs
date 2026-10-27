@@ -68,9 +68,16 @@ fn a_request_is_sent_once_its_worker_is_idle_in_its_pane_and_settled_by_its_reco
         Some("waiting for the worker's conversation to run in its pane")
     );
     assert!(!inbox.exists());
+    // A PID names a process only on the server instance it was reported on.
+    store.conn().execute_batch(
+        "UPDATE block SET fg_pid = 100 WHERE lineage = 'b';
+         UPDATE occupant SET instance_id = 'i0' WHERE block_lineage = 'b';",
+    )?;
+    send_due(&mut store, &mut interest)?;
+    assert!(!inbox.exists());
     store
         .conn()
-        .execute_batch("UPDATE block SET fg_pid = 100 WHERE lineage = 'b'")?;
+        .execute_batch("UPDATE occupant SET instance_id = 'i1' WHERE block_lineage = 'b'")?;
     send_due(&mut store, &mut interest)?;
     assert_eq!(request(&store)?, ("sent".into(), None));
     assert!(interest.files.contains(&inbox));

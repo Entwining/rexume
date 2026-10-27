@@ -26,7 +26,8 @@ pub(super) static PENDING: LazyLock<String> = LazyLock::new(|| {
 /// pane's foreground program on the instance the running daemon observes, and whether it is in a
 /// turn.
 pub(super) const WORKER: &str = "SELECT t.worker_runtime, t.worker_native_id, o.transport,
-    e.ended_at IS NULL AND e.instance_id = b.instance_id AND b.fg_pid = o.pid,
+    e.ended_at IS NULL AND e.instance_id = b.instance_id AND b.fg_pid = o.pid
+      AND (o.instance_id IS NULL OR o.instance_id = b.instance_id),
     b.status IN ('working', 'blocked')
   FROM task t
   JOIN occupant o ON o.block_lineage = t.worker_lineage AND o.runtime = t.worker_runtime

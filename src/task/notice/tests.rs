@@ -103,6 +103,22 @@ fn a_notice_left_mid_send_without_a_receipt_stays_unknown_and_unsent() -> Result
     Ok(())
 }
 
+/// A PID names a process only on the server instance it was reported on, so an owner reported on
+/// an earlier one is not the program now in its pane with that PID.
+#[test]
+fn a_notice_waits_for_its_owner_to_report_on_the_running_instance() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = tempfile::NamedTempFile::new()?;
+    let (mut store, listener) = notice_world(dir.path(), transcript.path(), "pending")?;
+    store
+        .conn()
+        .execute_batch("UPDATE occupant SET instance_id = 'i0' WHERE block_lineage = 'a'")?;
+    send_due(&mut store, &mut Interest::default())?;
+    assert_eq!(notice(&store)?.0, "pending");
+    assert!(listener.accept().is_err(), "the notice was sent");
+    Ok(())
+}
+
 #[test]
 fn a_notice_goes_to_its_idle_owner_once_its_grace_after_the_round_has_passed() -> Result<()> {
     let dir = tempfile::tempdir()?;

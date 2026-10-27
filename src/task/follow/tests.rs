@@ -5,7 +5,8 @@ use anyhow::Result;
 use rusqlite::params;
 
 use super::*;
-use crate::task::tests::{ANSWER, DURATION, PROMPT, record, round, task_world};
+use crate::task::tests::{ANSWER, ANSWER_2, DURATION, PROMPT, PROMPT_2, record, round, task_world};
+use crate::task::unread;
 
 /// When `PROMPT` was recorded, in Unix milliseconds.
 const PROMPTED_AT: i64 = 1_792_855_785_738;
@@ -66,12 +67,18 @@ fn a_prompt_left_open_ends_when_the_worker_goes_idle_after_it() -> Result<()> {
     ))?;
     follow.pass(&mut store, None)?;
     assert_eq!(round(&store)?.0, "running");
-    // The process that accepted the prompt goes idle without answering.
+    // A process idle with the occupant's PID, but on another server instance, is another process.
     store.conn().execute_batch(&format!(
-        "UPDATE occupant SET pid = 100, reported_at = 50 WHERE block_lineage = 'b';
+        "UPDATE occupant SET pid = 100, reported_at = 50, instance_id = 'i0' WHERE block_lineage = 'b';
          UPDATE block SET status_pid = 100, status_at = {} WHERE lineage = 'b';",
         PROMPTED_AT + 3500,
     ))?;
+    follow.pass(&mut store, None)?;
+    assert_eq!(round(&store)?.0, "running");
+    // The process that accepted the prompt, on this instance, went idle without answering.
+    store
+        .conn()
+        .execute_batch("UPDATE occupant SET instance_id = 'i1' WHERE block_lineage = 'b'")?;
     follow.pass(&mut store, None)?;
     let (state, _, note) = round(&store)?;
     assert_eq!(state, "cancelled");
@@ -128,17 +135,19 @@ fn the_daemon_binds_a_task_registered_before_its_worker_reported_once() -> Resul
     let dir = tempfile::tempdir()?;
     let transcript = record(&[PROMPT])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
-    // An earlier conversation, not the pane's foreground, is the occupant at registration.
+    // An earlier conversation is the occupant at registration: its process had the foreground's
+    // PID, but on an earlier server instance.
     store.conn().execute_batch(
         "UPDATE task SET worker_runtime = NULL, worker_native_id = NULL, created_at = 100;
          INSERT INTO conversation (runtime, native_id, resumable, reported_at) VALUES ('claude', 'old', 1, 40);
-         UPDATE occupant SET native_id = 'old', pid = 90, reported_at = 40 WHERE block_lineage = 'b';",
+         UPDATE occupant SET native_id = 'old', instance_id = 'i0', reported_at = 40 WHERE block_lineage = 'b';",
     )?;
     let mut follow = Follow::default();
     follow.pass(&mut store, None)?;
     assert_eq!(bound(&store)?, None);
     store.conn().execute(
-        "UPDATE occupant SET native_id = 'worker', pid = 100, reported_at = 150 WHERE block_lineage = 'b'",
+        "UPDATE occupant SET native_id = 'worker', instance_id = 'i1', reported_at = 150
+         WHERE block_lineage = 'b'",
         [],
     )?;
     follow.pass(&mut store, None)?;
@@ -149,6 +158,36 @@ fn the_daemon_binds_a_task_registered_before_its_worker_reported_once() -> Resul
     )?;
     follow.pass(&mut store, None)?;
     assert_eq!(bound(&store)?.as_deref(), Some("worker"));
+    Ok(())
+}
+
+/// A worker that resumed a conversation reports where its record ended, and its task's first
+/// round takes no turn from before that, also when the task was registered first and the daemon
+/// restarts after binding it.
+#[test]
+fn a_resumed_workers_first_round_starts_where_its_report_found_the_record() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let earlier = format!("{PROMPT}\n{ANSWER}\n{DURATION}\n");
+    let mut transcript = record(&[PROMPT, ANSWER, DURATION, PROMPT_2])?;
+    let mut store = task_world(dir.path(), transcript.path(), None)?;
+    store.conn().execute(
+        "UPDATE task SET worker_runtime = NULL, worker_native_id = NULL, created_at = 100",
+        [],
+    )?;
+    store.conn().execute(
+        "UPDATE occupant SET start_position = ?1, reported_at = 150 WHERE block_lineage = 'b'",
+        params![i64::try_from(earlier.len())?],
+    )?;
+    Follow::default().pass(&mut store, None)?;
+    assert_eq!(bound(&store)?.as_deref(), Some("worker"));
+    writeln!(transcript, "{ANSWER_2}\n{DURATION}")?;
+    transcript.flush()?;
+    Follow::default().pass(&mut store, None)?;
+    assert_eq!(
+        round(&store)?,
+        ("completed".into(), Some("Again.".into()), None)
+    );
+    assert_eq!(unread(store.conn(), "t")?, Some(0));
     Ok(())
 }
 

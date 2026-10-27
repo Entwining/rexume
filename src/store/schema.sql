@@ -111,7 +111,11 @@ CREATE TABLE IF NOT EXISTS conversation (
 -- for a report before version 3 that no epoch dates. `own_program`: the process was the
 -- terminal's own program rather than one started from its shell, so its exit is the terminal's;
 -- NULL, unknown, before version 3. `keeps_session_env`: the process ran with `REX_SESSION`, so its
--- reopened conversation gets it too.
+-- reopened conversation gets it too. `start_position`: the length of the conversation's record
+-- when the process first reported it, where a task bound to this report starts reading, so that
+-- turns the record already held, as a resumed conversation's does, never belong to a task; 0
+-- before version 4. A later report of the same conversation from the same process, such as Claude
+-- Code's after a compaction, keeps it.
 CREATE TABLE IF NOT EXISTS occupant (
   block_lineage     TEXT    PRIMARY KEY,
   runtime           TEXT    NOT NULL,
@@ -122,6 +126,7 @@ CREATE TABLE IF NOT EXISTS occupant (
   own_program       INTEGER CHECK (own_program IN (0, 1)),
   keeps_session_env INTEGER NOT NULL CHECK (keeps_session_env IN (0, 1)),
   transport         TEXT    CHECK (transport IS NULL OR json_type(transport) = 'object'),
+  start_position    INTEGER NOT NULL DEFAULT 0,
   reported_at       INTEGER NOT NULL,
   FOREIGN KEY (runtime, native_id) REFERENCES conversation (runtime, native_id)
 ) STRICT, WITHOUT ROWID;
@@ -196,12 +201,13 @@ CREATE UNIQUE INDEX IF NOT EXISTS restore_slot_executor ON restore_slot (instanc
 -- instance shows nothing of the run. It is NULL for a task registered before version 3 when no
 -- epoch showed the instance, and such a task's run counts as the recorded pane's. `worker_runtime`
 -- and `worker_native_id` are the interactive worker's conversation, bound once (at registration
--- when the pane's foreground process had reported, else by the daemon from the first report after
--- it) and never moved to a conversation that takes over the pane later. `position`: byte offset
--- into that record up to which every finished turn has been taken by a round; it moves in the
--- transaction that takes a turn. `released_at`: when the orchestrator released the worker; a
--- released task starts no more rounds, and only its pane may be closed. `pane_state`: 'open'
--- while the pane exists and rexume has neither closed nor given it up; 'closing' while the
+-- when the pane's foreground process had reported, else by the daemon once the pane's occupant
+-- reported after registration or is its foreground process) and never moved to a conversation that
+-- takes over the pane later. `position`: byte offset into that record up to which every finished
+-- turn has been taken by a round; it starts at the bound report's `occupant.start_position` and
+-- moves in the transaction that takes a turn. `released_at`: when the orchestrator released the
+-- worker; a released task starts no more rounds, and only its pane may be closed. `pane_state`:
+-- 'open' while the pane exists and rexume has neither closed nor given it up; 'closing' while the
 -- daemon, the only closer, holds the pane for one close attempt (add and new rounds refuse it);
 -- 'closed' once the pane is gone, by rexume or by the user; 'kept' when the pane was found in use
 -- or restored after the result and is left to whoever uses it, `pane_note` saying why. A close
@@ -327,4 +333,4 @@ CREATE TABLE IF NOT EXISTS notice (
 
 -- 'rexu' in ASCII, which Store::open checks before it uses a database.
 PRAGMA application_id = 0x72657875;
-PRAGMA user_version = 3;
+PRAGMA user_version = 4;

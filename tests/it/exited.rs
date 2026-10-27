@@ -124,6 +124,18 @@ fn an_exited_pane_comes_back_the_same_after_each_restart() {
         own_program(&state, &blocks[2], &first, claude::runs(&ran, 1)[0].0),
         Some(1)
     );
+    // The hook found the record as long as the stand-in left it before it started.
+    let length = std::fs::metadata(&transcript).unwrap().len();
+    assert_eq!(
+        query::<i64>(
+            &state,
+            &format!(
+                "SELECT start_position FROM occupant WHERE block_lineage = '{}'",
+                blocks[2]
+            )
+        ),
+        Some(i64::try_from(length).unwrap())
+    );
     wait_until("the layout to be saved", WAIT, || {
         query::<String>(&state, "SELECT doc FROM session")
             .filter(|doc| blocks.iter().all(|b| doc.contains(b.as_str())))

@@ -150,6 +150,20 @@ fn an_untouched_released_worker_is_retired_unless_its_record_cannot_be_read() ->
     Ok(())
 }
 
+/// A conversation reported in the pane on an earlier server instance is not what the pane runs
+/// now, as when the pane came back as a shell and the worker never reported again.
+#[test]
+fn a_worker_reported_on_another_instance_than_its_pane_is_not_retired() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = record(&[PROMPT, ANSWER, DURATION])?;
+    let store = released_worker(dir.path(), transcript.path())?;
+    store
+        .conn()
+        .execute_batch("UPDATE occupant SET instance_id = 'i0' WHERE block_lineage = 'b'")?;
+    assert!(retired_workers(store.conn())?.is_empty());
+    Ok(())
+}
+
 /// Acknowledging a result leaves the worker to the orchestrator, which may still start a round;
 /// only releasing it gives up the pane.
 #[test]

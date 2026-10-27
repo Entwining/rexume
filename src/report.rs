@@ -33,10 +33,14 @@ pub struct Report {
     pub resumable: bool,
     /// Only the settings this report carries; a later report merges into the recorded ones.
     pub settings: Map<String, Value>,
+    /// The record's length when the session started, from a runtime that measures it itself: the
+    /// Pi extension, which goes on with the session while its report runs. A hook holds the
+    /// session until the report ends, so the report measures it for Claude Code and Codex.
+    pub record_length: Option<u64>,
 }
 
 /// Reads the hook's JSON input. Claude Code and Codex send their hook input; the Pi extension sends
-/// `session_id`, `session_file`, `mode`, `provider`, `model`, and `thinking`.
+/// `session_id`, `session_file`, `session_file_size`, `mode`, `provider`, `model`, and `thinking`.
 pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
     let text = |key: &str| {
         input
@@ -71,6 +75,7 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
             transcript: text("transcript_path"),
             resumable: role == Role::Own,
             settings: settings_from(&[("model", "model"), ("effort", "effort")]),
+            record_length: None,
         },
         Runtime::Pi => {
             let file = text("session_file");
@@ -86,6 +91,7 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
                     ("model", "model"),
                     ("thinking", "effort"),
                 ]),
+                record_length: input.get("session_file_size").and_then(Value::as_u64),
             }
         }
     })
@@ -104,6 +110,15 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
     let block = block.to_string_lossy();
     let input: Value = serde_json::from_str(&input).context("failed to parse the hook input")?;
     let report = parse(runtime, &input)?;
+    let start_position = match (report.record_length, &report.transcript) {
+        (Some(length), _) => length,
+        (None, Some(path)) => match std::fs::metadata(path) {
+            Ok(metadata) => metadata.len(),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
+            Err(e) => return Err(e).with_context(|| format!("failed to read {path}")),
+        },
+        (None, None) => 0,
+    };
     let mut rex = Rex::Cli(Cli::from_env()?);
     // Workers run without `REX_SESSION`.
     let session = match std::env::var_os("REX_SESSION") {
@@ -148,6 +163,7 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
             pid: i64::try_from(foreground)?,
             name: str_at(&process, "/foreground/name").map(str::to_owned),
             own_program: process.pointer("/child/pid").and_then(Value::as_u64) == Some(foreground),
+            start_position,
         },
     )?;
     tx.commit()?;
@@ -164,6 +180,8 @@ pub struct Process {
     pub name: Option<String>,
     /// Whether the process is the terminal's own program, as when the pane was created to run it.
     pub own_program: bool,
+    /// The conversation's record length when the process reported (`occupant.start_position`).
+    pub start_position: u64,
 }
 
 /// Records the conversation and makes it the pane's occupant, unless it is an inner session of
@@ -180,8 +198,9 @@ pub fn record(
         Role::Inner => true,
         Role::Unmarked => tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM occupant
-               WHERE block_lineage = ?1 AND pid = ?2 AND pid_name IS ?3)",
-            params![lineage, process.pid, process.name],
+               WHERE block_lineage = ?1 AND pid = ?2 AND pid_name IS ?3
+                 AND (instance_id IS NULL OR instance_id = ?4))",
+            params![lineage, process.pid, process.name, process.instance],
             |row| row.get(0),
         )?,
     };
@@ -209,13 +228,17 @@ pub fn record(
         .transpose()?;
     tx.execute(
         "INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid, pid_name,
-           own_program, keeps_session_env, transport, reported_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
-         ON CONFLICT (block_lineage) DO UPDATE SET runtime = excluded.runtime,
-           native_id = excluded.native_id, instance_id = excluded.instance_id, pid = excluded.pid,
-           pid_name = excluded.pid_name, own_program = excluded.own_program,
-           keeps_session_env = excluded.keeps_session_env, transport = excluded.transport,
-           reported_at = excluded.reported_at",
+           own_program, keeps_session_env, transport, start_position, reported_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+         ON CONFLICT (block_lineage) DO UPDATE SET
+           start_position = CASE
+             WHEN (runtime, native_id, pid) = (excluded.runtime, excluded.native_id, excluded.pid)
+               AND instance_id IS excluded.instance_id THEN start_position
+             ELSE excluded.start_position END,
+           runtime = excluded.runtime, native_id = excluded.native_id,
+           instance_id = excluded.instance_id, pid = excluded.pid, pid_name = excluded.pid_name,
+           own_program = excluded.own_program, keeps_session_env = excluded.keeps_session_env,
+           transport = excluded.transport, reported_at = excluded.reported_at",
         params![
             lineage,
             runtime.as_str(),
@@ -226,6 +249,7 @@ pub fn record(
             process.own_program,
             process.keeps_session_env,
             transport,
+            i64::try_from(process.start_position)?,
             now,
         ],
     )?;

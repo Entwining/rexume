@@ -20,6 +20,7 @@ fn a_resumed_claude_conversation_keeps_its_launch_model() -> Result<()> {
         pid: 100,
         name: Some("claude".into()),
         own_program: false,
+        start_position: 0,
     };
     let model = |store: &mut Store, input: Value| -> Result<Option<String>> {
         let tx = store.write()?;
@@ -58,7 +59,75 @@ fn process(pid: i64) -> Process {
         pid,
         name: Some("agent".into()),
         own_program: false,
+        start_position: 0,
     }
+}
+
+/// A task bound to a report reads the record from where the report found it ending, so it starts
+/// again for a new process, as a resumed conversation has, and for another conversation, as after
+/// `/clear`, but not for the same process reporting the same conversation again, as after a
+/// compaction, which may come in the middle of the turn a task is waiting for.
+#[test]
+fn a_new_process_or_conversation_moves_the_start_and_the_same_one_keeps_it() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut store = Store::open(dir.path())?;
+    let mut start = |native_id: &str, instance: &str, pid: i64, at: u64| -> Result<i64> {
+        let tx = store.write()?;
+        let report = parse(Runtime::Claude, &json!({ "session_id": native_id }))?;
+        let process = Process {
+            instance: instance.into(),
+            start_position: at,
+            ..process(pid)
+        };
+        record(&tx, "b", Runtime::Claude, &report, &process)?;
+        let start = tx.query_row("SELECT start_position FROM occupant", [], |row| row.get(0))?;
+        tx.commit()?;
+        Ok(start)
+    };
+    assert_eq!(start("s", "i1", 100, 10)?, 10);
+    assert_eq!(start("s", "i1", 100, 50)?, 10);
+    assert_eq!(start("t", "i1", 100, 60)?, 60);
+    assert_eq!(start("t", "i1", 200, 70)?, 70);
+    assert_eq!(start("t", "i2", 200, 80)?, 80);
+    Ok(())
+}
+
+/// A PID names a process only on its own server instance, so a start the runtime does not mark
+/// takes the pane from an earlier instance's occupant with the same PID and name.
+#[test]
+fn an_unmarked_start_on_a_new_instance_is_not_the_old_occupants_inner_session() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut store = Store::open(dir.path())?;
+    let starts = [
+        (
+            "i1",
+            json!({"session_id": "old", "transcript_path": "/x/rollout-old.jsonl"}),
+        ),
+        (
+            "i2",
+            json!({"session_id": "new", "transcript_path": null, "source": "startup"}),
+        ),
+    ];
+    for (instance, input) in starts {
+        let tx = store.write()?;
+        let process = Process {
+            instance: instance.into(),
+            ..process(100)
+        };
+        record(
+            &tx,
+            "b",
+            Runtime::Codex,
+            &parse(Runtime::Codex, &input)?,
+            &process,
+        )?;
+        tx.commit()?;
+    }
+    let occupant: String = store
+        .conn()
+        .query_row("SELECT native_id FROM occupant", [], |row| row.get(0))?;
+    assert_eq!(occupant, "new");
+    Ok(())
 }
 
 /// Reports each input from its process, in order, and returns the conversations recorded and the

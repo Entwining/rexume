@@ -215,13 +215,14 @@ mod tests {
         Ok(())
     }
 
-    /// Loads the extension in Node, as Pi does, and starts a session with a fake Pi. The fake's
-    /// `getSessionFile`, which the extension calls after starting the report and before writing its
-    /// input, waits until `ready` exists, so a report that closes its input first makes the write
-    /// fail every time rather than only when it wins the race.
+    /// Loads the extension in Node, as Pi does, and starts a session with a fake Pi whose session
+    /// file is `session`, if given. The fake's `getSessionFile`, which the extension calls
+    /// after starting the report and before writing its input, waits until `ready` exists, so a
+    /// report that closes its input first makes the write fail every time rather than only when it
+    /// wins the race.
     const HARNESS: &str = r#"
         import { existsSync } from "node:fs";
-        const [extension, ready] = process.argv.slice(-2);
+        const [extension, ready, session] = process.argv.slice(1);
         const handlers = {};
         (await import(extension)).default({ on: (event, handler) => (handlers[event] = handler) });
         const warnings = [];
@@ -234,6 +235,7 @@ mod tests {
             getSessionId: () => "s",
             getSessionFile: () => {
               while (!existsSync(ready)) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 5);
+              return session;
             },
           },
         });
@@ -243,12 +245,7 @@ mod tests {
     /// when it exits without reading its input, as it did outside a Rex pane, or cannot start.
     #[test]
     fn the_extension_survives_any_report_outcome() -> Result<()> {
-        // A version manager's `node` may be a shim that needs the `PATH` the harness replaces.
-        let node = std::process::Command::new("node")
-            .args(["-p", "process.execPath"])
-            .output()
-            .context("this test runs the Pi extension in Node")?;
-        let node = String::from_utf8(node.stdout)?.trim().to_owned();
+        let node = node()?;
         let dir = tempfile::tempdir()?;
         let extension = dir.path().join("rexume.ts");
         std::fs::write(&extension, EXTENSION)?;
@@ -289,6 +286,58 @@ mod tests {
                 matches!(&warnings[..], [w] if w.starts_with("rexume could not record this session")),
                 "{report:?}: {warnings:?}"
             );
+        }
+        Ok(())
+    }
+
+    /// A version manager's `node` may be a shim that needs the `PATH` the harness replaces.
+    fn node() -> Result<String> {
+        let node = std::process::Command::new("node")
+            .args(["-p", "process.execPath"])
+            .output()
+            .context("this test runs the Pi extension in Node")?;
+        Ok(String::from_utf8(node.stdout)?.trim().to_owned())
+    }
+
+    /// The report gets the session file's length as the extension found it, and none when the
+    /// extension could not measure it, which must not end Pi either.
+    #[test]
+    fn the_extension_sends_the_session_files_length_when_it_can_measure_it() -> Result<()> {
+        let node = node()?;
+        let dir = tempfile::tempdir()?;
+        let extension = dir.path().join("rexume.ts");
+        std::fs::write(&extension, EXTENSION)?;
+        let (ready, input, bin) = (
+            dir.path().join("ready"),
+            dir.path().join("input"),
+            dir.path().join("bin"),
+        );
+        std::fs::write(&ready, "")?;
+        std::fs::create_dir(&bin)?;
+        let fake = bin.join("rexume");
+        std::fs::write(
+            &fake,
+            format!("#!/bin/sh\n/bin/cat > '{}'\n", input.display()),
+        )?;
+        std::fs::set_permissions(&fake, PermissionsExt::from_mode(0o755))?;
+        let locked = dir.path().join("locked");
+        std::fs::create_dir(&locked)?;
+        std::fs::write(locked.join("session.jsonl"), "x".repeat(42))?;
+        for (mode, length) in [(0o755, Some(42)), (0o000, None)] {
+            std::fs::set_permissions(&locked, PermissionsExt::from_mode(mode))?;
+            let out = std::process::Command::new(&node)
+                .args(["--input-type=module", "-e", HARNESS])
+                .arg(&extension)
+                .arg(&ready)
+                .arg(locked.join("session.jsonl"))
+                .env("PATH", &bin)
+                .output();
+            std::fs::set_permissions(&locked, PermissionsExt::from_mode(0o755))?;
+            let out = out?;
+            let stderr = String::from_utf8_lossy(&out.stderr);
+            anyhow::ensure!(out.status.success(), "Pi ended: {stderr}");
+            let sent: Value = serde_json::from_slice(&std::fs::read(&input)?)?;
+            assert_eq!(sent["session_file_size"].as_u64(), length, "{mode:o}");
         }
         Ok(())
     }
