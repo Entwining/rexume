@@ -8,7 +8,7 @@ use rusqlite::{Transaction, params};
 use serde_json::json;
 
 use super::{caller, finished, owned, round_state, shown};
-use crate::kqueue::Kqueue;
+use crate::event::Queue;
 use crate::proc;
 use crate::store::Store;
 
@@ -37,16 +37,19 @@ pub fn wait(state_dir: &Path, id: &str, timeout: Duration) -> Result<serde_json:
     };
     // Every commit writes the write-ahead log, so a change to it is when the round may have moved.
     let wal = state_dir.join("state.db-wal");
-    let mut kq = Kqueue::new()?;
-    kq.file(&wal, 0)?;
+    let mut queue = Queue::new()?;
+    queue.file(&wal, 0)?;
     let mut done = loop {
+        // Also before the first look, as a commit that wrote the log before the watch existed
+        // fires nothing.
+        store.settle()?;
         let (_, state) = round_state(store.conn(), id, Some(round))?;
         if finished(&state) || Instant::now() >= until {
             break finished(&state);
         }
-        let fired = kq.wait(Some(until.saturating_duration_since(Instant::now())))?;
+        let fired = queue.wait(Some(until.saturating_duration_since(Instant::now())))?;
         if fired.iter().any(|f| f.gone) {
-            kq.file(&wal, 0)?;
+            queue.file(&wal, 0)?;
         }
     };
     if registered {

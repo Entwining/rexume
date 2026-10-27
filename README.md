@@ -4,15 +4,26 @@ rexume brings back your [Rex](https://www.superlogical.com/rex) sessions after t
 
 It also lets an orchestrator agent hand work to a worker pane and get the result back: rexume records the task, tells the orchestrator when the worker finishes, even while the orchestrator is idle, and closes a disposable worker's pane once the orchestrator releases it, unless someone has used the pane since.
 
-rexume is developed and tested only on Apple Silicon macOS, with the Rex app installed.
+rexume is developed on Apple Silicon macOS with the Rex app installed. It also runs on Linux, x86_64 or arm64, on the machine that runs the Rex server, as a systemd user service.
 
 ## Install
+
+On macOS:
 
 ```sh
 brew install entwining/tap/rexume
 ```
 
-To build from source instead, you need Rust at or above the `rust-version` in `Cargo.toml` and a C compiler for the bundled SQLite (the Xcode Command Line Tools):
+On Linux, each release carries a static build for each architecture. With the [GitHub CLI](https://cli.github.com), download the latest one, check that this repository's release workflow built it, and put the program on `PATH`:
+
+```sh
+gh release download --repo Entwining/rexume --pattern "rexume-*-$(uname -m)-unknown-linux-musl.tar.gz"
+gh attestation verify rexume-*-linux-musl.tar.gz --repo Entwining/rexume
+tar -xzf rexume-*-linux-musl.tar.gz
+install -D -m 755 rexume-*-linux-musl/bin/rexume ~/.local/bin/rexume
+```
+
+To build from source instead, you need Rust at or above the `rust-version` in `Cargo.toml` and a C compiler for the bundled SQLite (the Xcode Command Line Tools on macOS):
 
 ```sh
 cargo install --locked --git https://github.com/Entwining/rexume --root ~/.local
@@ -33,13 +44,16 @@ rexume install
 | Claude Code `SessionStart` hook | `~/.claude/settings.json` |
 | Codex `SessionStart` hook | `~/.codex/hooks.json` |
 | Pi extension | `~/.pi/agent/extensions/rexume.ts` |
-| LaunchAgent `io.github.entwining.rexume`, which runs `rexume daemon` | `~/Library/LaunchAgents/io.github.entwining.rexume.plist` |
+| On macOS, LaunchAgent `io.github.entwining.rexume`, which runs `rexume daemon` | `~/Library/LaunchAgents/io.github.entwining.rexume.plist` |
+| On Linux, systemd user service `rexume.service`, which runs `rexume daemon` | `~/.config/systemd/user/rexume.service` |
 
 A runtime whose directory does not exist is skipped; if you install Claude Code, Codex, or Pi later, run `rexume install` again once it is set up. Running it again leaves one copy of each entry and keeps your other hooks and settings; [docs/cli.md](docs/cli.md#how-install-recognizes-its-entries) describes how it recognizes its entries. Codex runs a new hook only after you approve it: open `/hooks` in Codex and trust the `rexume report codex` entry.
 
-`install` records the first `rex` on `PATH` and the server in `REX_SERVER`, or the Rex app's default server, in the LaunchAgent; pass `--rex` or `--server` to choose others. The daemon keeps the `PATH` you ran `install` with, which is how it finds `codex` to send notices. Restored terminals answer color queries before the app shows them only if they know your theme, so pass your terminal's colors as `--theme-foreground '#rrggbb' --theme-background '#rrggbb'`. The daemon logs to `~/Library/Logs/rexume.log`.
+`install` records the first `rex` on `PATH` and the server in `REX_SERVER`, or else the default server (the Rex app's on macOS, `$XDG_RUNTIME_DIR/rex/server.sock` on Linux), in the job; pass `--rex` or `--server` to choose others. The daemon keeps the `PATH` you ran `install` with, which is how it finds `codex` to send notices. Restored terminals answer color queries before the app shows them only if they know your theme, so pass your terminal's colors as `--theme-foreground '#rrggbb' --theme-background '#rrggbb'`. The daemon logs to `~/Library/Logs/rexume.log` on macOS and to the journal on Linux (`journalctl --user -u rexume`).
 
-Agents started before `install` are recorded from their next session start. Upgrading the program, with `brew upgrade` or by installing over it, is enough: the daemon notices that its executable was replaced, launchd starts the new one, and it replaces the Pi extension `install` wrote when the new version's differs. It never creates the extension, so one you removed stays removed.
+On Linux, systemd runs your user services only while you are logged in. If your Rex server keeps running after you log out, run `loginctl enable-linger` once so that the daemon does too.
+
+Agents started before `install` are recorded from their next session start. Upgrading the program, with `brew upgrade` or by installing over it, is enough: the daemon notices that its executable was replaced, its job starts the new one, and it replaces the Pi extension `install` wrote when the new version's differs. It never creates the extension, so one you removed stays removed.
 
 ## What comes back, and what does not
 
@@ -66,7 +80,7 @@ Run these from the orchestrator's own Rex pane: they find the orchestrator throu
 
 ## Check on it
 
-`launchctl print gui/$(id -u)/io.github.entwining.rexume` shows whether the daemon runs; its log shows each restore and why each pane started the way it did. `rexume status` lists restores that did not complete and notices not yet confirmed as delivered:
+`launchctl print gui/$(id -u)/io.github.entwining.rexume` on macOS, or `systemctl --user status rexume` on Linux, shows whether the daemon runs; its log shows each restore and why each pane started the way it did. `rexume status` lists restores that did not complete and notices not yet confirmed as delivered:
 
 - `failed`: the server refused to create the session.
 - `unknown`: the server did not answer the create, and no pane of the session reported.
@@ -81,7 +95,7 @@ rexume does not request an unanswered create or layer again, because doing so co
 rexume uninstall
 ```
 
-This removes the two hooks (and any hook group left empty), the Pi extension if `install` wrote it, and the LaunchAgent, which stops the daemon. It keeps `~/.local/state/rexume`, which holds saved layouts, recorded conversations, and task results; delete that directory to remove them too. Then remove the program with `brew uninstall rexume`, or delete `~/.local/bin/rexume`.
+This removes the two hooks (and any hook group left empty), the Pi extension if `install` wrote it, and the LaunchAgent or systemd service, which stops the daemon. It keeps `~/.local/state/rexume`, which holds saved layouts, recorded conversations, and task results; delete that directory to remove them too. Then remove the program with `brew uninstall rexume`, or delete `~/.local/bin/rexume`.
 
 ## Known limits
 

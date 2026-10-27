@@ -1,5 +1,6 @@
 //! One epoch: a connection to one server instance, from its witness until it ends. The loop
-//! records events, reconciles restores, and runs task passes, and sleeps on the kqueue between.
+//! records events, reconciles restores, and runs task passes, and sleeps on the event queue
+//! between.
 
 use std::time::Instant;
 
@@ -18,7 +19,7 @@ impl Daemon<'_> {
     /// Observes one connection until it ends, and returns how it ended.
     pub(super) fn observe(&mut self) -> Result<&'static str> {
         let (mut child, mut pipe) = self.connect()?;
-        self.kq.read(pipe.fd(), PIPE)?;
+        self.queue.read(pipe.fd(), PIPE)?;
         let witnessed = self.witness(&mut pipe);
         let mut rex = Rex::Pipe(pipe);
         let result = witnessed.and_then(|instance| {
@@ -50,7 +51,7 @@ impl Daemon<'_> {
             tx.commit()?;
             observed.map(|()| reason)
         });
-        self.kq.forget_exit(i64::from(child.id()));
+        self.queue.forget_exit(i64::from(child.id()));
         let _ = child.kill();
         let _ = child.wait();
         result
@@ -134,18 +135,8 @@ impl Daemon<'_> {
                     log::warn!("`rex do` exited; reconnecting");
                     return Ok(None);
                 }
-                WAL if fired.gone => {
-                    self.kq
-                        .file(&self.options.state_dir.join("state.db-wal"), WAL)?;
-                }
-                WAITER_EXIT => follow_due = true,
-                token if token >= FIRST_FILE => {
-                    follow_due = true;
-                    if fired.gone || self.via_dir.remove(&token) {
-                        self.files.retain(|_, t| *t != token);
-                        self.kq.forget_file(token);
-                    }
-                }
+                WAL => self.store.settle()?,
+                token if token == WAITER_EXIT || token >= FIRST_FILE => follow_due = true,
                 _ => {}
             }
         }
@@ -159,7 +150,7 @@ impl Daemon<'_> {
         self.files.retain(|path, token| {
             let keep = interest.files.contains(path);
             if !keep {
-                self.kq.forget_file(*token);
+                self.queue.forget_file(*token);
                 self.via_dir.remove(token);
             }
             keep
@@ -171,10 +162,10 @@ impl Daemon<'_> {
             let token = self.next_file;
             // A file not written yet is followed through its directory until it appears; that
             // watch is replaced by one on the file at the next change.
-            let via_dir = if self.kq.file(&path, token)? {
+            let via_dir = if self.queue.file(&path, token)? {
                 false
             } else if let Some(dir) = path.parent()
-                && self.kq.file(dir, token)?
+                && self.queue.file(dir, token)?
             {
                 true
             } else {
@@ -189,10 +180,10 @@ impl Daemon<'_> {
             again = true;
         }
         for pid in self.pids.difference(&interest.pids) {
-            self.kq.forget_exit(*pid);
+            self.queue.forget_exit(*pid);
         }
         for pid in &interest.pids {
-            if !self.pids.contains(pid) && !self.kq.exit(*pid, WAITER_EXIT)? {
+            if !self.pids.contains(pid) && !self.queue.exit(*pid, WAITER_EXIT)? {
                 again = true;
             }
         }

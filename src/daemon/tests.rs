@@ -1,3 +1,6 @@
+use std::collections::{HashMap, HashSet};
+use std::io::{BufRead, BufReader, Write as _};
+use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -6,7 +9,10 @@ use serde_json::{Value, json};
 
 use super::block::{set_foreground, touch_block};
 use super::view::{View, next_read};
+use super::{Daemon, FIRST_FILE, Options};
+use crate::event::Queue;
 use crate::layout::bind_restored;
+use crate::rex::{Cli, Pipe, Rex};
 use crate::store::Store;
 
 #[test]
@@ -135,4 +141,94 @@ fn a_change_is_read_at_once_unless_a_read_was_just_made() {
         next_read(Some(read), now),
         read + Duration::from_millis(300)
     );
+}
+
+/// A pane whose first report reached the stream before its session did has nothing recorded, so
+/// reading its session's view reads it; a pane already recorded is left to its events.
+#[test]
+fn reading_a_view_reads_only_its_unrecorded_panes() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut store = Store::open(dir.path())?;
+    let tx = store.write()?;
+    touch_block(&tx, "i1", "block:known")?;
+    tx.commit()?;
+    let (ours, theirs) = UnixStream::pair()?;
+    let server = std::thread::spawn(move || -> Result<Vec<String>> {
+        let mut requests = BufReader::new(theirs.try_clone()?).lines();
+        let mut out = &theirs;
+        let mut asked = Vec::new();
+        while let Some(line) = requests.next().transpose()? {
+            let request: Value = serde_json::from_str(&line)?;
+            let params = &request["params"];
+            let result = match request["method"].as_str() {
+                Some("session.view") => json!({ "label": "s", "windows": [{
+                    "window_id": "window:1", "layers": [{ "kind": "tiled", "bounds": [0, 0, 1, 1],
+                    "layout": { "split": { "direction": "horizontal", "ratio": 0.5,
+                        "before": { "block_id": "block:new" }, "after": { "block_id": "block:known" } } },
+                    "blocks": [{ "block_id": "block:new" }, { "block_id": "block:known" }] }] }] }),
+                _ => {
+                    asked.push(format!("{} {}", params["block_id"], params["method"]));
+                    json!({ "foreground": { "pid": 7, "name": "bash", "cwd": "/work" } })
+                }
+            };
+            writeln!(out, "{}", json!({ "id": request["id"], "result": result }))?;
+        }
+        Ok(asked)
+    });
+    let mut rex = Rex::Pipe(Pipe::new(ours)?);
+    let mut view = View::new("i1");
+    let created = json!({ "event": "session_created",
+                          "payload": { "session": { "session_id": "session:1" } } });
+    view.handle(&mut rex, &mut store, &created)?;
+    view.flush(&mut rex, &mut store)?;
+    drop(rex);
+    let asked = server.join().expect("the fake server ran")?;
+    assert!(
+        !asked.is_empty() && asked.iter().all(|a| a.starts_with(r#""block:new""#)),
+        "{asked:?}"
+    );
+    let cwd: Option<String> = store.conn().query_row(
+        "SELECT cwd FROM block WHERE lineage = 'block:new'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(cwd.as_deref(), Some("/work"));
+    Ok(())
+}
+
+/// The daemon also waits between epochs, while it backs off or waits for the server.
+#[test]
+fn any_wait_drops_the_watch_of_a_replaced_file() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let options = Options {
+        state_dir: dir.path().to_owned(),
+        cli: Cli {
+            bin: "rex".into(),
+            endpoint: String::new(),
+        },
+        exe: dir.path().join("rexume"),
+        theme: None,
+        home: dir.path().to_owned(),
+    };
+    let socket = dir.path().join("daemon.sock");
+    let mut daemon = Daemon {
+        options: &options,
+        store: Store::open(dir.path())?,
+        queue: Queue::new()?,
+        listener: UnixListener::bind(&socket)?,
+        socket,
+        files: HashMap::new(),
+        via_dir: HashSet::new(),
+        next_file: FIRST_FILE + 1,
+        pids: HashSet::new(),
+    };
+    let path = dir.path().join("t.jsonl");
+    std::fs::write(&path, "a\n")?;
+    assert!(daemon.queue.file(&path, FIRST_FILE)?);
+    daemon.files.insert(path.clone(), FIRST_FILE);
+    std::fs::write(dir.path().join("new"), "b\n")?;
+    std::fs::rename(dir.path().join("new"), &path)?;
+    daemon.wait(Some(Duration::from_secs(1)))?;
+    assert!(daemon.files.is_empty());
+    Ok(())
 }

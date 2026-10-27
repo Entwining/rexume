@@ -1,7 +1,7 @@
 //! The daemon: one long-running process that observes a Rex server, keeps the saved layout and
 //! pane states, restores the saved sessions on a new server instance, and moves tasks along. It
-//! waits on one kqueue and wakes only for an event, a deadline, a signal, a process exit, or a
-//! file it follows.
+//! waits on one event queue and wakes only for an event, a deadline, a signal, a process exit, or
+//! a file it follows.
 
 mod block;
 mod connection;
@@ -12,7 +12,7 @@ mod view;
 
 use std::collections::{HashMap, HashSet};
 use std::fs::{File, TryLockError};
-use std::os::fd::AsRawFd;
+use std::os::fd::AsFd;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 
@@ -21,8 +21,8 @@ use nix::sys::signal::{SigSet, Signal};
 use rusqlite::params;
 use serde_json::Value;
 
+use crate::event::{Queue, Token};
 use crate::install;
-use crate::kqueue::{Kqueue, Token};
 use crate::rex::Cli;
 use crate::store::{Store, now_ms};
 use crate::task;
@@ -53,8 +53,8 @@ const FIRST_FILE: Token = 1000;
 const STOP_SIGNALS: [Signal; 2] = [Signal::SIGTERM, Signal::SIGINT];
 
 pub fn run(options: &Options) -> Result<()> {
-    // Blocked rather than ignored: a child inherits an ignored signal across exec, but std clears
-    // the blocked set in every child it starts, so `rex do` still ends on the signals it gets.
+    // Blocked, as a signalfd reads only blocked signals and kqueue reports them too. Every child
+    // inherits the blocked set, so the daemon ends `rex do` with SIGKILL instead of passing them on.
     let mut stop = SigSet::empty();
     for signal in STOP_SIGNALS {
         stop.add(signal);
@@ -109,17 +109,17 @@ pub fn run(options: &Options) -> Result<()> {
     let listener = UnixListener::bind(&socket)
         .with_context(|| format!("failed to listen on `{}`", socket.display()))?;
     listener.set_nonblocking(true)?;
-    let mut kq = Kqueue::new()?;
-    kq.read(listener.as_raw_fd(), LISTEN)?;
-    kq.file(&options.state_dir.join("state.db-wal"), WAL)?;
-    kq.entry(&options.exe, EXE)?;
+    let mut queue = Queue::new()?;
+    queue.read(listener.as_fd(), LISTEN)?;
+    queue.file(&options.state_dir.join("state.db-wal"), WAL)?;
+    queue.entry(&options.exe, EXE)?;
     for signal in STOP_SIGNALS {
-        kq.signal(signal, STOP)?;
+        queue.signal(signal, STOP)?;
     }
     let mut daemon = Daemon {
         options,
         store,
-        kq,
+        queue,
         listener,
         socket,
         files: HashMap::new(),
@@ -130,7 +130,7 @@ pub fn run(options: &Options) -> Result<()> {
     match daemon.serve() {
         Err(e) => match e.downcast_ref::<Exit>() {
             Some(exit @ Exit::Replaced) => {
-                log::info!("{exit}; exiting so that launchd starts the new one");
+                log::info!("{exit}; exiting so that its job starts the new one");
                 Ok(())
             }
             Some(exit @ Exit::Stopped) => {
@@ -147,8 +147,8 @@ pub fn run(options: &Options) -> Result<()> {
 #[derive(Debug, thiserror::Error)]
 enum Exit {
     /// The executable at the path this daemon was started from was replaced or removed, as an
-    /// upgrade does. The plist names that path, so launchd starts the new executable once this
-    /// one exits; every restore and notice is safe to pick up from its saved state.
+    /// upgrade does. The job names that path, so it starts the new executable once this one
+    /// exits; every restore and notice is safe to pick up from its saved state.
     #[error("the rexume executable was replaced")]
     Replaced,
     #[error("stopped by a signal")]
@@ -158,7 +158,7 @@ enum Exit {
 struct Daemon<'a> {
     options: &'a Options,
     store: Store,
-    kq: Kqueue,
+    queue: Queue,
     listener: UnixListener,
     socket: PathBuf,
     files: HashMap<PathBuf, Token>,

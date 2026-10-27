@@ -10,13 +10,29 @@ use serde_json::{Value, json};
 
 pub const REXUME: &str = env!("CARGO_BIN_EXE_rexume");
 
+/// The shell the test server's panes run, in `/bin`.
+#[cfg(target_os = "macos")]
+pub const SHELL: &str = "zsh";
+#[cfg(target_os = "linux")]
+pub const SHELL: &str = "bash";
+
 /// The Rex CLI: `REXUME_TEST_REX`, or where the Rex app installs it.
+#[cfg(target_os = "macos")]
 pub fn rex_bin() -> PathBuf {
     std::env::var_os("REXUME_TEST_REX").map_or_else(
         || {
             let home = PathBuf::from(std::env::var_os("HOME").expect("HOME"));
             home.join("Library/Application Support/com.superlogical.rex/RexServer/Versions/Current/Rex Server.app/Contents/MacOS/rex")
         },
+        PathBuf::from,
+    )
+}
+
+/// The Rex CLI: `REXUME_TEST_REX`, or the first `rex` on PATH.
+#[cfg(target_os = "linux")]
+pub fn rex_bin() -> PathBuf {
+    std::env::var_os("REXUME_TEST_REX").map_or_else(
+        || which::which("rex").expect("no `rex` on PATH"),
         PathBuf::from,
     )
 }
@@ -59,6 +75,15 @@ impl Server {
             std::fs::write(&config, "").unwrap();
         }
         let system = "/usr/bin:/bin:/usr/sbin:/sbin";
+        if let Some(first) = path {
+            // A Linux login shell sets PATH again from `/etc/profile`, so the panes get the test's
+            // directory from `~/.profile`.
+            std::fs::write(
+                home.join(".profile"),
+                format!("PATH='{}':\"$PATH\"\n", first.display()),
+            )
+            .unwrap();
+        }
         let path = path.map_or(system.to_owned(), |p| format!("{}:{system}", p.display()));
         let endpoint = format!("unix://{}", dir.join("s.sock").display());
         let child = Command::new(rex_bin())
@@ -70,7 +95,7 @@ impl Server {
             .env_clear()
             .env("HOME", &home)
             .env("USER", std::env::var("USER").unwrap_or_default())
-            .env("SHELL", "/bin/zsh")
+            .env("SHELL", format!("/bin/{SHELL}"))
             .env("LANG", "en_US.UTF-8")
             .env("PATH", path)
             .env("TMPDIR", std::env::temp_dir())
@@ -156,7 +181,7 @@ impl Drop for Server {
     }
 }
 
-/// A daemon in its own process group, as launchd runs it, so ending the group ends its `rex do`.
+/// A daemon in its own process group, so ending the group ends its `rex do`, as its job would.
 pub struct Daemon {
     child: Option<Child>,
     pub log: PathBuf,
@@ -296,7 +321,7 @@ pub fn shell_pids(server: &Server, state: &Path, session: &str, blocks: &[&str])
                 let foreground = &process["foreground"];
                 let pid = foreground["pid"]
                     .as_i64()
-                    .filter(|_| foreground["name"] == "zsh")?;
+                    .filter(|_| foreground["name"] == SHELL)?;
                 query::<i64>(
                     state,
                     &format!(

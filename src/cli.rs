@@ -52,7 +52,8 @@ struct Server {
     rex: Option<PathBuf>,
     /// The server address
     ///
-    /// Defaults to REX_SERVER, then to the socket of the server the Rex app starts.
+    /// Defaults to REX_SERVER, then to the socket of the server the Rex app starts on macOS, or
+    /// `$XDG_RUNTIME_DIR/rex/server.sock` on Linux.
     #[arg(long, value_name = "ADDRESS")]
     server: Option<String>,
     /// The foreground color restored terminals start with, as `#rrggbb`
@@ -65,24 +66,25 @@ struct Server {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Install the session hooks, the Pi extension, and the LaunchAgent that runs the daemon
+    /// Install the session hooks, the Pi extension, and the job that runs the daemon
     ///
     /// Writes a SessionStart hook into `~/.claude/settings.json` and `~/.codex/hooks.json`, the
-    /// extension into `~/.pi/agent/extensions/rexume.ts`, and the LaunchAgent
-    /// `io.github.entwining.rexume`, and prints what changed as JSON. A runtime whose directory
-    /// does not exist is skipped. Running it again changes only what is missing or different.
+    /// extension into `~/.pi/agent/extensions/rexume.ts`, and the job: the LaunchAgent
+    /// `io.github.entwining.rexume` on macOS, the systemd user service `rexume.service` on Linux.
+    /// Prints what changed as JSON. A runtime whose directory does not exist is skipped. Running it
+    /// again changes only what is missing or different.
     Install(Server),
     /// Remove what install wrote, keeping the state directory and this executable
     ///
-    /// Removes the hooks, the Pi extension when install wrote it, and the LaunchAgent, which stops
-    /// the daemon. `~/.local/state/rexume` keeps the saved layouts, conversations, and task
-    /// results; delete it to remove them too.
+    /// Removes the hooks, the Pi extension when install wrote it, and the job, which stops the
+    /// daemon. `~/.local/state/rexume` keeps the saved layouts, conversations, and task results;
+    /// delete it to remove them too.
     Uninstall,
     /// Follow the Rex server, saving its sessions and restoring them after it restarts
     ///
-    /// The LaunchAgent runs this. It runs until stopped, logs to stderr, and exits at once when
-    /// another daemon holds the same state directory. Set `RUST_LOG=rexume=debug` to log every
-    /// call it makes through its adapter.
+    /// The job install writes runs this. It runs until stopped, logs to stderr, and exits at once
+    /// when another daemon holds the same state directory. Set `RUST_LOG=rexume=debug` to log
+    /// every call it makes through its adapter.
     Daemon {
         #[command(flatten)]
         server: Server,
@@ -233,7 +235,7 @@ fn home() -> Result<PathBuf> {
     std::env::home_dir().context("HOME is not set")
 }
 
-/// This executable by the path it was started with, so that commands written into the plist
+/// This executable by the path it was started with, so that commands written into the job
 /// and restored panes keep working after a package manager replaces the file behind it.
 fn exe() -> Result<PathBuf> {
     let argv0 = PathBuf::from(std::env::args_os().next().unwrap_or_default());
@@ -259,12 +261,29 @@ fn server_address(given: Option<String>) -> Result<String> {
     if let Some(address) = given.or_else(|| std::env::var("REX_SERVER").ok()) {
         return Ok(address);
     }
-    let socket = home()?.join("Library/Application Support/rex/server.sock");
+    let socket = default_socket()?;
     let path = socket.to_string_lossy();
     Ok(format!(
         "unix://{}",
         percent_encoding::utf8_percent_encode(&path, &PATH_ESCAPES)
     ))
+}
+
+/// The socket of the server the Rex app starts.
+#[cfg(target_os = "macos")]
+fn default_socket() -> Result<PathBuf> {
+    Ok(home()?.join("Library/Application Support/rex/server.sock"))
+}
+
+/// The socket of the user's own Rex server. Without a runtime directory Rex puts it elsewhere, in
+/// a place that has changed between Rex releases, so it is not guessed.
+#[cfg(target_os = "linux")]
+fn default_socket() -> Result<PathBuf> {
+    std::env::var_os("XDG_RUNTIME_DIR")
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+        .map(|dir| dir.join("rex/server.sock"))
+        .context("XDG_RUNTIME_DIR is not set to an absolute path; pass --server or set REX_SERVER")
 }
 
 /// The bytes a `unix://` address escapes in its path.

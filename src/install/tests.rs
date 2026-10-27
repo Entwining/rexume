@@ -1,4 +1,3 @@
-use super::launch_agent::plist;
 use super::*;
 
 #[test]
@@ -32,6 +31,7 @@ fn a_runtime_that_is_not_set_up_gets_no_settings() -> Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "macos")]
 #[test]
 fn the_plist_round_trips_through_its_parsed_form() -> Result<()> {
     let install = Install {
@@ -41,11 +41,36 @@ fn the_plist_round_trips_through_its_parsed_form() -> Result<()> {
         theme: Some(("#ffffff".into(), "#000000".into())),
         path: "/usr/bin:/bin".into(),
     };
-    let wanted = plist(&install, Path::new("/tmp/rexume & co.log"));
+    let wanted = launch_agent::plist(&install, Path::new("/tmp/rexume & co.log"));
     let mut bytes = Vec::new();
     wanted.to_writer_xml(&mut bytes)?;
     assert_eq!(plist::Value::from_reader_xml(bytes.as_slice())?, wanted);
     Ok(())
+}
+
+/// Every word reaches the daemon as written: systemd would otherwise split it at a space, expand
+/// `%` and `$`, and read a backslash as an escape.
+#[cfg(target_os = "linux")]
+#[test]
+fn the_unit_quotes_what_systemd_would_expand() {
+    let install = Install {
+        exe: "/opt/my $apps/rexume".into(),
+        rex: r#"/opt/"rex"\bin/rex"#.into(),
+        server: "unix:///tmp/a%20b/$HOME.sock".into(),
+        theme: None,
+        path: "/opt/100%/bin:$PATH".into(),
+    };
+    let unit = systemd_unit::unit(&install);
+    let line = |key: &str| {
+        unit.lines()
+            .find_map(|line| line.strip_prefix(key))
+            .unwrap()
+    };
+    assert_eq!(
+        line("ExecStart="),
+        r#""/opt/my $apps/rexume" "daemon" "--rex" "/opt/\"rex\"\\bin/rex" "--server" "unix:///tmp/a%%20b/$$HOME.sock""#
+    );
+    assert_eq!(line("Environment="), r#""PATH=/opt/100%%/bin:$PATH""#);
 }
 
 #[test]

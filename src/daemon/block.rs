@@ -1,11 +1,22 @@
-//! The daemon's writes to the `block` table: each pane's last reported state on this instance.
+//! The daemon's records in the `block` table: each pane's last reported state on this instance.
 
 use anyhow::Result;
-use rusqlite::{Transaction, params};
+use rusqlite::{Connection, Transaction, params};
 use serde_json::Value;
 
 use crate::rex::{str_at, time_at};
 use crate::store::ensure_lineage;
+
+/// Whether the pane has a record on this instance.
+pub(super) fn recorded(conn: &Connection, instance: &str, block: &str) -> Result<bool> {
+    let rows: i64 = conn.query_row(
+        "SELECT COUNT(*) FROM live JOIN block ON block.lineage = live.lineage
+         WHERE live.instance_id = ?1 AND live.live_id = ?2 AND block.instance_id = ?1",
+        params![instance, block],
+        |row| row.get(0),
+    )?;
+    Ok(rows > 0)
+}
 
 /// Makes sure a block has a row on this instance and returns its lineage. A lineage on a new
 /// instance is a new pane: its processes, their statuses and exit, and the generation that orders

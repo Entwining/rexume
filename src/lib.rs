@@ -3,9 +3,9 @@
 
 pub mod cli;
 mod daemon;
+mod event;
 mod gate;
 mod install;
-mod kqueue;
 mod layout;
 mod proc;
 mod report;

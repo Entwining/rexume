@@ -4,9 +4,11 @@ This describes the current design for maintainers and for anyone who needs to kn
 
 ## Processes
 
-launchd runs `rexume daemon`. The daemon starts `rex do` with the adapter script ([`src/rex/adapter.lua`](../src/rex/adapter.lua)) as its child; the script subscribes to the server's events and starts `rexume relay`, which carries events and calls over a Unix socket in the state directory back to the daemon. One kqueue loop in the daemon waits on that socket, the state database's write-ahead log, the files it follows, the exits of processes it tracks, the path of its own executable, `SIGTERM` and `SIGINT`, and deadlines it computes; with nothing happening it does not wake. The two signals are blocked and read from the queue, so on either the daemon ends `rex do` and exits; launchd ends the whole process group anyway, but a daemon run by hand or by a test would otherwise leave `rex do` running until the server stops.
+A job runs `rexume daemon`: a LaunchAgent on macOS, a systemd user service on Linux. The daemon starts `rex do` with the adapter script ([`src/rex/adapter.lua`](../src/rex/adapter.lua)) as its child; the script subscribes to the server's events and starts `rexume relay`, which carries events and calls over a Unix socket in the state directory back to the daemon. One event loop in the daemon, kqueue on macOS and epoll with inotify, pidfds, and a signalfd on Linux, waits on that socket, the state database's write-ahead log, the files it follows, the exits of processes it tracks, the path of its own executable, `SIGTERM` and `SIGINT`, and deadlines it computes; with nothing happening it does not wake. The two signals are blocked and read from the queue, so on either the daemon ends `rex do` and exits; the job ends the whole process group anyway, but a daemon run by hand or by a test would otherwise leave `rex do` running until the server stops.
 
-The daemon alone writes layouts, drives restores, sends notices, and closes worker panes; hooks, gates, and task commands are short processes that write the same database in short transactions. When the executable at the path launchd starts is replaced or removed, as an upgrade does (Homebrew relinks it, Cargo renames a new file over it), the daemon exits and launchd starts the new one; restores and notices resume from the database, and the new daemon brings the Pi extension install wrote up to date ([cli.md](cli.md#daemon)).
+A commit writes its frames to the write-ahead log, which wakes the processes watching it, before it becomes visible in the log's memory-mapped index, which no watch sees. So after each wake from the log, the daemon and `task wait` take the write lock once and release it, which waits for a commit in progress, before they read; otherwise a reader woken early could find nothing new and sleep through the commit.
+
+The daemon alone writes layouts, drives restores, sends notices, and closes worker panes; hooks, gates, and task commands are short processes that write the same database in short transactions. When the executable at the path the job starts is replaced or removed, as an upgrade does (Homebrew relinks it, Cargo renames a new file over it), the daemon exits and the job starts the new one; restores and notices resume from the database, and the new daemon brings the Pi extension install wrote up to date ([cli.md](cli.md#daemon)).
 
 ## What is saved
 
@@ -113,7 +115,7 @@ Most of these come from what Rex and the agents expose; the others need a failur
 
 ## Measurements
 
-`cargo test --release --test it bench -- --ignored --nocapture` starts its own server with 20 sessions of three panes each, runs the daemon against it, and prints one JSON report. It asserts nothing: read the report against the goals in [AGENTS.md](../AGENTS.md), and a change's report against the baseline commit's from the same machine. `REXUME_BENCH_GOGC` sets `GOGC` for the daemon's `rex do`.
+`cargo test --release --test it bench -- --ignored --nocapture` starts its own server with 20 sessions of three panes each, runs the daemon against it, and prints one JSON report. It runs only on macOS, whose accounting of memory and wakeups it reads. It asserts nothing: read the report against the goals in [AGENTS.md](../AGENTS.md), and a change's report against the baseline commit's from the same machine. `REXUME_BENCH_GOGC` sets `GOGC` for the daemon's `rex do`.
 
 | Key | What it measures |
 | --- | --- |

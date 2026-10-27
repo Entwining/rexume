@@ -6,12 +6,10 @@ use serde_json::{Value, json};
 
 use crate::common::REXUME;
 
-const LABEL: &str = "io.github.entwining.rexume";
+mod manager;
 
-/// A home directory with Claude Code, Codex, and Pi set up, and a `launchctl` that records its
-/// calls and keeps the job in a file instead of reaching launchd. It behaves as launchd does:
-/// `bootstrap` starts the job's process, `bootout` only sends it `SIGTERM`, the job stays loaded
-/// until that process exits, and `bootstrap` fails while it is loaded.
+/// A home directory with Claude Code, Codex, and Pi set up, and a fake of the service manager on
+/// its PATH.
 struct Home {
     dir: tempfile::TempDir,
 }
@@ -40,11 +38,9 @@ impl Home {
         .unwrap();
         // The job takes a moment to exit after `SIGTERM`, as the daemon does, and is unloaded
         // only then.
-        let job = dir.path().join("job");
-        let launchctl = home.join("bin/launchctl");
         for (path, script) in [
             (
-                &job,
+                dir.path().join("job"),
                 r#"#!/bin/sh
 trap 'kill $sleeper; sleep 0.3; rm "$1"; exit 0' TERM
 echo $$ > "$1"
@@ -53,30 +49,12 @@ while :; do sleep 60 & sleeper=$!; wait $sleeper; done
                 .to_owned(),
             ),
             (
-                &launchctl,
-                format!(
-                    r#"#!/bin/sh
-echo "$*" >> '{log}'
-case "$1" in
-  print) test -e '{loaded}' && printf '\tpid = %s\n' "$(cat '{loaded}')" ;;
-  bootstrap)
-    if test -e '{loaded}'; then echo 'Bootstrap failed: 5: Input/output error' >&2; exit 5; fi
-    '{job}' '{loaded}' < /dev/null > /dev/null 2>&1 &
-    until test -e '{loaded}'; do sleep 0.01; done ;;
-  bootout)
-    if test -e '{fail}'; then rm '{fail}'; echo 'Boot-out failed: 5: Input/output error' >&2; exit 5; fi
-    kill -TERM "$(cat '{loaded}')" ;;
-esac
-"#,
-                    log = dir.path().join("launchctl.log").display(),
-                    loaded = dir.path().join("loaded").display(),
-                    job = job.display(),
-                    fail = dir.path().join("fail-bootout").display(),
-                ),
+                home.join("bin").join(manager::TOOL),
+                manager::script(dir.path(), &home),
             ),
         ] {
-            std::fs::write(path, script).unwrap();
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o755)).unwrap();
+            std::fs::write(&path, script).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
         }
         Self { dir }
     }
@@ -138,7 +116,7 @@ esac
         ]
         .iter()
         .map(|p| home.join(p))
-        .chain([home.join(format!("Library/LaunchAgents/{LABEL}.plist"))])
+        .chain([manager::definition(&home)])
         .map(|path| {
             let bytes = std::fs::read(&path).ok();
             (path, bytes)
@@ -146,12 +124,12 @@ esac
         .collect()
     }
 
-    fn launchctl(&self, verb: &str) -> usize {
-        std::fs::read_to_string(self.dir.path().join("launchctl.log"))
-            .unwrap_or_default()
-            .lines()
-            .filter(|line| line.starts_with(verb))
-            .count()
+    /// How many times the job was started and stopped.
+    fn starts_and_stops(&self) -> (usize, usize) {
+        (
+            manager::calls(self.dir.path(), manager::STARTS),
+            manager::calls(self.dir.path(), manager::STOPS),
+        )
     }
 }
 
@@ -181,7 +159,7 @@ fn session_start(path: &Path) -> Vec<String> {
 
 /// The value and note install or uninstall reported for each entry.
 fn outcomes(out: &Value) -> [(&str, Option<&str>); 4] {
-    ["claude_hook", "codex_hook", "pi_extension", "launch_agent"].map(|key| {
+    ["claude_hook", "codex_hook", "pi_extension", manager::KEY].map(|key| {
         (
             out[key].as_str().unwrap(),
             out[format!("{key}_note")].as_str(),
@@ -194,26 +172,23 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
     let home = Home::new();
     let first = home.install(&[]);
     assert!(outcomes(&first).iter().all(|o| *o == ("created", None)));
-    assert_eq!(first["launch_agent_label"], LABEL);
+    assert_eq!(first[manager::NAME_KEY], manager::NAME);
     let installed = home.targets();
     assert!(installed.iter().all(|(_, bytes)| bytes.is_some()));
     assert_eq!(
         session_start(&home.home().join(".claude/settings.json")),
         ["rex-hook", "rexume report claude"]
     );
-    let plist = String::from_utf8(installed[3].1.clone().unwrap()).unwrap();
-    assert!(plist.contains("<string>daemon</string>") && plist.contains("/opt/rex/bin/rex"));
-    let path = format!(
-        "<string>{}:/usr/bin:/bin</string>",
-        home.home().join("bin").display()
-    );
-    assert!(plist.contains(&path), "the daemon runs with install's PATH");
+    let job = String::from_utf8(installed[3].1.clone().unwrap()).unwrap();
+    assert!(job.contains(&manager::quoted("daemon")) && job.contains("/opt/rex/bin/rex"));
+    let path = format!("{}:/usr/bin:/bin", home.home().join("bin").display());
+    assert!(job.contains(&path), "the daemon runs with install's PATH");
 
     // Running it again changes nothing and loads the job no second time.
     let again = home.install(&[]);
     assert!(outcomes(&again).iter().all(|o| *o == ("unchanged", None)));
     assert_eq!(home.targets(), installed);
-    assert_eq!(home.launchctl("bootstrap"), 1);
+    assert_eq!(home.starts_and_stops(), (1, 0));
 
     // A partial install is completed without touching what is already right.
     std::fs::remove_file(home.home().join(".pi/agent/extensions/rexume.ts")).unwrap();
@@ -229,7 +204,7 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
         [("unchanged", None), ("created", None), ("created", None)]
     );
     assert_eq!(home.targets()[0], installed[0]);
-    assert_eq!(home.launchctl("bootstrap"), 1);
+    assert_eq!(home.starts_and_stops(), (1, 0));
 
     // A changed job definition is loaded again.
     let themed = home.install(&[
@@ -238,11 +213,8 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
         "--theme-background",
         "#222222",
     ]);
-    assert_eq!(themed["launch_agent"], "updated");
-    assert_eq!(
-        (home.launchctl("bootout"), home.launchctl("bootstrap")),
-        (1, 2)
-    );
+    assert_eq!(themed[manager::KEY], "updated");
+    assert_eq!(home.starts_and_stops(), (2, 1));
 
     let removed = home.run(&["uninstall"]);
     assert!(outcomes(&removed).iter().all(|o| *o == ("removed", None)));
@@ -256,7 +228,7 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
     assert_eq!(settings["model"], "opus");
     let left = home.targets();
     assert!(left[2].1.is_none() && left[3].1.is_none());
-    assert_eq!(home.launchctl("bootout"), 2);
+    assert_eq!(home.starts_and_stops(), (2, 2));
     let twice = home.run(&["uninstall"]);
     assert!(outcomes(&twice).iter().all(|o| *o == ("absent", None)));
 }
@@ -270,7 +242,7 @@ fn a_runtime_that_is_not_set_up_is_skipped_with_a_note() {
     assert_eq!(out[2], ("skipped", Some("`~/.pi/agent` does not exist")));
 }
 
-/// A reload that fails part way leaves the plist differing or the job not loaded, so the next
+/// A reload that fails part way leaves the definition differing or the job stopped, so the next
 /// install finishes it instead of finding nothing to do.
 #[test]
 fn the_next_install_finishes_a_reload_that_failed() {
@@ -282,12 +254,44 @@ fn the_next_install_finishes_a_reload_that_failed() {
         "--theme-background",
         "#222222",
     ];
-    std::fs::write(home.dir.path().join("fail-bootout"), "").unwrap();
+    std::fs::write(home.dir.path().join("fail-stop"), "").unwrap();
     let failed = home.output(&Home::install_args(&theme));
     assert!(!failed.status.success());
-    assert_eq!(home.install(&theme)["launch_agent"], "updated");
-    assert_eq!(
-        (home.launchctl("bootout"), home.launchctl("bootstrap")),
-        (2, 2)
-    );
+    assert_eq!(home.install(&theme)[manager::KEY], "updated");
+    assert_eq!(home.starts_and_stops(), (2, 2));
+}
+
+/// Install starts a service that is not running: one that gave up at its start limit, as when its
+/// executable was missing, and one waiting to restart, which the manager shows as activating.
+#[cfg(target_os = "linux")]
+#[test]
+fn install_starts_a_service_that_is_not_running() {
+    for state in ["start-limit", "restarting"] {
+        let home = Home::new();
+        home.install(&[]);
+        let stopped = Command::new(home.home().join("bin").join(manager::TOOL))
+            .args(["--user", "stop", manager::NAME])
+            .status()
+            .unwrap();
+        assert!(stopped.success());
+        std::fs::write(home.dir.path().join(state), "").unwrap();
+        assert_eq!(home.install(&[])[manager::KEY], "updated", "{state}");
+        assert!(home.job().is_some(), "{state}");
+    }
+}
+
+/// Install writes the hooks before it finds no user manager, so uninstall removes them without one.
+#[cfg(target_os = "linux")]
+#[test]
+fn uninstall_removes_what_an_install_without_a_user_manager_wrote() {
+    let home = Home::new();
+    std::fs::write(home.dir.path().join("no-manager"), "").unwrap();
+    let failed = home.output(&Home::install_args(&[]));
+    assert!(!failed.status.success());
+    let settings = home.home().join(".claude/settings.json");
+    assert!(session_start(&settings).contains(&"rexume report claude".to_owned()));
+    let out = home.run(&["uninstall"]);
+    assert_eq!(out["claude_hook"], "removed");
+    assert_eq!(out[manager::KEY], "absent");
+    assert_eq!(session_start(&settings), ["rex-hook"]);
 }

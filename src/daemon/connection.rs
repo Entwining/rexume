@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde_json::json;
 
-use super::{ADAPTER, Daemon, EXE, Exit, SERVER_DIR, STOP};
-use crate::kqueue::Fired;
+use super::{ADAPTER, Daemon, EXE, Exit, FIRST_FILE, SERVER_DIR, STOP, WAL};
+use crate::event::Fired;
 use crate::rex::{Pipe, require_str, str_at};
 use crate::store::new_id;
 
@@ -45,13 +45,28 @@ impl Daemon<'_> {
         }
     }
 
-    pub(super) fn wait(&self, timeout: Option<Duration>) -> Result<Vec<Fired>> {
-        let fired = self.kq.wait(timeout)?;
+    /// Waits for the next wakeup and drops each watch that no longer follows its path, so that the
+    /// next pass watches it again, also when the wakeup comes between epochs.
+    pub(super) fn wait(&mut self, timeout: Option<Duration>) -> Result<Vec<Fired>> {
+        let fired = self.queue.wait(timeout)?;
         if fired.iter().any(|f| f.token == STOP) {
             return Err(Exit::Stopped.into());
         }
         if fired.iter().any(|f| f.token == EXE && f.gone) {
             return Err(Exit::Replaced.into());
+        }
+        for f in &fired {
+            match f.token {
+                WAL if f.gone => {
+                    self.queue
+                        .file(&self.options.state_dir.join("state.db-wal"), WAL)?;
+                }
+                token if token >= FIRST_FILE && (f.gone || self.via_dir.remove(&token)) => {
+                    self.files.retain(|_, t| *t != token);
+                    self.queue.forget_file(token);
+                }
+                _ => {}
+            }
         }
         Ok(fired)
     }
@@ -71,7 +86,7 @@ impl Daemon<'_> {
             // The nearest directory that exists changes when the next one down is created.
             let mut below = path.as_path();
             for dir in path.ancestors().skip(1) {
-                if self.kq.file(dir, SERVER_DIR)? {
+                if self.queue.file(dir, SERVER_DIR)? {
                     break;
                 }
                 below = dir;
@@ -82,7 +97,7 @@ impl Daemon<'_> {
                 self.wait(None)?;
             }
         }
-        self.kq.forget_file(SERVER_DIR);
+        self.queue.forget_file(SERVER_DIR);
         Ok(())
     }
 
@@ -95,7 +110,7 @@ impl Daemon<'_> {
             .as_deref()
             .and_then(Path::parent)
         {
-            self.kq.file(dir, SERVER_DIR)?;
+            self.queue.file(dir, SERVER_DIR)?;
         }
         let until = Instant::now() + duration;
         while Instant::now() < until {
@@ -107,7 +122,7 @@ impl Daemon<'_> {
                 break;
             }
         }
-        self.kq.forget_file(SERVER_DIR);
+        self.queue.forget_file(SERVER_DIR);
         Ok(())
     }
 
@@ -128,7 +143,7 @@ impl Daemon<'_> {
         match self.accept(&child, &token) {
             Ok(pipe) => Ok((child, pipe)),
             Err(e) => {
-                self.kq.forget_exit(i64::from(child.id()));
+                self.queue.forget_exit(i64::from(child.id()));
                 let _ = child.kill();
                 let _ = child.wait();
                 Err(e)
@@ -138,7 +153,7 @@ impl Daemon<'_> {
 
     fn accept(&mut self, child: &Child, token: &str) -> Result<Pipe> {
         let until = Instant::now() + CONNECT_WAIT;
-        if !self.kq.exit(i64::from(child.id()), ADAPTER)? {
+        if !self.queue.exit(i64::from(child.id()), ADAPTER)? {
             bail!("`rex do` exited at once");
         }
         loop {

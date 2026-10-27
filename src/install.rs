@@ -1,22 +1,28 @@
 //! `rexume install` and `rexume uninstall`: the session hooks of Claude Code and Codex, the Pi
-//! extension, which the daemon also refreshes, and the LaunchAgent that runs the daemon. Each
-//! entry is recognized by its identity (the hook's command, the extension's and plist's paths),
-//! so install changes only what is missing or different, and uninstall removes only these
-//! entries.
+//! extension, which the daemon also refreshes, and the job that runs the daemon, a LaunchAgent on
+//! macOS and a systemd user service on Linux. Each entry is recognized by its identity (the hook's
+//! command, the extension's and the job's paths), so install changes only what is missing or
+//! different, and uninstall removes only these entries.
 
+#[cfg(target_os = "macos")]
 mod launch_agent;
+#[cfg(target_os = "linux")]
+mod systemd_unit;
 
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
+use std::process::Command;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
+#[cfg(target_os = "macos")]
+use launch_agent as job;
 use serde_json::{Value, json};
+#[cfg(target_os = "linux")]
+use systemd_unit as job;
 
 use crate::runtime::pi;
 
-pub const LABEL: &str = "io.github.entwining.rexume";
-
-/// What the LaunchAgent runs.
+/// What the job runs.
 pub struct Install {
     pub exe: PathBuf,
     pub rex: PathBuf,
@@ -31,8 +37,6 @@ struct Targets {
     claude: PathBuf,
     codex: PathBuf,
     pi: PathBuf,
-    plist: PathBuf,
-    logs: PathBuf,
 }
 
 impl Targets {
@@ -41,10 +45,25 @@ impl Targets {
             claude: home.join(".claude/settings.json"),
             codex: home.join(".codex/hooks.json"),
             pi: home.join(".pi/agent/extensions/rexume.ts"),
-            plist: home.join(format!("Library/LaunchAgents/{LABEL}.plist")),
-            logs: home.join("Library/Logs"),
         }
     }
+}
+
+/// Runs one command of the service manager, failing with what it printed when it fails.
+fn run_manager(program: &str, args: &[&str]) -> Result<String> {
+    let output = Command::new(program)
+        .args(args)
+        .output()
+        .with_context(|| format!("failed to run `{program}`"))?;
+    if !output.status.success() {
+        let command = format!("{program} {}", args.join(" "));
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        if stderr.trim().is_empty() {
+            bail!("`{command}` exited {}", output.status);
+        }
+        bail!("`{command}` failed: {}", stderr.trim());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
 /// What install or uninstall did to one entry, and why when that needs saying.
@@ -75,16 +94,14 @@ pub fn install(home: &Path, install: &Install) -> Result<Value> {
         Some(agent) if agent.is_dir() => (write(&targets.pi, pi::EXTENSION.as_bytes())?, None),
         _ => ("skipped", Some("`~/.pi/agent` does not exist".to_owned())),
     };
-    std::fs::create_dir_all(&targets.logs)
-        .with_context(|| format!("failed to create `{}`", targets.logs.display()))?;
-    let launch_agent = launch_agent::install(install, &targets)?;
+    let daemon = job::install(install, home)?;
     let mut out = outcomes([
         ("claude_hook", claude),
         ("codex_hook", codex),
         ("pi_extension", extension),
-        ("launch_agent", (launch_agent, None)),
+        (job::KEY, (daemon, None)),
     ]);
-    out["launch_agent_label"] = json!(LABEL);
+    out[job::NAME_KEY] = json!(job::NAME);
     Ok(out)
 }
 
@@ -92,16 +109,16 @@ pub fn uninstall(home: &Path) -> Result<Value> {
     let targets = Targets::new(home);
     // The daemon rewrites the Pi extension when it starts, so it is stopped before the extension
     // is removed.
-    launch_agent::unload()?;
+    job::unload(home)?;
     let claude = remove_hook(&targets.claude, "claude")?;
     let codex = remove_hook(&targets.codex, "codex")?;
     let extension = remove_file(&targets.pi, |text| text.starts_with(pi::WRITTEN_BY))?;
-    let launch_agent = remove_file(&targets.plist, |_| true)?;
+    let daemon = job::remove(home)?;
     Ok(outcomes([
         ("claude_hook", (claude, None)),
         ("codex_hook", (codex, None)),
         ("pi_extension", extension),
-        ("launch_agent", launch_agent),
+        (job::KEY, daemon),
     ]))
 }
 

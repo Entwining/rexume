@@ -610,6 +610,7 @@ dependencies = [
  "percent-encoding",
  "plist",
  "rusqlite",
+ "rustix",
  "serde",
  "serde_json",
  "shlex",

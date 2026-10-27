@@ -12,7 +12,7 @@ Each JSON object carries `version`, which changes only when a field changes mean
 rexume install [--rex PATH] [--server ADDRESS] [--theme-foreground COLOR --theme-background COLOR]
 ```
 
-Installs the session hooks, the Pi extension, and the LaunchAgent, as the README describes. `--rex` defaults to the first `rex` on `PATH` and fails when there is none; `--server` defaults to `REX_SERVER`, then `unix://$HOME/Library/Application%20Support/rex/server.sock`. The LaunchAgent runs this executable by the path install was started with (`rexume` found on `PATH` is used as that path, not resolved further), so a package manager that replaces the file keeps the job working. The theme colors are the ones restored terminals start with, each written as `#rrggbb` with hex digits in either case; any other value is a usage error, here and for `daemon`. The job runs with install's own `PATH`, through which the daemon finds `codex` to send notices; run `install` again if `codex` moves.
+Installs the session hooks, the Pi extension, and the job that runs the daemon, a LaunchAgent on macOS and a systemd user service on Linux, as the README describes. `--rex` defaults to the first `rex` on `PATH` and fails when there is none; `--server` defaults to `REX_SERVER`, then `unix://$HOME/Library/Application%20Support/rex/server.sock` on macOS or `unix://$XDG_RUNTIME_DIR/rex/server.sock` on Linux, where install fails without `XDG_RUNTIME_DIR`. The job runs this executable by the path install was started with (`rexume` found on `PATH` is used as that path, not resolved further), so a package manager that replaces the file keeps the job working. The theme colors are the ones restored terminals start with, each written as `#rrggbb` with hex digits in either case; any other value is a usage error, here and for `daemon`. The job runs with install's own `PATH`, through which the daemon finds `codex` to send notices; run `install` again if `codex` moves.
 
 ```json
 { "version": 1, "claude_hook": "created", "claude_hook_note": null, "codex_hook": "unchanged", "codex_hook_note": null,
@@ -26,6 +26,8 @@ Installs the session hooks, the Pi extension, and the LaunchAgent, as the README
 | `pi_extension` | `created`, `updated`, `unchanged`, `skipped` (no `~/.pi/agent`) |
 | `launch_agent` | `created`, `updated`, `unchanged` |
 
+On Linux, `systemd_unit`, `systemd_unit_note`, and `systemd_unit_name` (`rexume.service`) take the place of `launch_agent`, `launch_agent_note`, and `launch_agent_label`, with the same values.
+
 Each field has a `_note` beside it, which says why when the value needs a reason and is `null` otherwise.
 
 ### How install recognizes its entries
@@ -34,8 +36,9 @@ Each field has a `_note` beside it, which says why when the value needs a reason
 - **Codex trust.** Codex keys its approval of a hook by the hook's position in `hooks.json`. Install appends and never moves existing groups, so hooks you already trusted stay trusted, and only the appended entry waits for approval in `/hooks`.
 - **Pi extension.** `~/.pi/agent/extensions/rexume.ts` is rewritten whenever its bytes differ from the extension this version ships. A file install wrote starts with `` // Written by `rexume install` ``, in every version; the daemon replaces only such a file, and uninstall removes only such a file.
 - **LaunchAgent.** The job is the label `io.github.entwining.rexume` in `gui/$UID`, defined by `~/Library/LaunchAgents/io.github.entwining.rexume.plist`, which runs `rexume daemon` and logs to `~/Library/Logs/rexume.log`. Install compares the plist it would write with the one on disk by their parsed content, writes it when they differ, and boots the job out and in again only when the plist changed or the job is not loaded; otherwise launchd is not touched. A reload waits up to 30 seconds for the running daemon to exit after `launchctl bootout`, because launchd keeps the job loaded until then, and writes the new plist only once the old job is gone, so a reload that fails leaves the plist differing or the job unloaded, and the next install finishes it.
+- **systemd user service.** The job is `rexume.service` in the user's systemd manager, defined by `rexume.service` in `$XDG_CONFIG_HOME/systemd/user` (`~/.config` when the variable is unset or not absolute), which runs `rexume daemon`; its log goes to the journal, read with `journalctl --user -u rexume`. Install compares the unit it would write with the one on disk byte for byte, and touches nothing when they match and the service is running, enabled, and loaded from that file. Otherwise it stops a running service, writes the unit when it differs, resets the start limit, which counts install's own starts too, when the service is enabled or failed, reloads the manager, and enables and starts the service, so a step that fails leaves something the next install finishes. The service restarts 2 seconds after any exit and gives up after 5 starts within 30 seconds, as when its executable is gone; the next install starts it again. Install fails when it cannot reach the user manager, after it has written the hooks and the Pi extension; uninstall still removes them, and `rexume daemon` can run under another service manager instead.
 
-The Pi extension and the plist hold nothing of the user's, so they are replaced whole and no backup is kept; the plist is written from install's flags and its `PATH`. Files are replaced through a rename that keeps their permissions; a symbolic link is followed and its target replaced.
+The Pi extension and the job's plist or unit hold nothing of the user's, so they are replaced whole and no backup is kept; the plist or unit is written from install's flags and its `PATH`. Files are replaced through a rename that keeps their permissions; a symbolic link is followed and its target replaced.
 
 ## uninstall
 
@@ -43,14 +46,14 @@ The Pi extension and the plist hold nothing of the user's, so they are replaced 
 rexume uninstall
 ```
 
-Boots the job out and waits for the daemon to exit, so that it cannot write the Pi extension back, then removes rexume's hooks and any `SessionStart` group they leave empty, the Pi extension when install wrote it, and the plist. The state directory and the executable stay.
+Boots the LaunchAgent out, or disables and stops the systemd service, and waits for the daemon to exit, so that it cannot write the Pi extension back, then removes rexume's hooks and any `SessionStart` group they leave empty, the Pi extension when install wrote it, and the plist or unit. The state directory and the executable stay.
 
 ```json
 { "version": 1, "claude_hook": "removed", "claude_hook_note": null, "codex_hook": "absent", "codex_hook_note": null,
   "pi_extension": "kept", "pi_extension_note": "not written by install", "launch_agent": "removed", "launch_agent_note": null }
 ```
 
-Each field is `removed` or `absent`; `pi_extension` can also be `kept`.
+Each field is `removed` or `absent`; `pi_extension` can also be `kept`. On Linux, `systemd_unit` and `systemd_unit_note` take the place of `launch_agent` and `launch_agent_note`.
 
 ## daemon
 
@@ -58,7 +61,7 @@ Each field is `removed` or `absent`; `pi_extension` can also be `kept`.
 rexume daemon [--rex PATH] [--server ADDRESS] [--theme-foreground COLOR --theme-background COLOR]
 ```
 
-The process the LaunchAgent runs. It runs until stopped, logs to stderr (set `RUST_LOG=rexume=debug` for every call it makes through its adapter), and exits 1 at once when another daemon holds the same state directory. It starts `rex do` with its adapter script as a child process and reconnects with a growing delay, from 1 to 30 seconds, when the server goes away; a new server socket wakes it early. On `SIGTERM` or `SIGINT` it ends `rex do` and exits 0; it also exits 0 when its executable is replaced, so that launchd starts the new one. When it starts, it replaces the Pi extension install wrote, as install does, when that differs from this version's; it never creates a missing one, leaves a file install did not write as it is, and logs a failure without stopping.
+The process the job runs. It runs until stopped, logs to stderr (set `RUST_LOG=rexume=debug` for every call it makes through its adapter), and exits 1 at once when another daemon holds the same state directory. It starts `rex do` with its adapter script as a child process and reconnects with a growing delay, from 1 to 30 seconds, when the server goes away; a new server socket wakes it early. On `SIGTERM` or `SIGINT` it ends `rex do` and exits 0; it also exits 0 when its executable is replaced, so that its job starts the new one. When it starts, it replaces the Pi extension install wrote, as install does, when that differs from this version's; it never creates a missing one, leaves a file install did not write as it is, and logs a failure without stopping.
 
 ## status
 
@@ -121,8 +124,10 @@ A notice's text starts with `[rexume NOTICE_ID]` and names the task, its title, 
 | Variable | Read by | Use |
 | --- | --- | --- |
 | `HOME` | every command | the default state directory; install's and uninstall's targets, and the Pi extension the daemon replaces |
-| `PATH` | `install`, `daemon`, `report`, `task` | finding `rex` (and, for `install`, `rexume`); install writes its own into the LaunchAgent, where the daemon finds `codex` through it |
+| `PATH` | `install`, `daemon`, `report`, `task` | finding `rex` (and, for `install`, `rexume`); install writes its own into the job, where the daemon finds `codex` through it |
 | `REX_SERVER` | `install`, `daemon`, `report`, `task` | the server address when `--server` is not given; `report` and `task` use it to reach the server |
+| `XDG_RUNTIME_DIR` | `install`, `daemon` (Linux) | the default server address when neither `--server` nor `REX_SERVER` is given |
+| `XDG_CONFIG_HOME` | `install`, `uninstall` (Linux) | where the systemd unit goes, when absolute |
 | `REX_BLOCK` | `report`, `task`, `gate` | the calling pane |
 | `REX_SESSION` | `report`, `gate` | the calling pane's session |
 | `CLAUDE_CODE_MESSAGING_SOCKET` | `report claude` | where notices to that conversation go |

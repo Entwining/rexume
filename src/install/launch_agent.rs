@@ -1,30 +1,42 @@
 //! The LaunchAgent that runs the daemon: its plist and launchd's loaded copy of it.
 
 use std::io::ErrorKind;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::time::Duration;
 
 use anyhow::{Context, Result, bail};
 
-use super::{Install, LABEL, Targets, write};
-use crate::kqueue::Kqueue;
+use super::{Install, Outcome, remove_file, run_manager, write};
+use crate::event::Queue;
+
+/// The keys of install's and uninstall's output, and the job's label.
+pub(super) const KEY: &str = "launch_agent";
+pub(super) const NAME_KEY: &str = "launch_agent_label";
+pub(super) const NAME: &str = "io.github.entwining.rexume";
 
 /// How long a stop waits for the daemon to exit. The daemon exits on `SIGTERM` once `rex do` has
 /// ended, and launchd kills a job that outlives its exit timeout, so this only bounds a stop
 /// that neither ends.
 const EXIT_DEADLINE: Duration = Duration::from_secs(30);
 
+fn plist_path(home: &Path) -> PathBuf {
+    home.join(format!("Library/LaunchAgents/{NAME}.plist"))
+}
+
 /// Writes the plist when its parsed content differs, and loads the job when the plist changed or
 /// the job is not loaded: a loaded job keeps the definition it was loaded with.
-pub(super) fn install(install: &Install, targets: &Targets) -> Result<&'static str> {
-    let wanted = plist(install, &targets.logs.join("rexume.log"));
-    let current = match plist::Value::from_file(&targets.plist) {
+pub(super) fn install(install: &Install, home: &Path) -> Result<&'static str> {
+    let path = plist_path(home);
+    let logs = home.join("Library/Logs");
+    std::fs::create_dir_all(&logs)
+        .with_context(|| format!("failed to create `{}`", logs.display()))?;
+    let wanted = plist(install, &logs.join("rexume.log"));
+    let current = match plist::Value::from_file(&path) {
         Ok(current) => Some(current),
         Err(e) if e.as_io().is_some_and(|io| io.kind() == ErrorKind::NotFound) => None,
         Err(e) => {
-            return Err(e)
-                .with_context(|| format!("failed to parse `{}`", targets.plist.display()));
+            return Err(e).with_context(|| format!("failed to parse `{}`", path.display()));
         }
     };
     let mut bytes = Vec::new();
@@ -41,9 +53,9 @@ pub(super) fn install(install: &Install, targets: &Targets) -> Result<&'static s
         stop(&job)?;
     }
     if changed {
-        write(&targets.plist, &bytes)?;
+        write(&path, &bytes)?;
     }
-    launchctl(&["bootstrap", &domain(), &targets.plist.to_string_lossy()])?;
+    launchctl(&["bootstrap", &domain(), &path.to_string_lossy()])?;
     Ok(if current.is_none() {
         "created"
     } else {
@@ -52,11 +64,16 @@ pub(super) fn install(install: &Install, targets: &Targets) -> Result<&'static s
 }
 
 /// Stops the job when launchd has it loaded.
-pub(super) fn unload() -> Result<()> {
+pub(super) fn unload(_home: &Path) -> Result<()> {
     if let Some(job) = loaded()? {
         stop(&job)?;
     }
     Ok(())
+}
+
+/// Removes the plist of a job already stopped.
+pub(super) fn remove(home: &Path) -> Result<Outcome> {
+    remove_file(&plist_path(home), |_| true)
 }
 
 /// launchd's loaded copy of the job.
@@ -69,14 +86,14 @@ struct Loaded {
 /// launchd has sent `SIGTERM`, and the job stays loaded until its process exits, so a `bootstrap`
 /// before then fails with `5: Input/output error`; a job with no process is gone at once.
 fn stop(job: &Loaded) -> Result<()> {
-    let kq = Kqueue::new()?;
+    let queue = Queue::new()?;
     // Watched before the bootout, so that an exit in between is not missed.
     let running = match job.pid {
-        Some(pid) => kq.exit(pid, 0)?,
+        Some(pid) => queue.exit(pid, 0)?,
         None => false,
     };
     launchctl(&["bootout", &service()])?;
-    if running && kq.wait(Some(EXIT_DEADLINE))?.is_empty() {
+    if running && queue.wait(Some(EXIT_DEADLINE))?.is_empty() {
         bail!(
             "the daemon did not exit within {}s of `launchctl bootout`",
             EXIT_DEADLINE.as_secs()
@@ -109,7 +126,7 @@ pub(super) fn plist(install: &Install, log: &Path) -> plist::Value {
     // The job runs only while the executable exists, so removing rexume without uninstall stops
     // it instead of leaving launchd to restart a missing program.
     dict(vec![
-        ("Label", LABEL.to_owned().into()),
+        ("Label", NAME.to_owned().into()),
         (
             "ProgramArguments",
             plist::Value::Array(args.into_iter().map(plist::Value::from).collect()),
@@ -134,7 +151,7 @@ fn domain() -> String {
 }
 
 fn service() -> String {
-    format!("{}/{LABEL}", domain())
+    format!("{}/{NAME}", domain())
 }
 
 fn loaded() -> Result<Option<Loaded>> {
@@ -153,16 +170,5 @@ fn loaded() -> Result<Option<Loaded>> {
 }
 
 fn launchctl(args: &[&str]) -> Result<()> {
-    let output = Command::new("launchctl")
-        .args(args)
-        .output()
-        .context("failed to run `launchctl`")?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        if stderr.trim().is_empty() {
-            bail!("`launchctl {}` exited {}", args.join(" "), output.status);
-        }
-        bail!("`launchctl {}` failed: {}", args.join(" "), stderr.trim());
-    }
-    Ok(())
+    run_manager("launchctl", args).map(drop)
 }

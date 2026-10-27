@@ -3,7 +3,7 @@
 
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
-use std::os::fd::{AsFd, AsRawFd, RawFd};
+use std::os::fd::{AsFd, BorrowedFd};
 use std::os::unix::net::UnixStream;
 use std::time::{Duration, Instant};
 
@@ -35,8 +35,8 @@ impl Pipe {
         })
     }
 
-    pub fn fd(&self) -> RawFd {
-        self.stream.as_raw_fd()
+    pub fn fd(&self) -> BorrowedFd<'_> {
+        self.stream.as_fd()
     }
 
     pub fn call(&mut self, method: &str, params: &Value) -> Result<Value, CallError> {

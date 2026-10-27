@@ -110,6 +110,15 @@ impl Store {
         &self.conn
     }
 
+    /// Returns once no other connection is part way through a commit. A commit writes its frames
+    /// to the write-ahead log, which wakes the processes watching it, and becomes visible only
+    /// after that, in the memory-mapped index no watch sees; the writer holds the write lock
+    /// throughout, so taking the lock makes that commit visible here.
+    pub fn settle(&mut self) -> Result<()> {
+        self.write()?.rollback()?;
+        Ok(())
+    }
+
     /// Changes whenever another connection commits, and not for this one's own commits.
     pub fn data_version(&self) -> Result<i64> {
         Ok(self

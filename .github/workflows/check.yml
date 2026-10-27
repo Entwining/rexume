@@ -13,6 +13,12 @@ on:
 permissions:
   contents: read
 
+env:
+  # renovate: datasource=crate depName=cargo-deny
+  CARGO_DENY_VERSION: 0.20.2
+  # renovate: datasource=crate depName=cargo-about
+  CARGO_ABOUT_VERSION: 0.9.2
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
   cancel-in-progress: true
@@ -36,11 +42,6 @@ jobs:
         with:
           tool: cargo-deny@${{ env.CARGO_DENY_VERSION }},cargo-about@${{ env.CARGO_ABOUT_VERSION }}
           fallback: none
-        env:
-          # renovate: datasource=crate depName=cargo-deny
-          CARGO_DENY_VERSION: 0.20.2
-          # renovate: datasource=crate depName=cargo-about
-          CARGO_ABOUT_VERSION: 0.9.2
       # install-action has no actionlint, and wrapper actions skip the provenance check.
       - name: Lint workflows
         run: |
@@ -68,3 +69,56 @@ jobs:
           test "$("$RUNNER_TEMP/package/bin/rexume" --version)" = "rexume $version"
           test -s "$RUNNER_TEMP/package/LICENSE-THIRD-PARTY.md"
           printf 'version=%s\n' "$version" >> "$GITHUB_OUTPUT"
+
+  # The release ships these static builds, so the checks run on the targets the archives hold.
+  linux:
+    strategy:
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 20
+    env:
+      TARGET: ${{ matrix.target }}
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - name: Install the pinned Rust toolchain and musl
+        run: |
+          rustup target add "$TARGET"
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq musl-tools
+      - uses: Swatinem/rust-cache@v2.9.2
+        with:
+          cache-bin: false
+          key: ${{ matrix.target }}
+      - uses: taiki-e/install-action@v2.87.29
+        with:
+          tool: cargo-deny@${{ env.CARGO_DENY_VERSION }},cargo-about@${{ env.CARGO_ABOUT_VERSION }}
+          fallback: none
+      # The Pi extension's test runs its TypeScript in Node, which needs type stripping on by default.
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: 24
+      - name: Check dependencies, formatting, lints, and tests
+        run: make check TARGET="$TARGET"
+      - name: Build the archive
+        run: |
+          version=$(make -s version)
+          name="rexume-$version-$TARGET"
+          make build OUT="$RUNNER_TEMP/$name" TARGET="$TARGET"
+          test "$("$RUNNER_TEMP/$name/bin/rexume" --version)" = "rexume $version"
+          ! readelf -d "$RUNNER_TEMP/$name/bin/rexume" | grep -q NEEDED
+          mkdir "$RUNNER_TEMP/dist"
+          tar -czf "$RUNNER_TEMP/dist/$name.tar.gz" -C "$RUNNER_TEMP" "$name"
+          (cd "$RUNNER_TEMP/dist" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: package-${{ matrix.target }}
+          path: ${{ runner.temp }}/dist/
+          if-no-files-found: error
+          retention-days: 7

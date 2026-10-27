@@ -8,7 +8,7 @@ use anyhow::Result;
 use rusqlite::params;
 use serde_json::{Value, json};
 
-use super::block::{set_foreground, set_size, set_status, touch_block};
+use super::block::{recorded, set_foreground, set_size, set_status, touch_block};
 use crate::layout;
 use crate::rex::{CallError, Rex, is_root, items, root_status, str_at};
 use crate::store::{Store, ensure_lineage, lineage_of};
@@ -319,6 +319,14 @@ impl View {
             match rex.call("session.view", &json!({ "session_id": live })) {
                 Ok(view) => {
                     self.save(store, &live, &view)?;
+                    // A new pane's first report can reach the stream before the stream carries
+                    // its session, so a pane with nothing recorded on this instance is read
+                    // once, as the baseline reads every pane.
+                    for block in layout::view_blocks(&view) {
+                        if !recorded(store.conn(), &self.instance, &block)? {
+                            self.read_block(rex, store, &live, &block)?;
+                        }
+                    }
                 }
                 Err(e) if e.not_found() => {}
                 Err(e @ CallError::Rejected { .. }) => {

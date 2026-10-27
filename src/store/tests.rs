@@ -203,3 +203,24 @@ fn sweep_keeps_what_a_layout_or_an_open_task_still_names() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn settle_returns_after_another_connections_commit() -> Result<()> {
+    let (dir, mut store) = store();
+    let before = store.data_version()?;
+    let (holding, held) = std::sync::mpsc::channel();
+    let path = dir.path().to_owned();
+    let writer = std::thread::spawn(move || -> Result<()> {
+        let mut other = Store::open(&path)?;
+        let tx = other.write()?;
+        tx.execute("CREATE TABLE committed (id INTEGER) STRICT", [])?;
+        holding.send(()).unwrap();
+        std::thread::sleep(Duration::from_millis(200));
+        tx.commit()?;
+        Ok(())
+    });
+    held.recv().unwrap();
+    store.settle()?;
+    assert_ne!(store.data_version()?, before);
+    writer.join().unwrap()
+}

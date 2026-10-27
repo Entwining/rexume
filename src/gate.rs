@@ -14,6 +14,12 @@ use crate::restore::{Plan, Start};
 use crate::runtime::{self, Runtime, Turn};
 use crate::store::{Store, now_ms};
 
+/// The shell started when `SHELL` is unset or fails; Linux systems often have no zsh.
+#[cfg(target_os = "macos")]
+const FALLBACK_SHELL: &str = "/bin/zsh";
+#[cfg(target_os = "linux")]
+const FALLBACK_SHELL: &str = "/bin/sh";
+
 #[expect(
     clippy::disallowed_methods,
     reason = "both shells failed to exec; there is no caller to return to"
@@ -27,7 +33,7 @@ pub fn run(state_dir: &Path, op: &str, slot: i64) -> ! {
         }
     };
     let shell = std::env::var_os("SHELL").map_or_else(
-        || "/bin/zsh".to_owned(),
+        || FALLBACK_SHELL.to_owned(),
         |shell| shell.to_string_lossy().into_owned(),
     );
     let error = match claimed {
@@ -43,8 +49,8 @@ pub fn run(state_dir: &Path, op: &str, slot: i64) -> ! {
         _ => login_shell(&shell),
     };
     eprintln!("rexume: failed to start `{shell}`: {error}");
-    let error = login_shell("/bin/zsh");
-    eprintln!("rexume: failed to start `/bin/zsh`: {error}");
+    let error = login_shell(FALLBACK_SHELL);
+    eprintln!("rexume: failed to start `{FALLBACK_SHELL}`: {error}");
     std::process::exit(1)
 }
 
@@ -69,7 +75,7 @@ fn agent(shell: &str, plan: &Plan, started: Start) -> std::io::Error {
         Err(e) => return std::io::Error::other(e.to_string()),
     };
     let quoted_shell =
-        shlex::try_quote(shell).map_or_else(|_| "/bin/zsh".into(), |s| s.into_owned());
+        shlex::try_quote(shell).map_or_else(|_| FALLBACK_SHELL.into(), |s| s.into_owned());
     let script = format!("trap : INT; {command}; exec {quoted_shell} -l");
     let mut process = Command::new(shell);
     process.args(["-i", "-c", &script]);

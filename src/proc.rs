@@ -1,16 +1,39 @@
 //! The process tree, to tell which agent process a command runs under.
-#![expect(
-    unsafe_code,
-    reason = "libc::proc_pidinfo has no safe wrapper in the dependency set; AGENTS.md records this"
+#![cfg_attr(
+    target_os = "macos",
+    expect(
+        unsafe_code,
+        reason = "libc::proc_pidinfo has no safe wrapper in the dependency set; AGENTS.md records this"
+    )
 )]
 
+#[cfg(target_os = "macos")]
 use std::ffi::CStr;
+#[cfg(target_os = "macos")]
 use std::mem::{MaybeUninit, size_of};
 
 /// Programs that only pass a command along: hooks and tool calls reach this tool through them.
 const WRAPPERS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "env", "rexume"];
 
+/// A process's parent and executable name, or `None` when no such process is visible or it has
+/// exited and only waits to be reaped.
+#[cfg(target_os = "linux")]
+fn info(pid: u32) -> Option<(u32, String)> {
+    let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
+    let field = |name: &str| {
+        status
+            .lines()
+            .find_map(|line| line.strip_prefix(name)?.strip_prefix(':'))
+            .map(str::trim)
+    };
+    if field("State")?.starts_with(['Z', 'X']) {
+        return None;
+    }
+    Some((field("PPid")?.parse().ok()?, field("Name")?.to_owned()))
+}
+
 /// A process's parent and executable name, or `None` when no such process is visible.
+#[cfg(target_os = "macos")]
 fn info(pid: u32) -> Option<(u32, String)> {
     let pid = i32::try_from(pid).ok()?;
     let mut info = MaybeUninit::<libc::proc_bsdinfo>::uninit();
@@ -83,5 +106,23 @@ mod tests {
         assert!(name.starts_with("rexume"));
         assert_eq!(parent, std::os::unix::process::parent_id());
         assert!(!alive(-1));
+    }
+
+    /// A `task wait` that exited but was not reaped yet can no longer take its round's result.
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn an_exited_process_is_not_alive_before_it_is_reaped() {
+        let mut child = std::process::Command::new("/bin/true")
+            .spawn()
+            .expect("true starts");
+        let pid = i64::from(child.id());
+        let status = format!("/proc/{pid}/status");
+        let until = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        while !std::fs::read_to_string(&status).is_ok_and(|s| s.contains("\nState:\tZ")) {
+            assert!(std::time::Instant::now() < until, "the child never exited");
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(!alive(pid));
+        child.wait().expect("the child is reaped");
     }
 }
