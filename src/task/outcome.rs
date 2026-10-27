@@ -60,7 +60,11 @@ pub(super) fn evaluate(
         return Ok(None);
     };
     match evidence {
-        Evidence::Turn(reading) => {
+        Evidence::Turn(Err(note)) => {
+            finish(tx, id, round, "failed", None, Some(&note))?;
+            Ok(None)
+        }
+        Evidence::Turn(Ok(reading)) => {
             let pane = Pane::read(tx, &worker)?;
             let process = match bound {
                 Some((runtime, native_id)) => tx

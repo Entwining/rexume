@@ -129,12 +129,24 @@ fn a_close_waits_for_the_restore_and_looks_again_after_the_claim() -> Result<()>
     Ok(())
 }
 
+/// An untouched released worker is not restored. One whose record cannot be read, here a
+/// directory, may have a turn after its result, so it is, without holding back the restore.
 #[test]
-fn an_untouched_released_worker_is_not_restored() -> Result<()> {
+fn an_untouched_released_worker_is_retired_unless_its_record_cannot_be_read() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = record(&[PROMPT, ANSWER, DURATION])?;
     let store = released_worker(dir.path(), transcript.path())?;
     assert_eq!(retired_workers(store.conn())?, ["b"]);
+    store.conn().execute(
+        "UPDATE conversation SET transcript = ?1 WHERE native_id = 'worker'",
+        params![dir.path().to_string_lossy()],
+    )?;
+    assert!(retired_workers(store.conn())?.is_empty());
+    // Any other error ends the restore's planning instead of deciding it.
+    store
+        .conn()
+        .execute_batch("UPDATE task SET position = -1")?;
+    assert!(retired_workers(store.conn()).is_err());
     Ok(())
 }
 

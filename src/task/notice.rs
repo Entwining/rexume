@@ -3,8 +3,6 @@
 //! or acknowledgement. A send that may have happened is never repeated; only the owner's record
 //! settles it.
 
-use std::collections::{HashMap, HashSet};
-use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -13,7 +11,7 @@ use serde_json::{Map, Value};
 
 use super::Interest;
 use crate::proc;
-use crate::runtime::{self, Receipt, Runtime, Sent, Target, pi};
+use crate::runtime::{self, Runtime, Sent, Target};
 use crate::store::{Store, now_ms};
 
 /// How long a finished round waits before the daemon sends its notice, so a `task wait` running
@@ -210,96 +208,6 @@ fn ready_owner(conn: &Connection, task: &str) -> Result<Option<Owner>> {
         .optional()?)
 }
 
-/// Sent notices with the owner record each is looked for in.
-pub(super) const SENT: &str = "SELECT n.id, n.state, c.runtime, c.native_id, c.transcript
-  FROM notice n JOIN task t ON t.id = n.task_id
-  JOIN conversation c ON c.runtime = t.owner_runtime AND c.native_id = t.owner_native_id
-  WHERE n.state IN ('sent', 'accepted', 'unknown')";
-
-/// The notices sent to one owner record.
-struct OwnerRecord {
-    runtime: Runtime,
-    native_id: String,
-    notices: Vec<(String, String)>,
-}
-
-/// Marks notices the owner's conversation has taken in, from its own record. Pi's extension
-/// renaming a notice to `.accepted` shows only that Pi holds it.
-pub(super) fn settle(
-    store: &mut Store,
-    receipts: &mut HashMap<PathBuf, Receipt>,
-    interest: &mut Interest,
-) -> Result<()> {
-    let mut records: HashMap<PathBuf, OwnerRecord> = HashMap::new();
-    let rows: Vec<(String, String, Runtime, String, Option<String>)> = store
-        .conn()
-        .prepare_cached(SENT)?
-        .query_map([], |row| {
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                row.get(3)?,
-                row.get(4)?,
-            ))
-        })?
-        .collect::<rusqlite::Result<_>>()?;
-    for (notice, state, runtime, native_id, transcript) in rows {
-        let Some(transcript) = transcript else {
-            continue;
-        };
-        records
-            .entry(PathBuf::from(transcript))
-            .or_insert_with(|| OwnerRecord {
-                runtime,
-                native_id,
-                notices: Vec::new(),
-            })
-            .notices
-            .push((notice, state));
-    }
-    receipts.retain(|path, _| records.contains_key(path));
-    let mut delivered = HashSet::new();
-    let mut accepted = Vec::new();
-    for (path, record) in records {
-        let receipt = receipts
-            .entry(path.clone())
-            .or_insert_with(|| Receipt::new(record.runtime, &path));
-        interest.files.insert(path);
-        let ids: Vec<String> = record.notices.iter().map(|(id, _)| id.clone()).collect();
-        delivered.extend(receipt.found(&ids)?);
-        if record.runtime == Runtime::Pi {
-            interest
-                .files
-                .insert(pi::inbox(store.dir(), &record.native_id));
-            accepted.extend(record.notices.into_iter().filter(|(id, state)| {
-                state != "accepted"
-                    && !delivered.contains(id)
-                    && pi::accepted(store.dir(), &record.native_id, id)
-            }));
-        }
-    }
-    if delivered.is_empty() && accepted.is_empty() {
-        return Ok(());
-    }
-    let tx = store.write()?;
-    for id in &delivered {
-        tx.execute(
-            "UPDATE notice SET state = 'delivered'
-             WHERE id = ?1 AND state IN ('sent', 'accepted', 'unknown')",
-            params![id],
-        )?;
-    }
-    for (id, _) in &accepted {
-        tx.execute(
-            "UPDATE notice SET state = 'accepted' WHERE id = ?1 AND state IN ('sent', 'unknown')",
-            params![id],
-        )?;
-    }
-    tx.commit()?;
-    Ok(())
-}
-
 /// Notices not yet confirmed as delivered, with the round each tells of. A `pending` notice
 /// with a note is one whose send failed, which keeps failing until its cause is fixed.
 const UNDELIVERED: &str = "SELECT n.id, n.task_id, n.round, r.state, n.state, n.note
@@ -334,5 +242,6 @@ pub fn undelivered(conn: &Connection, owner: Option<(Runtime, &str)>) -> Result<
     })
 }
 
+pub(super) mod receipt;
 #[cfg(test)]
 mod tests;

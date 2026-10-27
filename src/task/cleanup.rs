@@ -19,12 +19,14 @@ use crate::store::{Store, UNFINISHED_RESTORE, live_of};
 
 /// Released disposable workers whose panes, as last recorded, still show the worker as its latest
 /// result left it. A restore leaves these out; any other pane, including one the user took over
-/// after the result, comes back.
+/// after the result or one whose worker's record cannot be read, comes back.
 pub fn retired_workers(conn: &Connection) -> Result<Vec<String>> {
     let mut retired = Vec::new();
     for id in due(conn)? {
-        if let Untouched::Yes(worker) = untouched(conn, &id)? {
-            retired.push(worker);
+        match untouched(conn, &id)? {
+            Untouched::Yes(worker) => retired.push(worker),
+            Untouched::No(_) => {}
+            Untouched::Unreadable(e) => log::warn!("task {id}: restoring its worker's pane: {e}"),
         }
     }
     Ok(retired)
@@ -103,6 +105,8 @@ fn taken(conn: &Connection, id: &str) -> Result<Taken> {
 enum Untouched {
     Yes(String),
     No(String),
+    /// The worker's record cannot be read, so whether it has a turn after the result is unknown.
+    Unreadable(String),
 }
 
 /// Whether the worker's pane, as recorded, is unchanged since its result. A run's pane still shows
@@ -169,13 +173,14 @@ fn untouched(conn: &Connection, id: &str) -> Result<Untouched> {
         return no("a conversation started in the worker's pane after its result");
     }
     if let Some(transcript) = transcript {
-        let turn = last_turn(
+        match last_turn(
             runtime,
             Path::new(&transcript),
             u64::try_from(taken.position)?,
-        )?;
-        if turn != Some(Turn::None) {
-            return no("the worker has a turn after its result");
+        ) {
+            Ok(Some(Turn::None)) => {}
+            Ok(_) => return no("the worker has a turn after its result"),
+            Err(e) => return Ok(Untouched::Unreadable(format!("{e:#}"))),
         }
     }
     Ok(Untouched::Yes(taken.worker))
@@ -295,6 +300,7 @@ fn attempt(rex: &mut Rex, conn: &Connection, id: &str, block: Option<String>) ->
     let worker = match untouched(conn, id)? {
         Untouched::Yes(worker) => worker,
         Untouched::No(reason) => return Ok(Check::Keep(reason)),
+        Untouched::Unreadable(reason) => return Ok(Check::Later(reason)),
     };
     // A restore leaves an untouched worker out, so on a later server instance it has no pane.
     let Some(block) = block else {

@@ -214,8 +214,7 @@ fn a_non_interactive_round_ends_by_its_exit_and_result_file() -> Result<()> {
 
 /// A new server instance first finishes a run by what the earlier instance recorded, then ends
 /// the runs that instance left open. A run's own instance is the only one whose record shows it,
-/// and a run from before instances were recorded is left to its record. An interactive worker's
-/// record that cannot be read, here a directory, is left to the passes.
+/// and a run from before instances were recorded is left to its record.
 #[test]
 fn a_new_instance_ends_the_runs_the_earlier_one_left_open() -> Result<()> {
     let cases = [
@@ -234,16 +233,14 @@ fn a_new_instance_ends_the_runs_the_earlier_one_left_open() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let result_file = dir.path().join("result.md");
         std::fs::write(&result_file, "Report.")?;
-        let mut store = task_world(dir.path(), dir.path(), Some(&result_file.to_string_lossy()))?;
+        let mut store = task_world(
+            dir.path(),
+            Path::new("/unused"),
+            Some(&result_file.to_string_lossy()),
+        )?;
         store.conn().execute(
             "UPDATE block SET fg_pid = ?1, last_exit = ?2 WHERE lineage = 'b';",
             params![fg_pid, last_exit],
-        )?;
-        store.conn().execute_batch(
-            "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage,
-               keep_pane, worker_runtime, worker_native_id, created_at)
-               VALUES ('u', 'chat', 'claude', 'owner', 'c', 0, 'claude', 'worker', 0);
-             INSERT INTO task_round (task_id, round, state, created_at) VALUES ('u', 1, 'running', 0);",
         )?;
         store
             .conn()
@@ -253,5 +250,39 @@ fn a_new_instance_ends_the_runs_the_earlier_one_left_open() -> Result<()> {
         assert_eq!(found, state, "{fg_pid:?} {last_exit:?} {ran_on:?}");
         assert!(found_note.unwrap_or_default().contains(note), "{note}");
     }
+    Ok(())
+}
+
+/// A new server instance also finishes the interactive rounds the earlier one's records show
+/// ending, so a released worker whose turn ended just before the server stopped is retired, not
+/// restored. A worker's record that cannot be read, here a directory, fails only its own round.
+#[test]
+fn a_new_instance_settles_each_interactive_round_on_its_own_record() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = record(&[PROMPT, ANSWER, DURATION])?;
+    let mut store = task_world(dir.path(), transcript.path(), None)?;
+    store.conn().execute(
+        "INSERT INTO conversation (runtime, native_id, transcript, resumable, reported_at)
+         VALUES ('claude', 'lost', ?1, 1, 0)",
+        params![dir.path().to_string_lossy()],
+    )?;
+    store.conn().execute_batch(
+        "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
+           worker_runtime, worker_native_id, created_at)
+           VALUES ('u', 'chat', 'claude', 'owner', 'c', 0, 'claude', 'lost', 0);
+         INSERT INTO task_round (task_id, round, state, created_at) VALUES ('u', 1, 'running', 0);",
+    )?;
+    Follow::default().instance_started(&mut store, "i2")?;
+    assert_eq!(
+        round(&store)?,
+        ("completed".into(), Some("Done.".into()), None)
+    );
+    let (state, note): (String, String) = store.conn().query_row(
+        "SELECT state, note FROM task_round WHERE task_id = 'u'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(state, "failed");
+    assert!(note.contains("could not be read"), "{note}");
     Ok(())
 }

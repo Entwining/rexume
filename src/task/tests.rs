@@ -254,7 +254,7 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
         ("cleanup::DUE", &cleanup::DUE, true),
         ("cleanup::RESTORING", &cleanup::RESTORING, false),
         ("notice::PENDING", notice::PENDING, false),
-        ("notice::SENT", notice::SENT, false),
+        ("notice::receipt::SENT", notice::receipt::SENT, false),
         ("notice::READY_OWNER", notice::READY_OWNER, false),
         ("notice::CLAIM", notice::CLAIM, false),
         ("TAKEN", TAKEN, false),

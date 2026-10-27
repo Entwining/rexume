@@ -14,8 +14,8 @@ const RESULT_LIMIT: u64 = 1 << 20;
 
 /// What a round's worker showed, read before the transaction that judges it.
 pub(super) enum Evidence {
-    /// What an interactive worker's record shows for the round.
-    Turn(Reading),
+    /// What an interactive worker's record shows for the round, or why it could not be read.
+    Turn(Result<Reading, String>),
     /// A non-interactive run's pane and, once the pane showed it exited 0, its result file: the
     /// text, or why there is none. Only the daemon writes `block`, so the pane read before the
     /// transaction is the one inside it.

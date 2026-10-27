@@ -25,19 +25,23 @@ fn only_a_turn_the_servers_end_cut_off_continues() -> Result<()> {
     const PROMPT: &str = r#"{"type":"user","message":{"role":"user","content":"Write a story"}}"#;
     const ANSWER: &str = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}"#;
     const CANCEL: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
-    let start =
-        |records: &[&str], status: &str, status_pid: i64, server_gone: bool| -> Result<Start> {
-            let dir = tempfile::tempdir()?;
-            let transcript = dir.path().join("t.jsonl");
-            std::fs::write(&transcript, records.join("\n") + "\n")?;
-            let store = Store::open(dir.path())?;
-            conversation(&store, "b", "claude", &transcript)?;
+    let start_from =
+        |transcript: &Path, status: &str, status_pid: i64, server_gone: bool| -> Result<Start> {
+            let store = Store::open(transcript.parent().unwrap())?;
+            conversation(&store, "b", "claude", transcript)?;
             store.conn().execute(
                 "INSERT INTO block (lineage, instance_id, fg_pid, status, status_pid, status_name)
              VALUES ('b', 'i1', 10, ?1, ?2, 'claude')",
                 params![status, status_pid],
             )?;
             Ok(candidate(store.conn(), "i2", "b", server_gone)?.start)
+        };
+    let start =
+        |records: &[&str], status: &str, status_pid: i64, server_gone: bool| -> Result<Start> {
+            let dir = tempfile::tempdir()?;
+            let transcript = dir.path().join("t.jsonl");
+            std::fs::write(&transcript, records.join("\n") + "\n")?;
+            start_from(&transcript, status, status_pid, server_gone)
         };
     assert_eq!(start(&[PROMPT], "working", 10, true)?, Start::Continue);
     // The server may have stopped on purpose or not at all; without seeing it go, nothing reruns.
@@ -51,6 +55,11 @@ fn only_a_turn_the_servers_end_cut_off_continues() -> Result<()> {
     assert_eq!(start(&[PROMPT], "working", 11, true)?, Start::Agent);
     // A line that is not JSON may be what ended the turn.
     assert_eq!(start(&[PROMPT, "{cut"], "working", 10, true)?, Start::Agent);
+    // So may whatever is in a record that cannot be read, here a directory.
+    let dir = tempfile::tempdir()?;
+    let unreadable = dir.path().join("t.jsonl");
+    std::fs::create_dir(&unreadable)?;
+    assert_eq!(start_from(&unreadable, "working", 10, true)?, Start::Agent);
     Ok(())
 }
 

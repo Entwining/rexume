@@ -1,9 +1,11 @@
+use std::collections::HashMap;
 use std::io::Write as _;
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 
 use serde_json::json;
 
+use super::receipt::settle;
 use super::*;
 use crate::task::tests::{ANSWER, ANSWER_2, DURATION, PROMPT, PROMPT_2, task_world};
 
@@ -41,6 +43,13 @@ fn notice(store: &Store) -> Result<(String, Option<String>)> {
         })?)
 }
 
+/// The record line of Claude Code taking in notice `id` from another session.
+fn receipt(id: &str) -> String {
+    json!({ "type": "user", "origin": { "kind": "peer" }, "message": { "role": "user",
+        "content": format!("Another Claude session sent a message:\n{} Worker task t finished.", runtime::token(id)) } })
+    .to_string()
+}
+
 /// What the next daemon does with the notice on its start and through its first pass.
 fn restart_daemon(store: &mut Store) -> Result<(String, Option<String>)> {
     assert_eq!(orphaned_sends(store)?, [("notice", "d".to_owned())]);
@@ -54,13 +63,31 @@ fn restart_daemon(store: &mut Store) -> Result<(String, Option<String>)> {
 fn a_notice_left_mid_send_settles_from_the_owners_receipt() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let mut transcript = tempfile::NamedTempFile::new()?;
-    let receipt = json!({ "type": "user", "origin": { "kind": "peer" }, "message": { "role": "user",
-        "content": format!("Another Claude session sent a message:\n{} Worker task t finished.", runtime::token("d")) } });
-    writeln!(transcript, "{receipt}")?;
+    writeln!(transcript, "{}", receipt("d"))?;
     transcript.flush()?;
     let (mut store, listener) = notice_world(dir.path(), transcript.path(), "sending")?;
     assert_eq!(restart_daemon(&mut store)?.0, "delivered");
     assert!(listener.accept().is_err(), "the notice was sent again");
+    Ok(())
+}
+
+/// An owner's record that cannot be read, here a directory, fails only its own check and is not
+/// watched, and its receipts are found once it can be read.
+#[test]
+fn an_owner_record_that_cannot_be_read_is_checked_again() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let record = dir.path().join("owner.jsonl");
+    std::fs::create_dir(&record)?;
+    let (mut store, _listener) = notice_world(dir.path(), &record, "sent")?;
+    let mut receipts = HashMap::new();
+    let mut interest = Interest::default();
+    settle(&mut store, &mut receipts, &mut interest)?;
+    assert_eq!(notice(&store)?.0, "sent");
+    assert!(!interest.files.contains(&record));
+    std::fs::remove_dir(&record)?;
+    std::fs::write(&record, receipt("d") + "\n")?;
+    settle(&mut store, &mut receipts, &mut Interest::default())?;
+    assert_eq!(notice(&store)?.0, "delivered");
     Ok(())
 }
 

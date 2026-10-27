@@ -186,7 +186,13 @@ fn reopen(
     if !occupant.runtime.can_reopen(&occupant.conversation) {
         return Ok(shell("the conversation has no record to reopen yet"));
     }
-    occupant.runtime.settings(&mut occupant.conversation)?;
+    // A record that cannot be read leaves the settings the conversation reported, as one that
+    // shows none does; its runtime reports the error if it cannot reopen it either.
+    let mut read = occupant.conversation.clone();
+    match occupant.runtime.settings(&mut read) {
+        Ok(()) => occupant.conversation = read,
+        Err(e) => log::warn!("pane {block}: reopens with the settings it reported: {e:#}"),
+    }
     let (start, reason) = match running {
         Some((seen, server_gone)) => continuation(conn, block, occupant, seen, server_gone)?,
         None => (
@@ -250,12 +256,13 @@ fn continuation(
     let Some(transcript) = &occupant.conversation.transcript else {
         return agent("no conversation record to check");
     };
-    match runtime::last_turn(occupant.runtime, Path::new(transcript), 0)? {
-        Some(Turn::Open { .. }) => Ok((
+    match runtime::last_turn(occupant.runtime, Path::new(transcript), 0) {
+        Ok(Some(Turn::Open { .. })) => Ok((
             Start::Continue,
             "the server's end cut off a running turn".into(),
         )),
-        Some(turn) => agent(turn.describe()),
-        None => agent("the record has a line that is not JSON"),
+        Ok(Some(turn)) => agent(turn.describe()),
+        Ok(None) => agent("the record has a line that is not JSON"),
+        Err(e) => agent(&format!("the record could not be read: {e:#}")),
     }
 }

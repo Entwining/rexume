@@ -82,10 +82,10 @@ impl Follow {
         connected: Option<(&mut Rex, &str)>,
     ) -> Result<Interest> {
         let mut interest = Interest::default();
-        self.evaluate_open(store, &mut interest, false)?;
+        self.evaluate_open(store, &mut interest)?;
         request::send_due(store, &mut interest)?;
         self.next_notice = notice::send_due(store, &mut interest)?;
-        notice::settle(store, &mut self.receipts, &mut interest)?;
+        notice::receipt::settle(store, &mut self.receipts, &mut interest)?;
         if let Some((rex, instance)) = connected {
             for id in cleanup::due(store.conn())? {
                 if self.tried.contains(&id) {
@@ -100,23 +100,19 @@ impl Follow {
         Ok(interest)
     }
 
-    /// Settles the runs of earlier server instances before `instance` restores their panes: a
-    /// run the saved records show ending ends that way, and one still open was cut off. Only
-    /// runs: an interactive worker's record that cannot be read must not hold back the restore.
+    /// Settles the rounds of earlier server instances before `instance` restores their panes: a
+    /// round the saved records show ending ends that way, and a run still open was cut off.
     pub fn instance_started(&mut self, store: &mut Store, instance: &str) -> Result<()> {
-        self.evaluate_open(store, &mut Interest::default(), true)?;
+        self.evaluate_open(store, &mut Interest::default())?;
         let tx = store.write()?;
         gone::end_cut_off(&tx, instance)?;
         tx.commit()?;
         Ok(())
     }
 
-    fn evaluate_open(
-        &mut self,
-        store: &mut Store,
-        interest: &mut Interest,
-        runs_only: bool,
-    ) -> Result<()> {
+    /// A worker's record that cannot be read fails its own round, so it holds back neither the
+    /// other rounds nor what runs after them, such as a restore.
+    fn evaluate_open(&mut self, store: &mut Store, interest: &mut Interest) -> Result<()> {
         let open: Vec<OpenRound> = store
             .conn()
             .prepare_cached(&OPEN_ROUNDS)?
@@ -151,7 +147,6 @@ impl Follow {
                     let file = pane.exited_zero(&run).then(|| evidence::read_result(file));
                     Evidence::Run { pane, file }
                 }
-                None if runs_only => continue,
                 None => {
                     if round.runtime.is_none() {
                         bind(store, &mut round)?;
@@ -179,10 +174,17 @@ impl Follow {
                                 .into_mut()
                         }
                     };
-                    tracker.update()?;
-                    interest.files.insert(path);
-                    kept.insert(key);
-                    Evidence::Turn(Reading::of(tracker))
+                    Evidence::Turn(match tracker.update() {
+                        Ok(()) => {
+                            interest.files.insert(path);
+                            kept.insert(key);
+                            Ok(Reading::of(tracker))
+                        }
+                        Err(e) => Err(format!(
+                            "the worker's record `{}` could not be read: {e:#}",
+                            path.display()
+                        )),
+                    })
                 }
             };
             evidence.push((round.task, round.round, shown));
