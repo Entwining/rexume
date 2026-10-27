@@ -64,7 +64,9 @@ pub(super) static CLAIM: LazyLock<String> = LazyLock::new(|| {
 struct Taken {
     interactive: bool,
     worker: String,
+    worker_instance: Option<String>,
     finished_at: Option<i64>,
+    finished_instance: Option<String>,
     status_at: Option<i64>,
     generation: Option<i64>,
     position: i64,
@@ -76,7 +78,7 @@ fn taken(conn: &Connection, id: &str) -> Result<Taken> {
         &format!(
             "SELECT t.result_file IS NULL, t.worker_lineage,
                r.finished_at, r.finished_status_at, r.finished_generation, t.position,
-               t.worker_runtime, t.worker_native_id
+               t.worker_runtime, t.worker_native_id, t.worker_instance_id, r.finished_instance_id
              FROM task t JOIN task_round r ON r.task_id = t.id WHERE t.id = ?1 AND {LATEST_ROUND}"
         ),
         params![id],
@@ -86,7 +88,9 @@ fn taken(conn: &Connection, id: &str) -> Result<Taken> {
             Ok(Taken {
                 interactive: row.get(0)?,
                 worker: row.get(1)?,
+                worker_instance: row.get(8)?,
                 finished_at: row.get(2)?,
+                finished_instance: row.get(9)?,
                 status_at: row.get(3)?,
                 generation: row.get(4)?,
                 position: row.get(5)?,
@@ -111,16 +115,25 @@ fn untouched(conn: &Connection, id: &str) -> Result<Untouched> {
     let Some(finished_at) = taken.finished_at else {
         return no("the task has no result");
     };
-    let pane: Option<(Option<i64>, Option<i64>, Option<i64>)> = conn
+    type Pane = (String, Option<i64>, Option<i64>, Option<i64>);
+    let pane: Option<Pane> = conn
         .query_row(
-            "SELECT status_at, fg_generation, last_exit FROM block WHERE lineage = ?1",
+            "SELECT instance_id, status_at, fg_generation, last_exit FROM block WHERE lineage = ?1",
             params![taken.worker],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()?;
-    let Some((status_at, generation, last_exit)) = pane else {
+    let Some((instance, status_at, generation, last_exit)) = pane else {
         return no("the worker's pane is not recorded");
     };
+    // The record of a later server instance is a new terminal, restored after the result, and its
+    // status time and generation say nothing about the earlier one. A round the upgrade to
+    // version 3 could not date counts as finished where its task was registered; if it finished
+    // on a later instance, the pane is only kept.
+    let finished_on = taken.finished_instance.or(taken.worker_instance);
+    if finished_on.is_some_and(|at| at != instance) {
+        return no("the worker's pane was restored after its result");
+    }
     // A run's round ends on the exit of the terminal's own program, after which Rex starts nothing
     // in that terminal. Rex can still report an empty foreground after the exit, which moves the
     // generation, so the generation does not tell whether the pane was used. A pane without the

@@ -1,12 +1,14 @@
 //! The first program of every restored block. It claims its slot, then becomes the shell or the
-//! reopened conversation. It never exits on its own: a block whose program exits closes, and a
-//! close on a live server counts as the user's.
+//! reopened conversation, or exits as the pane's program had. It exits only in a pane created to
+//! stay open: a block whose program exits otherwise closes, and a close on a live server counts as
+//! the user's.
 
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
+use nix::sys::signal::{Signal, raise};
 use rusqlite::{OptionalExtension, params};
 
 use crate::layout;
@@ -22,7 +24,7 @@ const FALLBACK_SHELL: &str = "/bin/sh";
 
 #[expect(
     clippy::disallowed_methods,
-    reason = "both shells failed to exec; there is no caller to return to"
+    reason = "the gate exits as the pane's program had, or after both shells failed; no caller remains"
 )]
 pub fn run(state_dir: &Path, op: &str, slot: i64) -> ! {
     let claimed = match claim_here(state_dir, op, slot) {
@@ -37,6 +39,17 @@ pub fn run(state_dir: &Path, op: &str, slot: i64) -> ! {
         |shell| shell.to_string_lossy().into_owned(),
     );
     let error = match claimed {
+        Some((Start::Exited, plan)) => {
+            // Rex reports -1 for a program a signal ended.
+            if plan.exit_code == Some(-1) {
+                let _ = raise(Signal::SIGTERM);
+            }
+            std::process::exit(
+                plan.exit_code
+                    .and_then(|c| i32::try_from(c).ok())
+                    .unwrap_or(1),
+            )
+        }
         Some((started, plan)) if started.runs_conversation() => {
             if started == Start::Continue {
                 eprintln!(
@@ -61,9 +74,10 @@ fn login_shell(shell: &str) -> std::io::Error {
     Command::new(shell).arg0(format!("-{name}")).exec()
 }
 
-/// Runs the conversation from an interactive shell, as when the user starts it, and leaves a login
-/// shell in the pane when it ends. Without the trap, Ctrl+C ending the program would also end the
-/// shell's command list, and the pane would close.
+/// Runs the conversation from an interactive shell, as when the user starts it. A conversation
+/// that was the terminal's own program replaces the shell, so the pane shows its exit; otherwise
+/// a login shell follows it in the pane. Without the trap, Ctrl+C ending the program would also
+/// end the shell's command list, and the pane would close.
 fn agent(shell: &str, plan: &Plan, started: Start) -> std::io::Error {
     let prompt = plan
         .prompt
@@ -74,9 +88,13 @@ fn agent(shell: &str, plan: &Plan, started: Start) -> std::io::Error {
         Ok(command) => command,
         Err(e) => return std::io::Error::other(e.to_string()),
     };
-    let quoted_shell =
-        shlex::try_quote(shell).map_or_else(|_| FALLBACK_SHELL.into(), |s| s.into_owned());
-    let script = format!("trap : INT; {command}; exec {quoted_shell} -l");
+    let script = if plan.own_program {
+        format!("exec {command}")
+    } else {
+        let quoted_shell =
+            shlex::try_quote(shell).map_or_else(|_| FALLBACK_SHELL.into(), |s| s.into_owned());
+        format!("trap : INT; {command}; exec {quoted_shell} -l")
+    };
     let mut process = Command::new(shell);
     process.args(["-i", "-c", &script]);
     if !plan.keeps_session_env {

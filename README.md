@@ -59,10 +59,10 @@ Agents started before `install` are recorded from their next session start. Upgr
 
 When the daemon sees a server go away and a new one start, it recreates every saved session that the new server does not already have. Each pane starts with one of:
 
-- the conversation, reopened as it was, when it was still the pane's program;
+- the conversation, reopened as it was, when it was still the pane's program, or when the pane was created to run it and it had exited;
 - the conversation with one prompt to continue, when it was working and its own record shows a turn nothing ended;
-- its reopen command typed but not run, when the conversation had already left the pane, or another pane reopens the same conversation;
-- a login shell in the pane's directory, for anything else, including a Claude Code or Codex conversation that had no prompt yet. Other programs are not restarted.
+- the same exit status, when the program the pane was created to run had exited and the pane stayed open; the program does not run again;
+- a login shell in the pane's directory, for anything else, including a conversation that had already left the pane, one another pane reopens, and a Claude Code or Codex conversation that had no prompt yet. Other programs are not restarted.
 
 Every restored pane first runs `rexume gate`, which claims the pane's place in the restore before it starts anything, so a conversation is never started twice. A reopened conversation keeps its permission mode: a Claude Code conversation reopens in the mode its record last shows, including bypass mode, which Claude Code's own resume does not bring back; Codex restores its approval policy and permissions itself; Pi has no permission modes.
 
@@ -104,6 +104,7 @@ Rex and the agents do not provide what these would need:
 - A close carries no reason, so rexume treats every close on a live server as yours, including one an app or script made.
 - Rex has no conditional close. Between rexume's check that a worker's pane is unused and the close, a person can still start typing in it.
 - Rex has no per-pane notification audience, so a worker's Done or Blocked indicator notifies you like any other pane.
+- rexume saves no terminal output, so a restored pane starts without the output it showed before.
 - `session.create` has no idempotency key. When the server does not answer a create, rexume waits for the new panes' claims instead of creating the session again; a session none of whose panes report stays `unknown`.
 - Claude Code applies [its inbound-message rules](https://code.claude.com/docs/en/cross-session-messaging#control-inbound-messages) to rexume's notices and requests, which carry no permission class. With `crossSessionInbound` unset, a session that prompts for permissions receives them, but one that bypasses permission prompts holds each for your approval and drops it when you deny it or leave the approval unanswered for [`dialogExpiry`](https://code.claude.com/docs/en/settings-reference#dialogexpiry), five minutes by default; `hold` holds them until an `accept` applies, and `refuse` drops them. A held request that is dropped is never delivered: its round stays unfinished until the worker's pane closes, and rexume never sends it again. You can set it to `accept` to receive them without approval, which also lets that session's other cross-session messages through; rexume does not change the setting.
 - Codex holds queued messages while a conversation's last turn was interrupted and no turn has run since, so a notice or request to it waits until someone gives it input. This was observed on Codex 0.164.0, and [openai/codex#56914](https://github.com/openai/codex/issues/56914) asks Codex to show when it holds them.

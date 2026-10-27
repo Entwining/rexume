@@ -16,8 +16,10 @@ fn a_resumed_claude_conversation_keeps_its_launch_model() -> Result<()> {
     let process = Process {
         transport: Map::new(),
         keeps_session_env: false,
+        instance: "i1".into(),
         pid: 100,
         name: Some("claude".into()),
+        own_program: false,
     };
     let model = |store: &mut Store, input: Value| -> Result<Option<String>> {
         let tx = store.write()?;
@@ -52,8 +54,10 @@ fn process(pid: i64) -> Process {
     Process {
         transport: Map::new(),
         keeps_session_env: false,
+        instance: "i1".into(),
         pid,
         name: Some("agent".into()),
+        own_program: false,
     }
 }
 

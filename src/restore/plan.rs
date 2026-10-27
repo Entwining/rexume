@@ -1,27 +1,24 @@
-//! Deciding how each pane of a saved session starts: a shell, the reopen command typed, the
-//! conversation reopened, or reopened with the one prompt to continue a turn the server's end
-//! cut off.
+//! Deciding how each pane of a saved session starts, by what the pane was last used for: a shell,
+//! the exit its program had shown, the conversation reopened, or reopened with the one prompt to
+//! continue a turn the server's end cut off.
 
 use std::fmt;
-use std::path::Path;
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
-use serde_json::Value;
 
 use super::create;
-use crate::runtime::{self, Conversation, Runtime, Turn};
 use crate::store::{Store, new_id, now_ms};
-use crate::task;
+use last_use::{Candidate, candidate, shell};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Start {
     /// A login shell, as a new pane gets.
     Shell,
-    /// The shell with the reopen command typed but not entered.
-    Typed,
+    /// The pane's program exits again with the status it had exited with.
+    Exited,
     /// The conversation reopened.
     Agent,
     /// The conversation reopened with the one continuation prompt.
@@ -32,7 +29,7 @@ impl Start {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Shell => "shell",
-            Self::Typed => "typed",
+            Self::Exited => "exited",
             Self::Agent => "agent",
             Self::Continue => "continue",
         }
@@ -49,7 +46,7 @@ impl FromStr for Start {
     fn from_str(text: &str) -> Result<Self> {
         Ok(match text {
             "shell" => Self::Shell,
-            "typed" => Self::Typed,
+            "exited" => Self::Exited,
             "agent" => Self::Agent,
             "continue" => Self::Continue,
             _ => bail!("unknown start {text}"),
@@ -75,15 +72,15 @@ pub struct Plan {
     /// Whether the conversation ran with `REX_SESSION`. Workers start without it, so Rex does not
     /// ask them to label the session, and reopen without it too.
     pub keeps_session_env: bool,
+    /// Whether the program was the terminal's own rather than one started from its shell. It is
+    /// again, in a pane that stays open after it exits, so that the pane shows the exit and the
+    /// next restore finds what this one did.
+    #[serde(default)]
+    pub own_program: bool,
+    /// The status an `exited` slot exits with, as Rex reports it: -1 for a signal.
+    pub exit_code: Option<i64>,
     /// Why the slot starts the way it does, logged with the plan.
     pub reason: String,
-}
-
-/// One slot as planned before its insert.
-struct Candidate {
-    start: Start,
-    conversation: Option<(Runtime, String)>,
-    plan: Plan,
 }
 
 /// Plans one session's restore and returns the operation, or `None` when nothing is left to show.
@@ -158,9 +155,7 @@ pub fn plan(
         };
         // Another slot on this instance already reopens the conversation: one process runs it.
         if insert(&candidate)? == 0 {
-            candidate.start = Start::Typed;
-            candidate.plan.prompt = None;
-            candidate.plan.reason = "another pane reopens this conversation".into();
+            candidate = shell("another pane reopens this conversation");
             insert(&candidate)?;
         }
         starts.push((block, candidate.start, candidate.plan.reason));
@@ -172,156 +167,6 @@ pub fn plan(
     Ok(Some(op))
 }
 
-struct Occupant {
-    runtime: Runtime,
-    conversation: Conversation,
-    resumable: bool,
-    keeps_session_env: bool,
-    pid: i64,
-    pid_name: Option<String>,
-}
-
-fn occupant(conn: &Connection, block: &str) -> Result<Option<Occupant>> {
-    let occupant = conn
-        .query_row(
-            "SELECT o.runtime, o.native_id, c.transcript, c.settings, c.resumable,
-               o.keeps_session_env, o.pid, o.pid_name
-             FROM occupant o JOIN conversation c USING (runtime, native_id)
-             WHERE o.block_lineage = ?1",
-            params![block],
-            |row| {
-                Ok(Occupant {
-                    runtime: row.get(0)?,
-                    conversation: Conversation {
-                        native_id: row.get(1)?,
-                        transcript: row.get(2)?,
-                        settings: row
-                            .get::<_, Value>(3)?
-                            .as_object()
-                            .cloned()
-                            .unwrap_or_default(),
-                    },
-                    resumable: row.get(4)?,
-                    keeps_session_env: row.get(5)?,
-                    pid: row.get(6)?,
-                    pid_name: row.get(7)?,
-                })
-            },
-        )
-        .optional()?;
-    let Some(mut occupant) = occupant else {
-        return Ok(None);
-    };
-    occupant.runtime.settings(&mut occupant.conversation)?;
-    Ok(Some(occupant))
-}
-
-struct LastSeen {
-    fg_pid: Option<i64>,
-    status: Option<String>,
-    status_pid: Option<i64>,
-    status_name: Option<String>,
-}
-
-fn candidate(
-    conn: &Connection,
-    instance: &str,
-    block: &str,
-    server_gone: bool,
-) -> Result<Candidate> {
-    let shell = |reason: &str| Candidate {
-        start: Start::Shell,
-        conversation: None,
-        plan: Plan {
-            reason: reason.to_owned(),
-            ..Plan::default()
-        },
-    };
-    let Some(occupant) = occupant(conn, block)? else {
-        return Ok(shell("no conversation recorded"));
-    };
-    if !occupant.resumable {
-        return Ok(shell("the recorded program cannot be reopened"));
-    }
-    if !occupant.runtime.can_reopen(&occupant.conversation) {
-        return Ok(shell("the conversation has no record to reopen yet"));
-    }
-    let seen: Option<LastSeen> = conn
-        .query_row(
-            "SELECT fg_pid, status, status_pid, status_name FROM block WHERE lineage = ?1",
-            params![block],
-            |row| {
-                Ok(LastSeen {
-                    fg_pid: row.get(0)?,
-                    status: row.get(1)?,
-                    status_pid: row.get(2)?,
-                    status_name: row.get(3)?,
-                })
-            },
-        )
-        .optional()?;
-    let mut candidate = Candidate {
-        start: Start::Typed,
-        conversation: Some((occupant.runtime, occupant.conversation.native_id.clone())),
-        plan: Plan {
-            argv: occupant.runtime.resume_argv(&occupant.conversation),
-            prompt: None,
-            transcript: occupant.conversation.transcript.clone(),
-            keeps_session_env: occupant.keeps_session_env,
-            reason: String::new(),
-        },
-    };
-    let Some(seen) = seen.as_ref().filter(|s| s.fg_pid == Some(occupant.pid)) else {
-        candidate.plan.reason = "the conversation had already left the pane".into();
-        return Ok(candidate);
-    };
-    let (start, reason) = continuation(&occupant, seen, server_gone)?;
-    candidate.start = start;
-    candidate.plan.reason = reason;
-    if start == Start::Continue {
-        candidate.plan.prompt = Some(runtime::continuation_prompt(
-            &format!("{instance}/{block}"),
-            &task::unacknowledged(conn, occupant.runtime, &occupant.conversation.native_id)?,
-        ));
-    }
-    Ok(candidate)
-}
-
-/// A turn continues only when the server's end is what stopped it: the server was watched until
-/// it went away, the pane's program was still this conversation's process and was working, and
-/// the conversation's own record shows a prompt that nothing ended. A cancel or answer the
-/// runtime recorded wins over a status event the server never delivered.
-fn continuation(
-    occupant: &Occupant,
-    seen: &LastSeen,
-    server_gone: bool,
-) -> Result<(Start, String)> {
-    let agent = |reason: &str| Ok((Start::Agent, reason.to_owned()));
-    if !server_gone {
-        return agent("the server's end was not observed");
-    }
-    let same_process = seen.status_pid == Some(occupant.pid)
-        && (occupant.pid_name.is_none() || seen.status_name == occupant.pid_name);
-    if !same_process {
-        return agent("the last status came from another process");
-    }
-    match seen.status.as_deref() {
-        Some("working") => {}
-        Some("blocked") => return agent("the conversation was waiting for the user"),
-        other => return agent(&format!("the last status was {}", other.unwrap_or("none"))),
-    }
-    let Some(transcript) = &occupant.conversation.transcript else {
-        return agent("no conversation record to check");
-    };
-    match runtime::last_turn(occupant.runtime, Path::new(transcript), 0)? {
-        Some(Turn::Open { .. }) => Ok((
-            Start::Continue,
-            "the server's end cut off a running turn".into(),
-        )),
-        Some(turn) => agent(turn.describe()),
-        None => agent("the record has a line that is not JSON"),
-    }
-}
-
+mod last_use;
 #[cfg(test)]
 mod tests;

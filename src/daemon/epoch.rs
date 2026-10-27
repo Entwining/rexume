@@ -67,6 +67,8 @@ impl Daemon<'_> {
             ],
             theme: self.options.theme.clone(),
         };
+        let mut follow = Follow::default();
+        follow.instance_started(&mut self.store, instance)?;
         let mut restorer = Restorer::new(spec);
         restorer.start(rex, &mut self.store, instance)?;
         let mut view = View::new(instance);
@@ -76,7 +78,6 @@ impl Daemon<'_> {
             store::sweep(&tx, instance, now_ms())?;
             tx.commit()?;
         }
-        let mut follow = Follow::default();
         let mut version = self.store.data_version()?;
         let mut follow_due = true;
         loop {

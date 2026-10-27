@@ -15,7 +15,7 @@ const PROMPT: &str = r#"{"type":"user","message":{"role":"user","content":"Write
     clippy::too_many_lines,
     reason = "a scenario reads as one fixture, its calls, and its assertions"
 )]
-fn a_turn_the_crash_cut_off_continues_once_and_a_second_pane_only_types_it() {
+fn a_turn_the_crash_cut_off_continues_once_and_a_second_pane_gets_a_shell() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     // A stand-in for Claude Code that records how it was started, one file per process.
@@ -112,7 +112,7 @@ fn a_turn_the_crash_cut_off_continues_once_and_a_second_pane_only_types_it() {
         started,
         [
             (blocks[0].clone(), "continue".into()),
-            (blocks[1].clone(), "typed".into())
+            (blocks[1].clone(), "shell".into())
         ]
     );
     let argv = wait_until("the conversation to start", WAIT, || {
@@ -131,7 +131,7 @@ fn a_turn_the_crash_cut_off_continues_once_and_a_second_pane_only_types_it() {
         argv.last().unwrap().starts_with("[rexume "),
         "no continuation prompt: {argv:?}"
     );
-    // The viewer pane only has the command typed at its prompt.
+    // The viewer pane starts nothing of the conversation.
     std::thread::sleep(Duration::from_secs(1));
     assert_eq!(std::fs::read_dir(&runs).unwrap().count(), 1);
     drop(server);

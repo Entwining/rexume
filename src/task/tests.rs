@@ -6,8 +6,9 @@ use rusqlite::params;
 use serde_json::Value;
 
 use super::follow::{Follow, OPEN_ROUNDS, TAKEN};
-use super::outcome::{self, WORKER_ROUNDS, block_gone};
-use super::register::{Kind, start_round};
+use super::gone::{WORKER_ROUNDS, block_gone};
+use super::outcome;
+use super::register::{Kind, refuse_stopped, start_round};
 use super::wait::register_waiter;
 use super::{cleanup, notice, request, shown, unread};
 use crate::store::Store;
@@ -62,8 +63,8 @@ pub(super) fn task_world(
     };
     tx.execute(
         "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, worker_pid,
-           result_file, keep_pane, worker_runtime, worker_native_id, created_at)
-         VALUES ('t', 'count', 'claude', 'owner', 'b', 100, ?1, 0, ?2, ?3, 0)",
+           worker_instance_id, result_file, keep_pane, worker_runtime, worker_native_id, created_at)
+         VALUES ('t', 'count', 'claude', 'owner', 'b', 100, 'i1', ?1, 0, ?2, ?3, 0)",
         params![result_file, runtime, native_id],
     )?;
     tx.execute_batch(
@@ -181,6 +182,23 @@ fn a_waiter_replaces_only_the_dead_waiter_it_saw() -> Result<()> {
     assert!(!register_waiter(&tx, "t", 1, 222, None)?);
     assert!(!register_waiter(&tx, "t", 1, 222, Some(333))?);
     assert!(register_waiter(&tx, "t", 1, 222, Some(111))?);
+    Ok(())
+}
+
+/// A task registers on an instance unless the daemon started to observe another one after the
+/// instance answered: servers run one after another, so that one came later.
+#[test]
+fn a_task_on_an_instance_a_later_one_followed_is_refused() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = Store::open(dir.path())?;
+    store.conn().execute_batch(
+        "INSERT INTO epoch (instance_id, started_at) VALUES ('i1', 0), ('i1', 2), ('i2', 5)",
+    )?;
+    assert!(refuse_stopped(store.conn(), "i1", 3).is_err());
+    // Never observed before the later one, as when no daemon ran.
+    assert!(refuse_stopped(store.conn(), "i0", 3).is_err());
+    refuse_stopped(store.conn(), "i2", 3)?;
+    refuse_stopped(store.conn(), "i3", 6)?;
     Ok(())
 }
 

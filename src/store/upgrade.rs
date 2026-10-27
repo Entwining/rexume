@@ -1,6 +1,7 @@
 //! Brings the database of an earlier released version up to `schema.sql`, inside the transaction
-//! that holds the write lock. Each step rebuilds only the tables whose shape changed and copies
-//! their rows into the new shape; `schema.sql` creates whatever is missing and sets the version.
+//! that holds the write lock. Each step rebuilds the tables whose shape changed, and the tables
+//! that reference them, and copies their rows into the new shape; `schema.sql` creates whatever is
+//! missing and sets the version.
 
 use anyhow::{Result, bail};
 use rusqlite::Transaction;
@@ -9,9 +10,65 @@ use super::SCHEMA;
 
 pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
     match version {
-        1 => from_v1(tx),
+        1 => from_v1(tx)?,
+        2 => rebuild(tx, &["notice", "request", "task_round", "task"])?,
         _ => bail!("schema {version} has no upgrade"),
     }
+    // Version 3 drops the start that typed the reopen command: such a slot starts a shell.
+    tx.execute_batch(
+        "UPDATE restore_slot SET start = 'shell', runtime = NULL, native_id = NULL,
+           started = CASE WHEN started IS NOT NULL THEN 'shell' END
+         WHERE start = 'typed'",
+    )?;
+    rebuild(tx, &["restore_slot", "occupant"])?;
+    // Version 3 also records the server instance of a task's worker, of a pane's occupant, and of
+    // the pane when a round finished. An earlier one's is the instance an epoch was observing at
+    // the time, which is the server `task add` or the report reached. Only an epoch whose end is
+    // known dates it: one the server's end closed, or one the next epoch, on the same instance,
+    // followed. A daemon that died left its epoch open, and the next daemon closed it when it
+    // started, by when another server may have been running.
+    for (table, column, at) in [
+        ("task", "worker_instance_id", "created_at"),
+        ("occupant", "instance_id", "reported_at"),
+        ("task_round", "finished_instance_id", "finished_at"),
+    ] {
+        tx.execute_batch(&format!(
+            "UPDATE {table} SET {column} =
+               (SELECT e.instance_id FROM epoch e
+                WHERE e.started_at <= {table}.{at} AND e.ended_at >= {table}.{at}
+                  AND (e.end_reason = 'server_gone'
+                       OR (SELECT n.instance_id FROM epoch n WHERE n.id > e.id ORDER BY n.id LIMIT 1)
+                          = e.instance_id)
+                ORDER BY e.id DESC LIMIT 1)"
+        ))?;
+    }
+    Ok(())
+}
+
+/// Rebuilds `tables`, each listed before the tables it references, in the shape `schema.sql`
+/// gives them, keeping every row and the columns both shapes have; a new column takes its
+/// default. Dropping a referenced table first would cascade into the rows that reference it.
+fn rebuild(tx: &Transaction, tables: &[&str]) -> Result<()> {
+    for table in tables {
+        tx.execute_batch(&format!(
+            "CREATE TEMP TABLE old_{table} AS SELECT * FROM main.{table}; DROP TABLE main.{table};"
+        ))?;
+    }
+    tx.execute_batch(SCHEMA)?;
+    for table in tables.iter().rev() {
+        let columns: Vec<String> = tx
+            .prepare(&format!(
+                "SELECT name FROM pragma_table_info('old_{table}', 'temp')"
+            ))?
+            .query_map([], |row| row.get(0))?
+            .collect::<rusqlite::Result<_>>()?;
+        let columns = columns.join(", ");
+        tx.execute_batch(&format!(
+            "INSERT INTO main.{table} ({columns}) SELECT {columns} FROM temp.old_{table};
+             DROP TABLE temp.old_{table};"
+        ))?;
+    }
+    Ok(())
 }
 
 /// Version 2 binds a task's worker conversation to the task instead of each round, keeps the task's

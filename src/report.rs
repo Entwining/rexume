@@ -144,8 +144,10 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
         &Process {
             transport,
             keeps_session_env: std::env::var_os("REX_SESSION").is_some(),
+            instance,
             pid: i64::try_from(foreground)?,
             name: str_at(&process, "/foreground/name").map(str::to_owned),
+            own_program: process.pointer("/child/pid").and_then(Value::as_u64) == Some(foreground),
         },
     )?;
     tx.commit()?;
@@ -156,8 +158,12 @@ pub struct Process {
     /// How a notice reaches this process (`occupant.transport`).
     pub transport: Map<String, Value>,
     pub keeps_session_env: bool,
+    /// The server instance `pid` is on.
+    pub instance: String,
     pub pid: i64,
     pub name: Option<String>,
+    /// Whether the process is the terminal's own program, as when the pane was created to run it.
+    pub own_program: bool,
 }
 
 /// Records the conversation and makes it the pane's occupant, unless it is an inner session of
@@ -202,18 +208,22 @@ pub fn record(
         .then(|| serde_json::to_string(&process.transport))
         .transpose()?;
     tx.execute(
-        "INSERT INTO occupant (block_lineage, runtime, native_id, pid, pid_name, keeps_session_env,
-           transport, reported_at) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+        "INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid, pid_name,
+           own_program, keeps_session_env, transport, reported_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT (block_lineage) DO UPDATE SET runtime = excluded.runtime,
-           native_id = excluded.native_id, pid = excluded.pid, pid_name = excluded.pid_name,
+           native_id = excluded.native_id, instance_id = excluded.instance_id, pid = excluded.pid,
+           pid_name = excluded.pid_name, own_program = excluded.own_program,
            keeps_session_env = excluded.keeps_session_env, transport = excluded.transport,
            reported_at = excluded.reported_at",
         params![
             lineage,
             runtime.as_str(),
             report.native_id,
+            process.instance,
             process.pid,
             process.name,
+            process.own_program,
             process.keeps_session_env,
             transport,
             now,

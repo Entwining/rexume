@@ -16,7 +16,7 @@ use rusqlite::{
 
 const SCHEMA: &str = include_str!("schema.sql");
 /// The `user_version` that `schema.sql` sets.
-pub const SCHEMA_VERSION: i64 = 2;
+pub const SCHEMA_VERSION: i64 = 3;
 /// The `application_id` that `schema.sql` sets: 'rexu' in ASCII.
 const APPLICATION_ID: i64 = 0x7265_7875;
 /// A restore that can still create or bind panes: the `restore_op` states before its last.

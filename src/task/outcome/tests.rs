@@ -2,10 +2,10 @@ use std::io::Write as _;
 
 use anyhow::Result;
 
-use super::block_gone;
 use crate::runtime;
 use crate::store::Store;
 use crate::task::follow::Follow;
+use crate::task::gone::block_gone;
 use crate::task::register::{Kind, start_round};
 use crate::task::tests::{ANSWER, ANSWER_2, DURATION, PROMPT, PROMPT_2, record, task_world};
 use crate::task::unread;

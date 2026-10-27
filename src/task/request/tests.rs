@@ -3,8 +3,8 @@ use std::path::Path;
 
 use super::*;
 use crate::task::follow::Follow;
+use crate::task::gone::block_gone;
 use crate::task::notice::orphaned_sends;
-use crate::task::outcome::block_gone;
 use crate::task::register::{Kind, start_round};
 use crate::task::tests::{record, task_world};
 

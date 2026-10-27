@@ -46,8 +46,9 @@ CREATE TABLE IF NOT EXISTS session (
 -- status, and exit, which describe processes of one instance, start empty. The row goes when the
 -- pane closes. Program states are Rex's vocabulary and are not constrained here. `last_exit`
 -- is the exit code of the program the terminal started (Rex's child_exited), which a pane
--- reports once; it is attributed to a task by the pane having that program as its foreground
--- when the task was registered.
+-- reports once; a restore brings the pane back exited unless that program was a conversation it
+-- reopens, and it is attributed to a task by the pane having that program as its foreground when
+-- the task was registered.
 CREATE TABLE IF NOT EXISTS block (
   lineage       TEXT    PRIMARY KEY,
   instance_id   TEXT    NOT NULL,
@@ -104,14 +105,19 @@ CREATE TABLE IF NOT EXISTS conversation (
 -- block. `transport` is a JSON object owned by the runtime's module: how a notice reaches this
 -- process (Claude Code's messaging socket; nothing for Codex and Pi). `pid` and `pid_name` are
 -- the reporting process and the name Rex reported for it, which tell whether a pane's later
--- status came from the same process. `keeps_session_env`: the process ran with `REX_SESSION`, so
--- its reopened conversation gets it too.
+-- status came from the same process; `instance_id` is the server instance they are from, NULL
+-- for a report before version 3 that no epoch dates. `own_program`: the process was the
+-- terminal's own program rather than one started from its shell, so its exit is the terminal's;
+-- NULL, unknown, before version 3. `keeps_session_env`: the process ran with `REX_SESSION`, so its
+-- reopened conversation gets it too.
 CREATE TABLE IF NOT EXISTS occupant (
   block_lineage     TEXT    PRIMARY KEY,
   runtime           TEXT    NOT NULL,
   native_id         TEXT    NOT NULL,
+  instance_id       TEXT,
   pid               INTEGER NOT NULL,
   pid_name          TEXT,
+  own_program       INTEGER CHECK (own_program IN (0, 1)),
   keeps_session_env INTEGER NOT NULL CHECK (keeps_session_env IN (0, 1)),
   transport         TEXT    CHECK (transport IS NULL OR json_type(transport) = 'object'),
   reported_at       INTEGER NOT NULL,
@@ -156,23 +162,23 @@ CREATE TABLE IF NOT EXISTS restore_slot (
   slot          INTEGER NOT NULL,
   instance_id   TEXT    NOT NULL,
   block_lineage TEXT    NOT NULL,
-  start         TEXT    NOT NULL CHECK (start IN ('shell', 'typed', 'agent', 'continue')),
+  start         TEXT    NOT NULL CHECK (start IN ('shell', 'exited', 'agent', 'continue')),
   runtime       TEXT,
   native_id     TEXT,
   plan          TEXT    NOT NULL CHECK (json_valid(plan)),
   layer_sent_at INTEGER,
   claimed_at    INTEGER,
-  started       TEXT    CHECK (started IN ('shell', 'typed', 'agent', 'continue')),
+  started       TEXT    CHECK (started IN ('shell', 'exited', 'agent', 'continue')),
   PRIMARY KEY (op_id, slot),
   CHECK ((runtime IS NULL) = (native_id IS NULL)),
-  CHECK (start IN ('shell', 'typed') OR runtime IS NOT NULL),
+  CHECK ((runtime IS NOT NULL) = (start IN ('agent', 'continue'))),
   CHECK ((started IS NULL) = (claimed_at IS NULL)),
   CHECK (started IS NULL OR started = start OR started = 'shell'
          OR (start = 'continue' AND started = 'agent')),
   FOREIGN KEY (runtime, native_id) REFERENCES conversation (runtime, native_id)
 ) STRICT;
 -- One process per conversation: on one server instance a conversation is started by at most
--- one slot. A second plan for it conflicts here and the planner types the command instead.
+-- one slot. A second plan for it conflicts here and the planner gives that pane a shell.
 -- The foreign key (runtime, native_id) has no index of its own: its parent rows are deleted
 -- only by the retention sweep, which filters with NOT EXISTS first.
 CREATE UNIQUE INDEX IF NOT EXISTS restore_slot_executor ON restore_slot (instance_id, runtime, native_id)
@@ -183,11 +189,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS restore_slot_executor ON restore_slot (instanc
 -- referenced: a task outlives its pane's row. A task with `result_file` is a non-interactive run
 -- whose result is that file; without one it is an interactive worker whose rounds take turns
 -- from one conversation's record. `worker_pid` is the pane's foreground process when the task was
--- registered, which is the program whose exit ends a non-interactive run. `worker_runtime` and
--- `worker_native_id` are the interactive worker's conversation, bound once (at registration when
--- the pane's foreground process had reported, else by the daemon from the first report after it)
--- and never moved to a conversation that takes over the pane later. `position`: byte offset into
--- that record up to which every finished turn has been taken by a round; it moves in the
+-- registered, which is the program whose exit ends a non-interactive run, and `worker_instance_id`
+-- the server instance it ran on: a PID names a process only there, so a pane recorded on another
+-- instance shows nothing of the run. It is NULL for a task registered before version 3 when no
+-- epoch showed the instance, and such a task's run counts as the recorded pane's. `worker_runtime`
+-- and `worker_native_id` are the interactive worker's conversation, bound once (at registration
+-- when the pane's foreground process had reported, else by the daemon from the first report after
+-- it) and never moved to a conversation that takes over the pane later. `position`: byte offset
+-- into that record up to which every finished turn has been taken by a round; it moves in the
 -- transaction that takes a turn. `released_at`: when the orchestrator released the worker; a
 -- released task starts no more rounds, and only its pane may be closed. `pane_state`: 'open'
 -- while the pane exists and rexume has neither closed nor given it up; 'closing' while the
@@ -197,23 +206,24 @@ CREATE UNIQUE INDEX IF NOT EXISTS restore_slot_executor ON restore_slot (instanc
 -- the daemon put off writes its reason to `pane_note` and leaves 'open'. A pane the orchestrator
 -- asked to keep is never 'closing' or 'kept'.
 CREATE TABLE IF NOT EXISTS task (
-  id               TEXT    PRIMARY KEY,
-  title            TEXT    NOT NULL,
-  owner_runtime    TEXT    NOT NULL,
-  owner_native_id  TEXT    NOT NULL,
-  worker_lineage   TEXT    NOT NULL,
-  worker_pid       INTEGER,
-  result_file      TEXT,
-  keep_pane        INTEGER NOT NULL CHECK (keep_pane IN (0, 1)),
-  worker_runtime   TEXT,
-  worker_native_id TEXT,
-  position         INTEGER NOT NULL DEFAULT 0,
-  released_at      INTEGER,
-  pane_state       TEXT    NOT NULL DEFAULT 'open'
+  id                 TEXT    PRIMARY KEY,
+  title              TEXT    NOT NULL,
+  owner_runtime      TEXT    NOT NULL,
+  owner_native_id    TEXT    NOT NULL,
+  worker_lineage     TEXT    NOT NULL,
+  worker_pid         INTEGER,
+  worker_instance_id TEXT,
+  result_file        TEXT,
+  keep_pane          INTEGER NOT NULL CHECK (keep_pane IN (0, 1)),
+  worker_runtime     TEXT,
+  worker_native_id   TEXT,
+  position           INTEGER NOT NULL DEFAULT 0,
+  released_at        INTEGER,
+  pane_state         TEXT    NOT NULL DEFAULT 'open'
     CHECK (pane_state IN ('open', 'closing', 'closed', 'kept')),
-  pane_note        TEXT,
-  pane_closed_at   INTEGER,
-  created_at       INTEGER NOT NULL,
+  pane_note          TEXT,
+  pane_closed_at     INTEGER,
+  created_at         INTEGER NOT NULL,
   CHECK ((worker_runtime IS NULL) = (worker_native_id IS NULL)),
   CHECK (worker_runtime IS NULL OR result_file IS NULL),
   CHECK ((pane_state = 'closed') = (pane_closed_at IS NOT NULL)),
@@ -238,27 +248,30 @@ CREATE INDEX IF NOT EXISTS task_worker_conversation ON task (worker_runtime, wor
 -- took.
 -- `waiter_pid`: a `task wait` process that takes the result itself while it runs. A round is
 -- 'completed' exactly when its result is saved here, in the transaction that also writes its
--- notice; every final state sets `finished_at`. `finished_status_at` and `finished_generation`
--- are the worker pane's status time and foreground generation when the round finished, to tell
--- later activity in the pane apart. `acked_at`: when the owner acknowledged the result.
--- `result_ref` is the record ID of an interactive worker's answer, or a non-interactive run's
--- result file; `note` says why a round ended without a result. `result` is last: the one large
--- column, so reads of the others never cross its overflow pages.
+-- notice; every final state sets `finished_at`. `finished_instance_id`, `finished_status_at`,
+-- and `finished_generation` are the worker pane's record when the round finished, to tell later
+-- activity in the pane apart: its server instance, NULL when the pane was not recorded or the
+-- round finished before version 3 and no epoch dates it, and its status time and foreground
+-- generation, which mean something only on that instance. `acked_at`: when the owner
+-- acknowledged the result. `result_ref` is the record ID of an interactive worker's answer, or a
+-- non-interactive run's result file; `note` says why a round ended without a result. `result` is
+-- last: the one large column, so reads of the others never cross its overflow pages.
 CREATE TABLE IF NOT EXISTS task_round (
-  task_id             TEXT    NOT NULL REFERENCES task (id) ON DELETE CASCADE,
-  round               INTEGER NOT NULL,
-  waiter_pid          INTEGER,
-  state               TEXT    NOT NULL CHECK (state IN ('running', 'blocked', 'completed', 'cancelled',
-                                                        'failed', 'terminated', 'worker_closed')),
-  note                TEXT,
-  finished_at         INTEGER,
-  finished_status_at  INTEGER,
-  finished_generation INTEGER,
-  acked_at            INTEGER,
-  created_at          INTEGER NOT NULL,
-  turn_start          INTEGER,
-  result_ref          TEXT,
-  result              TEXT,
+  task_id              TEXT    NOT NULL REFERENCES task (id) ON DELETE CASCADE,
+  round                INTEGER NOT NULL,
+  waiter_pid           INTEGER,
+  state                TEXT    NOT NULL CHECK (state IN ('running', 'blocked', 'completed', 'cancelled',
+                                                         'failed', 'terminated', 'worker_closed')),
+  note                 TEXT,
+  finished_at          INTEGER,
+  finished_instance_id TEXT,
+  finished_status_at   INTEGER,
+  finished_generation  INTEGER,
+  acked_at             INTEGER,
+  created_at           INTEGER NOT NULL,
+  turn_start           INTEGER,
+  result_ref           TEXT,
+  result               TEXT,
   PRIMARY KEY (task_id, round),
   CHECK ((state IN ('running', 'blocked')) = (finished_at IS NULL)),
   CHECK ((state = 'completed') = (result IS NOT NULL)),
@@ -312,4 +325,4 @@ CREATE TABLE IF NOT EXISTS notice (
 
 -- 'rexu' in ASCII, which Store::open checks before it uses a database.
 PRAGMA application_id = 0x72657875;
-PRAGMA user_version = 2;
+PRAGMA user_version = 3;

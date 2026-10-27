@@ -9,6 +9,7 @@
 mod bench;
 mod cli;
 mod common;
+mod exited;
 mod gate;
 mod install;
 mod relay;

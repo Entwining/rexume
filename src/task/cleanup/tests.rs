@@ -11,7 +11,8 @@ fn released_worker(dir: &Path, transcript: &Path) -> Result<Store> {
     store.conn().execute_batch(
         "UPDATE block SET status = 'idle', status_at = 90 WHERE lineage = 'b';
          UPDATE task_round SET state = 'completed', result = 'Done.', result_ref = 'm1', finished_at = 100,
-           finished_status_at = 90, finished_generation = 5, turn_start = 0, acked_at = 120;",
+           finished_instance_id = 'i1', finished_status_at = 90, finished_generation = 5, turn_start = 0,
+           acked_at = 120;",
     )?;
     store.conn().execute(
         "UPDATE task SET position = ?1, released_at = 120",
@@ -27,7 +28,7 @@ fn released_run(dir: &Path) -> Result<Store> {
     store.conn().execute_batch(
         "UPDATE block SET fg_pid = NULL, last_exit = 0 WHERE lineage = 'b';
          UPDATE task_round SET state = 'completed', result = 'Done.', result_ref = '/r', finished_at = 100,
-           finished_generation = 5, acked_at = 120;
+           finished_instance_id = 'i1', finished_generation = 5, acked_at = 120;
          UPDATE task SET released_at = 120;",
     )?;
     Ok(store)
@@ -35,7 +36,7 @@ fn released_run(dir: &Path) -> Result<Store> {
 
 /// The server can report the run's pane without a foreground after the exit, once the round has
 /// its result; that moves the generation but runs nothing. A pane restored on a later instance
-/// starts without the run's exit and may be anyone's.
+/// is a new terminal and may be anyone's, also once its own program exits.
 #[test]
 fn a_pane_whose_run_exited_is_retired_until_it_is_restored() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -47,6 +48,15 @@ fn a_pane_whose_run_exited_is_retired_until_it_is_restored() -> Result<()> {
     store.conn().execute_batch(
         "UPDATE block SET instance_id = 'i2', fg_pid = 300, last_exit = NULL WHERE lineage = 'b'",
     )?;
+    assert!(retired_workers(store.conn())?.is_empty());
+    store
+        .conn()
+        .execute_batch("UPDATE block SET fg_pid = NULL, last_exit = 0 WHERE lineage = 'b'")?;
+    assert!(retired_workers(store.conn())?.is_empty());
+    // A round from before version 3 that the upgrade could not date.
+    store
+        .conn()
+        .execute_batch("UPDATE task_round SET finished_instance_id = NULL")?;
     assert!(retired_workers(store.conn())?.is_empty());
     Ok(())
 }
@@ -113,7 +123,7 @@ fn a_close_waits_for_the_restore_and_looks_again_after_the_claim() -> Result<()>
         pane(&store)?,
         (
             "kept".into(),
-            Some("the worker's pane was restored after its run".into())
+            Some("the worker's pane was restored after its result".into())
         )
     );
     Ok(())
@@ -157,6 +167,8 @@ fn later_activity_in_the_worker_pane_keeps_it() -> Result<()> {
          UPDATE occupant SET native_id = 'new', pid = 200, reported_at = 300 WHERE block_lineage = 'b';",
         "UPDATE block SET status = 'working', status_at = 200 WHERE lineage = 'b'",
         "UPDATE block SET fg_pid = 300, fg_generation = 6 WHERE lineage = 'b'",
+        // The pane restored on a later instance, whose status and generation happen to match.
+        "UPDATE block SET instance_id = 'i2' WHERE lineage = 'b'",
         // A pane an earlier close attempt found in use, whatever it shows now.
         "UPDATE task SET pane_state = 'kept', pane_note = 'the worker''s status changed after its result'",
         // Another round started and not yet acknowledged.

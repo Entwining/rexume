@@ -19,6 +19,7 @@ pub struct NewTask<'a> {
 
 pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
     let mut store = Store::open(state_dir)?;
+    let asked_at = now_ms();
     let mut caller = caller(&store)?;
     let session = caller
         .rex
@@ -45,6 +46,7 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
         );
     }
     refuse_closing(&tx, &worker, new.worker)?;
+    refuse_stopped(&tx, &caller.instance, asked_at)?;
     let bound = match foreground {
         Some(pid) if new.result_file.is_none() => occupant_of(&tx, &worker, pid)?,
         _ => None,
@@ -52,8 +54,8 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
     let (runtime, native_id) = bound.map(|(r, n)| (r.as_str(), n)).unzip();
     tx.execute(
         "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, worker_pid,
-           result_file, keep_pane, worker_runtime, worker_native_id, created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
+           worker_instance_id, result_file, keep_pane, worker_runtime, worker_native_id, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
         params![
             id,
             new.title,
@@ -61,6 +63,7 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
             caller.native_id,
             worker,
             foreground,
+            caller.instance,
             new.result_file.map(|f| f.to_string_lossy().into_owned()),
             new.keep_pane,
             runtime,
@@ -93,6 +96,22 @@ fn refuse_closing(conn: &Connection, lineage: &str, block: &str) -> Result<()> {
     )?;
     if closing {
         bail!("rexume is closing pane {block}");
+    }
+    Ok(())
+}
+
+/// `instance` answered when asked at `asked_at`, so a server the daemon started to observe after
+/// that came after it: `instance` has stopped, and that start settled its runs, so a task
+/// registered on it now would never end. The epoch commits before it settles them, so a
+/// registration either comes before the settling or sees the epoch.
+pub(super) fn refuse_stopped(conn: &Connection, instance: &str, asked_at: i64) -> Result<()> {
+    let stopped: bool = conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM epoch WHERE instance_id != ?1 AND started_at >= ?2)",
+        params![instance, asked_at],
+        |row| row.get(0),
+    )?;
+    if stopped {
+        bail!("the Rex server instance {instance} has stopped");
     }
     Ok(())
 }

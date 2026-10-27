@@ -9,9 +9,8 @@ use std::time::{Duration, Instant};
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use super::evidence::{self, Evidence, Pane, Reading};
-use super::outcome;
-use super::{OPEN, cleanup, notice, request};
+use super::evidence::{self, Evidence, Pane, Reading, RunProcess};
+use super::{OPEN, cleanup, gone, notice, outcome, request};
 use crate::rex::Rex;
 use crate::runtime::{Receipt, Runtime, Taken, Tracker};
 use crate::store::{Store, now_ms};
@@ -40,7 +39,7 @@ pub struct Follow {
 pub(super) static OPEN_ROUNDS: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT r.task_id, r.round, t.result_file, t.worker_lineage, t.worker_pid, t.created_at,
-           t.worker_runtime, c.transcript, t.position, q.id
+           t.worker_runtime, c.transcript, t.position, q.id, t.worker_instance_id
          FROM task_round r JOIN task t ON t.id = r.task_id
          LEFT JOIN conversation c ON c.runtime = t.worker_runtime AND c.native_id = t.worker_native_id
          LEFT JOIN request q ON q.task_id = r.task_id AND q.round = r.round
@@ -57,6 +56,7 @@ struct OpenRound {
     result_file: Option<String>,
     worker: String,
     worker_pid: Option<i64>,
+    worker_instance: Option<String>,
     created_at: i64,
     runtime: Option<Runtime>,
     transcript: Option<String>,
@@ -82,7 +82,7 @@ impl Follow {
         connected: Option<(&mut Rex, &str)>,
     ) -> Result<Interest> {
         let mut interest = Interest::default();
-        self.evaluate_open(store, &mut interest)?;
+        self.evaluate_open(store, &mut interest, false)?;
         request::send_due(store, &mut interest)?;
         self.next_notice = notice::send_due(store, &mut interest)?;
         notice::settle(store, &mut self.receipts, &mut interest)?;
@@ -100,7 +100,23 @@ impl Follow {
         Ok(interest)
     }
 
-    fn evaluate_open(&mut self, store: &mut Store, interest: &mut Interest) -> Result<()> {
+    /// Settles the runs of earlier server instances before `instance` restores their panes: a
+    /// run the saved records show ending ends that way, and one still open was cut off. Only
+    /// runs: an interactive worker's record that cannot be read must not hold back the restore.
+    pub fn instance_started(&mut self, store: &mut Store, instance: &str) -> Result<()> {
+        self.evaluate_open(store, &mut Interest::default(), true)?;
+        let tx = store.write()?;
+        gone::end_cut_off(&tx, instance)?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    fn evaluate_open(
+        &mut self,
+        store: &mut Store,
+        interest: &mut Interest,
+        runs_only: bool,
+    ) -> Result<()> {
         let open: Vec<OpenRound> = store
             .conn()
             .prepare_cached(&OPEN_ROUNDS)?
@@ -116,6 +132,7 @@ impl Follow {
                     transcript: row.get(7)?,
                     position: row.get(8)?,
                     request: row.get(9)?,
+                    worker_instance: row.get(10)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -127,11 +144,14 @@ impl Follow {
                 Some(file) => {
                     // Read only once the run exited 0, and before the transaction.
                     let pane = Pane::read(store.conn(), &round.worker)?;
-                    let file = pane
-                        .exited_zero(round.worker_pid)
-                        .then(|| evidence::read_result(file));
+                    let run = RunProcess {
+                        instance: round.worker_instance.as_deref(),
+                        pid: round.worker_pid,
+                    };
+                    let file = pane.exited_zero(&run).then(|| evidence::read_result(file));
                     Evidence::Run { pane, file }
                 }
+                None if runs_only => continue,
                 None => {
                     if round.runtime.is_none() {
                         bind(store, &mut round)?;

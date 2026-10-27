@@ -6,6 +6,7 @@
 mod cleanup;
 mod evidence;
 mod follow;
+mod gone;
 mod notice;
 mod outcome;
 mod register;
@@ -26,9 +27,10 @@ use crate::runtime::{Runtime, Tracker};
 use crate::store::{Store, lineage_of};
 
 pub use cleanup::retired_workers;
+pub use evidence::is_run;
 pub use follow::{Follow, Interest};
+pub use gone::block_gone;
 pub use notice::{orphaned_sends, undelivered};
-pub use outcome::block_gone;
 pub use register::{MESSAGE_LIMIT, NewTask, add, next, refuse_too_large, release, send};
 pub use wait::wait;
 

@@ -211,3 +211,47 @@ fn a_non_interactive_round_ends_by_its_exit_and_result_file() -> Result<()> {
     }
     Ok(())
 }
+
+/// A new server instance first finishes a run by what the earlier instance recorded, then ends
+/// the runs that instance left open. A run's own instance is the only one whose record shows it,
+/// and a run from before instances were recorded is left to its record. An interactive worker's
+/// record that cannot be read, here a directory, is left to the passes.
+#[test]
+fn a_new_instance_ends_the_runs_the_earlier_one_left_open() -> Result<()> {
+    let cases = [
+        (None, Some(0), Some("i1"), "completed", ""),
+        (
+            Some(100),
+            None,
+            Some("i1"),
+            "terminated",
+            "the Rex server stopped",
+        ),
+        (Some(100), None, None, "running", ""),
+        (None, Some(0), Some("i2"), "running", ""),
+    ];
+    for (fg_pid, last_exit, ran_on, state, note) in cases {
+        let dir = tempfile::tempdir()?;
+        let result_file = dir.path().join("result.md");
+        std::fs::write(&result_file, "Report.")?;
+        let mut store = task_world(dir.path(), dir.path(), Some(&result_file.to_string_lossy()))?;
+        store.conn().execute(
+            "UPDATE block SET fg_pid = ?1, last_exit = ?2 WHERE lineage = 'b';",
+            params![fg_pid, last_exit],
+        )?;
+        store.conn().execute_batch(
+            "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage,
+               keep_pane, worker_runtime, worker_native_id, created_at)
+               VALUES ('u', 'chat', 'claude', 'owner', 'c', 0, 'claude', 'worker', 0);
+             INSERT INTO task_round (task_id, round, state, created_at) VALUES ('u', 1, 'running', 0);",
+        )?;
+        store
+            .conn()
+            .execute("UPDATE task SET worker_instance_id = ?1", params![ran_on])?;
+        Follow::default().instance_started(&mut store, "i2")?;
+        let (found, _, found_note) = round(&store)?;
+        assert_eq!(found, state, "{fg_pid:?} {last_exit:?} {ran_on:?}");
+        assert!(found_note.unwrap_or_default().contains(note), "{note}");
+    }
+    Ok(())
+}

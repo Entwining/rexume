@@ -10,7 +10,7 @@ use crate::layout::{Node, SessionDoc, WindowDoc, bind_restored};
 use crate::rex::{items, require_str, str_at};
 use crate::store::live_of;
 
-use super::{Spec, Start};
+use super::Spec;
 
 const SHELL_FLAVOR: &str = "com.superlogical.terminal.shell";
 
@@ -256,10 +256,10 @@ impl Op {
                     )
                     .optional()?
                     .unwrap_or_default();
-                let (start, argv): (String, String) = conn.query_row(
-                    "SELECT start, plan ->> '$.argv' FROM restore_slot WHERE op_id = ?1 AND slot = ?2",
+                let own_program: Option<bool> = conn.query_row(
+                    "SELECT plan ->> '$.own_program' FROM restore_slot WHERE op_id = ?1 AND slot = ?2",
                     params![self.id, slot],
-                    |row| Ok((row.get(0)?, row.get(1)?)),
+                    |row| row.get(0),
                 )?;
                 let mut command = spec.gate.clone();
                 command.extend([self.id.clone(), slot.to_string()]);
@@ -273,10 +273,8 @@ impl Op {
                 if let Some(theme) = &spec.theme {
                     options["theme"] = theme.clone();
                 }
-                if start == Start::Typed.as_str() {
-                    let argv: Vec<String> = serde_json::from_str(&argv)?;
-                    options["initial_input"] =
-                        json!(shlex::try_join(argv.iter().map(String::as_str))?);
+                if own_program == Some(true) {
+                    options["exit"] = json!({ "on_completion": false });
                 }
                 let mut block = json!({ "flavor": SHELL_FLAVOR, "options": options });
                 if let Some(label) = label {

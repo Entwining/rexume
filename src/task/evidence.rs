@@ -5,7 +5,7 @@ use std::fs::File;
 use std::io::{ErrorKind, Read};
 
 use anyhow::Result;
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::runtime::{Tracker, Turn};
 
@@ -93,6 +93,7 @@ pub(super) fn read_result(path: &str) -> Result<String, String> {
 
 #[derive(Default)]
 pub(super) struct Pane {
+    pub instance_id: Option<String>,
     pub status: Option<String>,
     pub status_pid: Option<i64>,
     pub status_at: Option<i64>,
@@ -100,35 +101,56 @@ pub(super) struct Pane {
     pub last_exit: Option<i64>,
 }
 
+/// The process a non-interactive run is: the pane's foreground when the task was registered, on
+/// the server instance it ran on, `None` for a task from before version 3 that no epoch dated.
+pub(super) struct RunProcess<'a> {
+    pub instance: Option<&'a str>,
+    pub pid: Option<i64>,
+}
+
+/// Whether process `pid` on `instance` was registered in pane `lineage` as a non-interactive run.
+/// A run registered before the pane had a foreground process may be any process there.
+pub fn is_run(conn: &Connection, lineage: &str, instance: &str, pid: i64) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM task WHERE worker_lineage = ?1 AND result_file IS NOT NULL
+           AND (worker_pid IS NULL OR worker_pid = ?2)
+           AND (worker_instance_id IS NULL OR worker_instance_id = ?3))",
+        params![lineage, pid, instance],
+        |row| row.get(0),
+    )?)
+}
+
 impl Pane {
-    pub fn read(conn: &rusqlite::Connection, lineage: &str) -> Result<Self> {
+    pub fn read(conn: &Connection, lineage: &str) -> Result<Self> {
         Ok(conn
             .prepare_cached(
-                "SELECT status, status_pid, status_at, fg_pid, last_exit FROM block WHERE lineage = ?1",
+                "SELECT instance_id, status, status_pid, status_at, fg_pid, last_exit FROM block
+                 WHERE lineage = ?1",
             )?
-            .query_row(
-                params![lineage],
-                |row| {
-                    Ok(Self {
-                        status: row.get(0)?,
-                        status_pid: row.get(1)?,
-                        status_at: row.get(2)?,
-                        fg_pid: row.get(3)?,
-                        last_exit: row.get(4)?,
-                    })
-                },
-            )
+            .query_row(params![lineage], |row| {
+                Ok(Self {
+                    instance_id: row.get(0)?,
+                    status: row.get(1)?,
+                    status_pid: row.get(2)?,
+                    status_at: row.get(3)?,
+                    fg_pid: row.get(4)?,
+                    last_exit: row.get(5)?,
+                })
+            })
             .optional()?
             .unwrap_or_default())
     }
 
-    /// Whether a non-interactive run, registered with `worker_pid` as the pane's foreground,
-    /// has ended with exit status 0.
-    pub fn exited_zero(&self, worker_pid: Option<i64>) -> bool {
-        self.ended(worker_pid) && self.last_exit == Some(0)
+    /// Whether a non-interactive run has ended with exit status 0.
+    pub fn exited_zero(&self, run: &RunProcess) -> bool {
+        self.ended(run) && self.last_exit == Some(0)
     }
 
-    pub fn ended(&self, worker_pid: Option<i64>) -> bool {
-        self.fg_pid.is_none() || self.fg_pid != worker_pid
+    /// Whether the record shows the run's process gone. A record of another instance shows
+    /// nothing of the run.
+    pub fn ended(&self, run: &RunProcess) -> bool {
+        run.instance
+            .is_none_or(|instance| self.instance_id.as_deref() == Some(instance))
+            && (self.fg_pid.is_none() || self.fg_pid != run.pid)
     }
 }

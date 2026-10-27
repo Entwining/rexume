@@ -7,9 +7,9 @@ use anyhow::{Result, bail};
 use rusqlite::{OptionalExtension, Transaction, params};
 
 use super::OPEN;
-use super::evidence::{Evidence, Pane, Reading, Take};
+use super::evidence::{Evidence, Pane, Reading, RunProcess, Take};
 use crate::runtime::Turn;
-use crate::store::{self, new_id, now_ms};
+use crate::store::{new_id, now_ms};
 
 /// Claude Code can write the end of a turn after its idle status, so an idle status ends a turn
 /// the record leaves open only once the record still shows it open this long after the status.
@@ -19,7 +19,7 @@ const IDLE_GRACE_MS: i64 = 3000;
 pub(super) static ROUND: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT t.worker_lineage, t.worker_pid, t.result_file, t.worker_runtime, t.worker_native_id,
-           t.pane_state = 'closed'
+           t.pane_state = 'closed', t.worker_instance_id
          FROM task t JOIN task_round r ON r.task_id = t.id
          WHERE t.id = ?1 AND r.round = ?2 AND {OPEN}"
     )
@@ -39,6 +39,7 @@ pub(super) fn evaluate(
         Option<String>,
         Option<(String, String)>,
         bool,
+        Option<String>,
     );
     let row: Option<Row> = tx
         .prepare_cached(&ROUND)?
@@ -51,10 +52,11 @@ pub(super) fn evaluate(
                 row.get(2)?,
                 runtime.zip(native_id),
                 row.get(5)?,
+                row.get(6)?,
             ))
         })
         .optional()?;
-    let Some((worker, worker_pid, result_file, bound, closed)) = row else {
+    let Some((worker, worker_pid, result_file, bound, closed, worker_instance)) = row else {
         return Ok(None);
     };
     match evidence {
@@ -99,7 +101,11 @@ pub(super) fn evaluate(
             Ok(None)
         }
         Evidence::Run { pane, file: None } => {
-            match (pane.ended(worker_pid), pane.last_exit) {
+            let run = RunProcess {
+                instance: worker_instance.as_deref(),
+                pid: worker_pid,
+            };
+            match (pane.ended(&run), pane.last_exit) {
                 (true, Some(-1)) => {
                     finish(tx, id, round, "terminated", None, Some("ended by a signal"))?;
                 }
@@ -240,14 +246,14 @@ fn take_turn(tx: &Transaction, id: &str, round: i64, take: Take, note: Option<&s
 }
 
 /// A finished round's result, as the worker's record or result file gave it.
-struct Finished {
+pub(super) struct Finished {
     result: String,
     reference: String,
 }
 
 /// Ends a round and writes its notice in the same transaction. The worker pane's status time and
 /// foreground generation are kept to tell later activity in the pane apart.
-fn finish(
+pub(super) fn finish(
     tx: &Transaction,
     id: &str,
     round: i64,
@@ -255,22 +261,24 @@ fn finish(
     done: Option<Finished>,
     note: Option<&str>,
 ) -> Result<()> {
-    let (status_at, generation): (Option<i64>, Option<i64>) = tx.query_row(
-        "SELECT b.status_at, b.fg_generation FROM task t LEFT JOIN block b ON b.lineage = t.worker_lineage
-         WHERE t.id = ?1",
-        params![id],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+    let (instance, status_at, generation): (Option<String>, Option<i64>, Option<i64>) = tx
+        .query_row(
+            "SELECT b.instance_id, b.status_at, b.fg_generation
+             FROM task t LEFT JOIN block b ON b.lineage = t.worker_lineage WHERE t.id = ?1",
+            params![id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
     let (result, reference) = done.map(|d| (d.result, d.reference)).unzip();
     tx.execute(
         "UPDATE task_round SET state = ?1, result = ?2, result_ref = ?3, finished_at = ?4,
-           finished_status_at = ?5, finished_generation = ?6, note = ?7
-         WHERE task_id = ?8 AND round = ?9",
+           finished_instance_id = ?5, finished_status_at = ?6, finished_generation = ?7, note = ?8
+         WHERE task_id = ?9 AND round = ?10",
         params![
             state,
             result,
             reference,
             now_ms(),
+            instance,
             status_at,
             generation,
             note,
@@ -288,50 +296,6 @@ fn finish(
         params![id, round],
     )?;
     Ok(())
-}
-
-/// The rounds a closed worker pane leaves unfinished that no record can finish: a run's, and an
-/// interactive worker's whose conversation is unbound or reported no record. The others take a
-/// turn the record already shows, on the daemon's next pass.
-pub(super) static WORKER_ROUNDS: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "SELECT t.id, r.round FROM task t JOIN task_round r ON r.task_id = t.id
-         LEFT JOIN conversation c ON c.runtime = t.worker_runtime AND c.native_id = t.worker_native_id
-         WHERE t.worker_lineage = ?1 AND {OPEN} AND c.transcript IS NULL"
-    )
-});
-
-fn on_worker_closed(tx: &Transaction, lineage: &str) -> Result<()> {
-    let open: Vec<(String, i64)> = tx
-        .prepare(&WORKER_ROUNDS)?
-        .query_map(params![lineage], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    for (id, round) in open {
-        finish(
-            tx,
-            &id,
-            round,
-            "worker_closed",
-            None,
-            Some("the worker's pane closed before it finished"),
-        )?;
-    }
-    // Whatever rexume meant to do with the pane, it is gone now.
-    tx.execute(
-        "UPDATE task SET pane_state = 'closed', pane_closed_at = ?1, pane_note = NULL
-         WHERE worker_lineage = ?2 AND pane_state != 'closed'",
-        params![now_ms(), lineage],
-    )?;
-    Ok(())
-}
-
-/// Records that a pane is closed for good: it leaves the saved layout, its worker tasks end, and
-/// what was recorded about it goes. The close event and the daemon's own close both record it,
-/// whichever comes first.
-pub fn block_gone(tx: &Transaction, lineage: &str) -> Result<()> {
-    crate::layout::forget_block(tx, lineage)?;
-    on_worker_closed(tx, lineage)?;
-    store::forget_block(tx, lineage)
 }
 
 #[cfg(test)]

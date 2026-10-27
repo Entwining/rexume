@@ -54,6 +54,163 @@ fn only_a_turn_the_servers_end_cut_off_continues() -> Result<()> {
     Ok(())
 }
 
+/// Pane `b` as recorded on instance `i1`, with the foreground and exit given, and a Claude Code
+/// conversation that reported from it as process 10 as `occupant` (its instance and whether it
+/// was the terminal's own program) with a prompt still open in its record. `run` registered a
+/// non-interactive run in the pane on the process given, if any, and `elsewhere` reported the
+/// conversation from pane `c` at that time, where it was still the foreground program or not.
+struct Pane<'a> {
+    fg_pid: Option<i64>,
+    last_exit: Option<i64>,
+    occupant: Option<(Option<&'a str>, Option<bool>)>,
+    status: &'a str,
+    run: Option<Option<i64>>,
+    elsewhere: Option<(i64, bool)>,
+}
+
+fn planned(pane: &Pane) -> Result<(Start, bool, Option<i64>)> {
+    let dir = tempfile::tempdir()?;
+    let transcript = dir.path().join("t.jsonl");
+    std::fs::write(
+        &transcript,
+        r#"{"type":"user","message":{"role":"user","content":"Go"}}"#.to_owned() + "\n",
+    )?;
+    let store = Store::open(dir.path())?;
+    let conn = store.conn();
+    conn.execute(
+        "INSERT INTO block (lineage, instance_id, fg_pid, last_exit, status, status_pid, status_name)
+         VALUES ('b', 'i1', ?1, ?2, ?3, 10, 'claude')",
+        params![pane.fg_pid, pane.last_exit, pane.status],
+    )?;
+    if let Some((instance, own_program)) = pane.occupant {
+        conversation(&store, "b", "claude", &transcript)?;
+        conn.execute(
+            "UPDATE occupant SET instance_id = ?1, own_program = ?2",
+            params![instance, own_program],
+        )?;
+    }
+    if let Some(pid) = pane.run {
+        conn.execute(
+            "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage,
+               worker_pid, worker_instance_id, result_file, keep_pane, created_at)
+             VALUES ('t', 'x', 'claude', 'b-conversation', 'b', ?1, 'i1', '/r', 0, 0)",
+            params![pid],
+        )?;
+    }
+    if let Some((reported_at, running)) = pane.elsewhere {
+        conn.execute(
+            "INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid,
+               keeps_session_env, reported_at) VALUES ('c', 'claude', 'b-conversation', 'i1', 20, 0, ?1)",
+            params![reported_at],
+        )?;
+        conn.execute(
+            "INSERT INTO block (lineage, instance_id, fg_pid) VALUES ('c', 'i1', ?1)",
+            params![running.then_some(20)],
+        )?;
+    }
+    let candidate = candidate(conn, "i2", "b", true)?;
+    Ok((
+        candidate.start,
+        candidate.plan.own_program,
+        candidate.plan.exit_code,
+    ))
+}
+
+#[test]
+fn a_pane_restores_as_it_was_last_used() -> Result<()> {
+    let pane = |fg_pid, last_exit, occupant| Pane {
+        fg_pid,
+        last_exit,
+        occupant,
+        status: "idle",
+        run: None,
+        elsewhere: None,
+    };
+    let here = Some("i1");
+    // The conversation was the terminal's own program and exited: it reopens, again as the
+    // terminal's own program. One reported before version 3 may have been; it reopens from a shell.
+    assert_eq!(
+        planned(&pane(None, Some(0), Some((here, Some(true)))))?,
+        (Start::Agent, true, None)
+    );
+    assert_eq!(
+        planned(&pane(None, Some(0), Some((None, None))))?,
+        (Start::Agent, false, None)
+    );
+    // The conversation ran in another pane after it exited here, so that pane reopens it.
+    let elsewhere = |reported_at, running| Pane {
+        elsewhere: Some((reported_at, running)),
+        ..pane(None, Some(0), Some((here, Some(true))))
+    };
+    assert_eq!(
+        planned(&elsewhere(1, false))?,
+        (Start::Exited, true, Some(0))
+    );
+    assert_eq!(
+        planned(&elsewhere(-1, true))?,
+        (Start::Exited, true, Some(0))
+    );
+    assert_eq!(planned(&elsewhere(-1, false))?, (Start::Agent, true, None));
+    // Another program was the terminal's own, such as the shell an agent ran from, or the record
+    // is of an earlier terminal, as after a restore whose agent failed to start: the exit shows.
+    assert_eq!(
+        planned(&pane(None, Some(2), None))?,
+        (Start::Exited, true, Some(2))
+    );
+    assert_eq!(
+        planned(&pane(None, Some(-1), Some((here, Some(false)))))?,
+        (Start::Exited, true, Some(-1))
+    );
+    assert_eq!(
+        planned(&pane(None, Some(127), Some((Some("i0"), Some(true)))))?,
+        (Start::Exited, true, Some(127))
+    );
+    // A conversation still in the foreground reopens as it ran; one that left gives a shell.
+    assert_eq!(
+        planned(&pane(Some(10), None, Some((here, Some(true)))))?,
+        (Start::Agent, true, None)
+    );
+    assert_eq!(
+        planned(&pane(Some(10), None, Some((here, Some(false)))))?,
+        (Start::Agent, false, None)
+    );
+    assert_eq!(
+        planned(&pane(Some(30), None, Some((here, Some(false)))))?,
+        (Start::Shell, false, None)
+    );
+    // A PID names a process only on its own instance; a report from before instances were
+    // recorded counts as the pane's.
+    assert_eq!(
+        planned(&pane(Some(10), None, Some((Some("i0"), Some(false)))))?,
+        (Start::Shell, false, None)
+    );
+    assert_eq!(
+        planned(&pane(Some(10), None, Some((None, None))))?,
+        (Start::Agent, false, None)
+    );
+    // A run cut off while working reopens its conversation without continuing it; a run the pane
+    // held earlier is not this conversation.
+    let working = |run| Pane {
+        status: "working",
+        run,
+        ..pane(Some(10), None, Some((here, Some(true))))
+    };
+    assert_eq!(planned(&working(None))?.0, Start::Continue);
+    // A copy started later in another pane that exited does not take it from the one running.
+    let copied = Pane {
+        elsewhere: Some((1, false)),
+        ..working(None)
+    };
+    assert_eq!(planned(&copied)?.0, Start::Continue);
+    assert_eq!(
+        planned(&working(Some(Some(10))))?,
+        (Start::Agent, true, None)
+    );
+    assert_eq!(planned(&working(Some(None)))?.0, Start::Agent);
+    assert_eq!(planned(&working(Some(Some(9))))?.0, Start::Continue);
+    Ok(())
+}
+
 #[test]
 fn a_conversation_without_a_record_yet_reopens_only_in_pi() -> Result<()> {
     let start = |runtime: &str| -> Result<Start> {
@@ -105,7 +262,7 @@ fn a_conversation_shown_in_two_panes_is_reopened_in_one() -> Result<()> {
         .query_map(params![op], |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     assert_eq!(starts[0].0, "agent");
-    assert_eq!(starts[1].0, "typed");
+    assert_eq!(starts[1].0, "shell");
     assert_eq!(starts[1].1, "another pane reopens this conversation");
     // Planning again on the same instance plans nothing new.
     assert!(plan(&mut store, "i2", "s", &[])?.is_none());
@@ -120,6 +277,9 @@ fn a_claude_conversation_reopens_in_the_mode_its_record_last_shows() -> Result<(
         std::fs::write(&transcript, records.join("\n") + "\n")?;
         let store = Store::open(dir.path())?;
         conversation(&store, "b", "claude", &transcript)?;
+        store.conn().execute_batch(
+            "INSERT INTO block (lineage, instance_id, fg_pid, status) VALUES ('b', 'i1', 10, 'idle')",
+        )?;
         Ok(candidate(store.conn(), "i2", "b", true)?.plan.argv)
     };
     let resume = |mode: &[&str]| -> Vec<String> {
