@@ -44,11 +44,13 @@ CREATE TABLE IF NOT EXISTS session (
 -- row on the current instance was seen in that instance's open epoch. A row that moves to a new
 -- instance keeps its cwd and size until the new instance reports them, while its foreground,
 -- status, and exit, which describe processes of one instance, start empty. The row goes when the
--- pane closes. Program states are Rex's vocabulary and are not constrained here. `last_exit`
--- is the exit code of the program the terminal started (Rex's child_exited), which a pane
--- reports once; a restore brings the pane back exited unless that program was a conversation it
--- reopens, and it is attributed to a task by the pane having that program as its foreground when
--- the task was registered.
+-- pane closes. Program states are Rex's vocabulary and are not constrained here. `status_pid`
+-- and `status_name` are the process that reported the status, which need not be the
+-- foreground, and `status_at` is the time Rex gives the status. `last_exit` is the exit code of
+-- the program the terminal started (Rex's child_exited), which a pane reports once, or -1 when a
+-- signal ended it; a restore brings the pane back exited unless that program was a conversation
+-- it reopens, and it is attributed to a task by the pane having that program as its foreground
+-- when the task was registered.
 CREATE TABLE IF NOT EXISTS block (
   lineage       TEXT    PRIMARY KEY,
   instance_id   TEXT    NOT NULL,
@@ -153,10 +155,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS restore_op_session ON restore_op (instance_id,
 -- (instance_id, block_lineage), written by the reply or by the gate's claim. `layer_sent_at`:
 -- a floating-layer request carrying this slot was sent; until its reply or a gate claim shows
 -- the layer it may or may not exist, so it is not requested again. `claimed_at` and `started`
--- are set together, once, by the gate's compare-and-set: `started` is what the gate ran, which
--- is 'shell' instead of `start` when the conversation had reported from another pane meanwhile,
--- and 'agent' instead of 'continue' when the conversation's own record no longer showed the
--- interrupted turn when the gate re-read it.
+-- are set together, once, by the gate's compare-and-set: `started` is what the gate starts,
+-- committed before it starts it, which is 'shell' instead of `start` when the conversation had
+-- reported from another pane meanwhile, and 'agent' instead of 'continue' when the
+-- conversation's own record no longer showed the interrupted turn when the gate re-read it.
 CREATE TABLE IF NOT EXISTS restore_slot (
   op_id         TEXT    NOT NULL REFERENCES restore_op (id) ON DELETE CASCADE,
   slot          INTEGER NOT NULL,
