@@ -1,6 +1,6 @@
 # rexume
 
-rexume brings back your [Rex](https://www.superlogical.com/rex) sessions after the Rex server stops: sessions, tabs, split and floating panes, labels, and each pane's working directory, plus the Claude Code, Codex, or Pi conversation that was running in a pane, reopened with the model, effort, and permission mode it last used. A turn the server's end cut off continues once; a finished, cancelled, or waiting conversation reopens without a new turn. Panes you closed stay closed.
+rexume brings back your [Rex](https://www.superlogical.com/rex) sessions after the Rex server stops: sessions, tabs, split and floating panes, labels, and each pane's working directory, plus the Claude Code, Codex, or Pi conversation that was running in a pane, reopened with the model, effort, and permission mode it last used, plus Claude Code launch flags such as `--remote-control` and its provider environment (Vertex, Bedrock, or Foundry variables). A turn the server's end cut off continues once; a finished, cancelled, or waiting conversation reopens without a new turn. Panes you closed stay closed.
 
 It also lets an orchestrator agent hand work to a worker pane and get the result back: rexume records the task, tells the orchestrator when the worker finishes, even while the orchestrator is idle, and closes a disposable worker's pane once the orchestrator releases it, unless someone has used the pane since or a restore brought it back.
 

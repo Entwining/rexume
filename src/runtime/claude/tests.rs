@@ -131,3 +131,5 @@ fn an_open_prompt_carries_when_it_was_recorded() -> Result<()> {
     );
     Ok(())
 }
+
+mod launch;

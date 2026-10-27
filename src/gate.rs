@@ -238,6 +238,7 @@ fn occupy(
         transcript: plan.transcript.clone(),
         resumable: true,
         settings: Map::new(),
+        replace_settings: &[],
         record_length: None,
     };
     let process = Process {

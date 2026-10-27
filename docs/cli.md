@@ -92,6 +92,8 @@ Run by the session-start hooks with the hook's JSON on stdin, which it reads who
 | `codex` | `session_id`, `transcript_path`, `model`, `effort`; a start without `transcript_path` is unmarked: Codex keeps no record of its guardian reviews and side conversations, nor of an ephemeral `codex exec` run |
 | `pi` | `session_id`, `session_file`, `session_file_size` (the file's length when the session started; without it the report measures the file itself), `mode`, `provider`, `model`, `thinking`; a start outside `tui` mode is unmarked, which covers SDK sessions an extension creates and `pi -p`, `--mode json`, and `--mode rpc` runs, and only a `tui` session with a file can be reopened |
 
+For Claude Code, `report` also reads the foreground process's arguments and the hook's environment. It saves `--remote-control` (`--rc`) with its optional name, `--add-dir`, `--settings`, `--mcp-config`, `--strict-mcp-config`, `--chrome`, and `--no-chrome`. All paths for `--add-dir` and `--mcp-config` are kept; inline JSON for `--settings` and `--mcp-config` is dropped. It saves only these provider variables: `CLAUDE_CODE_USE_VERTEX`, `CLAUDE_CODE_USE_BEDROCK`, `CLAUDE_CODE_USE_FOUNDRY`, `CLOUD_ML_REGION`, `ANTHROPIC_VERTEX_PROJECT_ID`, `ANTHROPIC_MODEL`, `ANTHROPIC_SMALL_FAST_MODEL`, `AWS_REGION`, and `AWS_PROFILE`. Empty or non-Unicode values are skipped; credentials never reach the store. Each report replaces the saved launch flags and provider environment in full, removing any no longer present. Model and effort merge into the recorded settings, so a resumed start that omits them keeps them.
+
 A Claude Code conversation also records `CLAUDE_CODE_MESSAGING_SOCKET`, through which notices reach it.
 
 ## task

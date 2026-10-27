@@ -66,6 +66,7 @@ fn a_claim_records_a_conversation_it_starts_as_the_terminals_own_program() -> Re
         transcript: None,
         resumable: role == Role::Own,
         settings: Map::new(),
+        replace_settings: &[],
         record_length: None,
     };
     let tx = store.write()?;

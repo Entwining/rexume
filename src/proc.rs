@@ -3,7 +3,7 @@
     target_os = "macos",
     expect(
         unsafe_code,
-        reason = "libc::proc_pidinfo has no safe wrapper in the dependency set; AGENTS.md records this"
+        reason = "libc::proc_pidinfo and libc::sysctl have no safe wrappers in the dependency set; AGENTS.md records this"
     )
 )]
 
@@ -14,6 +14,77 @@ use std::mem::{MaybeUninit, size_of};
 
 /// Programs that only pass a command along: hooks and tool calls reach this tool through them.
 const WRAPPERS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "env", "rexume"];
+
+#[cfg(target_os = "linux")]
+pub fn argv(pid: u32) -> Option<Vec<String>> {
+    let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
+    let bytes = bytes.strip_suffix(&[0])?;
+    if bytes.is_empty() {
+        return None;
+    }
+    bytes
+        .split(|byte| *byte == 0)
+        .map(|arg| std::str::from_utf8(arg).ok().map(str::to_owned))
+        .collect()
+}
+
+#[cfg(target_os = "macos")]
+pub fn argv(pid: u32) -> Option<Vec<String>> {
+    let mut mib = [
+        libc::CTL_KERN,
+        libc::KERN_PROCARGS2,
+        i32::try_from(pid).ok()?,
+    ];
+    let mut size = 0;
+    // SAFETY: mib names the process arguments, size is writable, and a null buffer queries its size.
+    let result = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            std::ptr::null_mut(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if result != 0 {
+        return None;
+    }
+    let mut bytes = vec![0; size];
+    // SAFETY: bytes holds size writable bytes, and mib and size remain valid for this call.
+    let result = unsafe {
+        libc::sysctl(
+            mib.as_mut_ptr(),
+            3,
+            bytes.as_mut_ptr().cast(),
+            &mut size,
+            std::ptr::null_mut(),
+            0,
+        )
+    };
+    if result != 0 {
+        return None;
+    }
+    parse_argv(bytes.get(..size)?)
+}
+
+#[cfg(target_os = "macos")]
+fn parse_argv(bytes: &[u8]) -> Option<Vec<String>> {
+    let argc = u32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?);
+    if argc == 0 {
+        return None;
+    }
+    let mut bytes = bytes.get(4..)?;
+    bytes = bytes.get(bytes.iter().position(|byte| *byte == 0)?..)?;
+    bytes = bytes.get(bytes.iter().position(|byte| *byte != 0)?..)?;
+    let mut args = Vec::new();
+    for _ in 0..argc {
+        let end = bytes.iter().position(|byte| *byte == 0)?;
+        args.push(std::str::from_utf8(&bytes[..end]).ok()?.to_owned());
+        bytes = &bytes[end + 1..];
+    }
+    Some(args)
+}
 
 /// A process's parent and executable name, or `None` when no such process is visible or it has
 /// exited and only waits to be reaped.
@@ -106,6 +177,32 @@ mod tests {
         assert!(name.starts_with("rexume"));
         assert_eq!(parent, std::os::unix::process::parent_id());
         assert!(!alive(-1));
+    }
+
+    #[test]
+    fn reads_this_process_arguments() {
+        let args = argv(std::process::id()).expect("this process is visible");
+        let executable = std::env::current_exe().expect("this process has an executable");
+        assert!(args[0].ends_with(executable.file_name().unwrap().to_str().unwrap()));
+    }
+
+    #[cfg(target_os = "macos")]
+    #[test]
+    fn process_arguments_stop_before_the_environment_and_reject_incomplete_buffers() {
+        let mut bytes = 3_u32.to_ne_bytes().to_vec();
+        bytes.extend_from_slice(b"/bin/agent\0\0\0agent\0\0--remote-control\0SECRET=value\0");
+        assert_eq!(
+            parse_argv(&bytes).unwrap(),
+            ["agent", "", "--remote-control"]
+        );
+        for invalid in [
+            &bytes[..3],
+            &bytes[..10],
+            &bytes[..bytes.len() - 14],
+            &0_u32.to_ne_bytes(),
+        ] {
+            assert!(parse_argv(invalid).is_none());
+        }
     }
 
     /// A `task wait` that exited but was not reaped yet can no longer take its round's result.

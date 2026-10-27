@@ -2,7 +2,7 @@
 //! its turns from the conversation's own record, how to pass it a notice, and which record shows
 //! it took the notice in. A new runtime is a variant here and a file beside this one.
 
-mod claude;
+pub mod claude;
 mod codex;
 mod lines;
 pub mod pi;
@@ -41,9 +41,9 @@ impl Runtime {
         }
     }
 
-    /// The command that reopens a conversation. Only the conversation's identity and its settings
-    /// are carried over, never the original arguments: those can hold a launch prompt that would
-    /// run a finished task again.
+    /// The command that reopens a conversation. Its identity, settings, and an allowlist of launch
+    /// flags and provider variables are carried over. Original arguments are never replayed
+    /// wholesale: those can hold a launch prompt that would run a finished task again.
     pub fn resume_argv(self, conversation: &Conversation) -> Vec<String> {
         match self {
             Self::Claude => claude::resume_argv(conversation),
@@ -151,6 +151,14 @@ pub struct Conversation {
 impl Conversation {
     fn setting(&self, key: &str) -> Option<&str> {
         self.settings.get(key).and_then(Value::as_str)
+    }
+
+    fn setting_array(&self, key: &str) -> Option<&Vec<Value>> {
+        self.settings.get(key).and_then(Value::as_array)
+    }
+
+    fn setting_object(&self, key: &str) -> Option<&Map<String, Value>> {
+        self.settings.get(key).and_then(Value::as_object)
     }
 }
 

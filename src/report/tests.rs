@@ -242,3 +242,64 @@ fn a_new_process_takes_the_pane_even_without_the_runtimes_mark() -> Result<()> {
     }
     Ok(())
 }
+
+#[test]
+fn a_claude_report_replaces_launch_settings_and_merges_model_and_effort() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut store = Store::open(dir.path())?;
+    let tx = store.write()?;
+    let mut report = parse(
+        Runtime::Claude,
+        &json!({"session_id": "s", "model": "big", "effort": "high"}),
+    )?;
+    let argv = ["claude", "--remote-control"].map(str::to_owned);
+    report.settings.extend(claude::launch_settings(
+        &argv,
+        [
+            ("CLAUDE_CODE_USE_VERTEX".into(), "1".into()),
+            ("CLOUD_ML_REGION".into(), "global".into()),
+        ],
+    ));
+    record(&tx, "b", Runtime::Claude, &report, &process(100))?;
+    let saved = || -> Result<Value> {
+        Ok(tx.query_row(
+            "SELECT settings FROM conversation WHERE runtime = 'claude' AND native_id = 's'",
+            [],
+            |row| row.get(0),
+        )?)
+    };
+    assert_eq!(
+        saved()?,
+        json!({
+            "model": "big", "effort": "high", "launch_flags": ["--remote-control"],
+            "launch_env": {"CLAUDE_CODE_USE_VERTEX": "1", "CLOUD_ML_REGION": "global"}
+        })
+    );
+    let partial = Report {
+        replace_settings: &[],
+        ..parse(Runtime::Claude, &json!({"session_id": "s"}))?
+    };
+    record(&tx, "b", Runtime::Claude, &partial, &process(100))?;
+    assert_eq!(saved()?["launch_flags"], json!(["--remote-control"]));
+    assert_eq!(saved()?["launch_env"]["CLAUDE_CODE_USE_VERTEX"], "1");
+    let mut resume = parse(
+        Runtime::Claude,
+        &json!({"session_id": "s", "source": "resume"}),
+    )?;
+    resume.settings.extend(claude::launch_settings(
+        &[],
+        [("CLAUDE_CODE_USE_BEDROCK".into(), "1".into())],
+    ));
+    record(&tx, "b", Runtime::Claude, &resume, &process(100))?;
+    assert_eq!(
+        saved()?,
+        json!({
+            "model": "big", "effort": "high", "launch_env": {"CLAUDE_CODE_USE_BEDROCK": "1"}
+        })
+    );
+    resume.settings = claude::launch_settings(&[], []);
+    record(&tx, "b", Runtime::Claude, &resume, &process(100))?;
+    assert_eq!(saved()?, json!({"model": "big", "effort": "high"}));
+    tx.commit()?;
+    Ok(())
+}

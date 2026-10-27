@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 
 use crate::proc;
 use crate::rex::{Cli, Rex, require_str, str_at};
-use crate::runtime::Runtime;
+use crate::runtime::{Runtime, claude};
 use crate::store::{Store, ensure_lineage, now_ms};
 
 /// What a session start says about the session's place in the agent process that reports it.
@@ -33,6 +33,8 @@ pub struct Report {
     pub resumable: bool,
     /// Only the settings this report carries; a later report merges into the recorded ones.
     pub settings: Map<String, Value>,
+    /// JSON paths to remove before merging this report's settings.
+    pub replace_settings: &'static [&'static str],
     /// The record's length when the session started, from a runtime that measures it itself: the
     /// Pi extension, which goes on with the session while its report runs. A hook holds the
     /// session until the report ends, so the report measures it for Claude Code and Codex.
@@ -75,6 +77,11 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
             transcript: text("transcript_path"),
             resumable: role == Role::Own,
             settings: settings_from(&[("model", "model"), ("effort", "effort")]),
+            replace_settings: if runtime == Runtime::Claude {
+                &["$.launch_flags", "$.launch_env"]
+            } else {
+                &[]
+            },
             record_length: None,
         },
         Runtime::Pi => {
@@ -91,6 +98,7 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
                     ("model", "model"),
                     ("thinking", "effort"),
                 ]),
+                replace_settings: &[],
                 record_length: input.get("session_file_size").and_then(Value::as_u64),
             }
         }
@@ -109,7 +117,7 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
     };
     let block = block.to_string_lossy();
     let input: Value = serde_json::from_str(&input).context("failed to parse the hook input")?;
-    let report = parse(runtime, &input)?;
+    let mut report = parse(runtime, &input)?;
     let start_position = match (report.record_length, &report.transcript) {
         (Some(length), _) => length,
         (None, Some(path)) => record_length(path)?,
@@ -134,6 +142,13 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
             "this {runtime} process is not the pane's foreground program, so nothing was recorded"
         );
     };
+    if runtime == Runtime::Claude {
+        // The hook is the agent's child, so its environment is the agent's environment.
+        report.settings.extend(claude::launch_settings(
+            &proc::argv(u32::try_from(foreground)?).unwrap_or_default(),
+            std::env::vars_os(),
+        ));
+    }
     let instance = require_str(&rex.call("server.status", &json!({}))?, "/instance_id")?;
     let transport: Map<String, Value> = std::env::var_os("CLAUDE_CODE_MESSAGING_SOCKET")
         .map(|socket| {
@@ -213,6 +228,13 @@ pub fn record(
     };
     if inner {
         return Ok(());
+    }
+    for path in report.replace_settings {
+        tx.execute(
+            "UPDATE conversation SET settings = json_remove(settings, ?3)
+             WHERE runtime = ?1 AND native_id = ?2",
+            params![runtime.as_str(), report.native_id, path],
+        )?;
     }
     let now = now_ms();
     tx.execute(
