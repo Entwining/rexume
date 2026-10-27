@@ -8,6 +8,8 @@ use std::time::{Duration, Instant};
 use rusqlite::Connection;
 use serde_json::{Value, json};
 
+pub mod claude;
+
 pub const REXUME: &str = env!("CARGO_BIN_EXE_rexume");
 
 /// The shell the test server's panes run, in `/bin`.

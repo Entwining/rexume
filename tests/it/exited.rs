@@ -1,11 +1,10 @@
-use std::os::unix::fs::PermissionsExt;
 use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::params;
 use serde_json::{Value, json};
 
-use crate::common::{Daemon, Server, db, query, wait_until};
+use crate::common::{Daemon, REXUME, Server, claude, db, query, wait_until};
 
 const WAIT: Duration = Duration::from_secs(20);
 const PROMPT: &str = r#"{"type":"user","message":{"role":"user","content":"Write a story"}}"#;
@@ -36,35 +35,16 @@ fn exits(state: &Path, instance: &str, blocks: &[String]) -> Vec<i64> {
     })
 }
 
-/// The stand-in's runs, by the order they started, each with its pid and arguments.
-fn runs(dir: &Path, count: usize) -> Vec<(i64, String)> {
-    wait_until("the agent to run", WAIT, || {
-        let mut runs: Vec<(std::time::SystemTime, i64, String)> = std::fs::read_dir(dir)
-            .unwrap()
-            .map(|e| {
-                let path = e.unwrap().path();
-                let pid = path.file_name().unwrap().to_str().unwrap().parse().unwrap();
-                let modified = std::fs::metadata(&path).unwrap().modified().unwrap();
-                (modified, pid, std::fs::read_to_string(path).unwrap())
-            })
-            .collect();
-        runs.sort();
-        (runs.len() == count).then(|| runs.into_iter().map(|(_, p, a)| (p, a)).collect())
-    })
-}
-
-/// Records the stand-in run `pid` on `instance` as the pane's own program, as its hook would.
-fn report(state: &Path, block: &str, instance: &str, pid: i64) {
-    db(state)
-        .execute(
-            "INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid, pid_name,
-               own_program, keeps_session_env, reported_at)
-             VALUES (?1, 'claude', 'story', ?2, ?3, 'claude', 1, 1, 0)
-             ON CONFLICT (block_lineage) DO UPDATE SET instance_id = excluded.instance_id,
-               pid = excluded.pid",
-            params![block, instance, pid],
-        )
-        .unwrap();
+/// Whether the hook of run `pid` recorded it on `instance` as the pane's own program. The hook
+/// finishes before the run exits.
+fn own_program(state: &Path, block: &str, instance: &str, pid: i64) -> Option<i64> {
+    query(
+        state,
+        &format!(
+            "SELECT own_program FROM occupant WHERE block_lineage = '{block}'
+             AND instance_id = '{instance}' AND pid = {pid} AND own_program IS NOT NULL"
+        ),
+    )
 }
 
 /// Restarts the server after a crash and returns how each slot of the new restore started.
@@ -103,35 +83,26 @@ fn restart(server: &mut Server, state: &Path, bin: &Path, restores: i64) -> Vec<
 fn an_exited_pane_comes_back_the_same_after_each_restart() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
-    // A stand-in for Claude Code that records how it was started and exits soon after.
-    let (bin, ran) = (dir.path().join("bin"), dir.path().join("runs"));
-    std::fs::create_dir_all(&bin).unwrap();
-    std::fs::create_dir_all(&ran).unwrap();
-    let claude = bin.join("claude");
-    std::fs::write(
-        &claude,
-        format!(
-            "#!/bin/sh\nprintf '%s\\n' \"$@\" > '{}'/$$\nsleep 1\n",
-            ran.display()
-        ),
-    )
-    .unwrap();
-    std::fs::set_permissions(&claude, std::fs::Permissions::from_mode(0o755)).unwrap();
+    // A stand-in for Claude Code that reports itself through the hook, as Claude Code does on
+    // its start, and exits soon after.
     let transcript = dir.path().join("story.jsonl");
     std::fs::write(&transcript, format!("{PROMPT}\n{ANSWER}\n")).unwrap();
+    let hook = json!({ "session_id": "story", "transcript_path": transcript }).to_string();
+    let (bin, ran) = claude::stand_in(
+        dir.path(),
+        &format!(
+            "open(my $hook, '|-', '{REXUME}', 'report', 'claude', '--state-dir', '{}') or die $!;\n\
+             print $hook '{hook}';\nclose $hook;\nsleep 1;",
+            state.display()
+        ),
+    );
 
     let mut server = Server::start(dir.path(), Some(&bin));
     let _daemon = Daemon::start(&server, &state);
     wait_until("the daemon's first epoch", WAIT, || {
         query::<i64>(&state, "SELECT id FROM epoch")
     });
-    db(&state)
-        .execute(
-            "INSERT INTO conversation (runtime, native_id, transcript, resumable, reported_at)
-             VALUES ('claude', 'story', ?1, 1, 0)",
-            params![transcript.to_string_lossy()],
-        )
-        .unwrap();
+    let claude = bin.join("claude");
     let claude = claude.to_str().unwrap();
     let created = server.call(
         "session.create",
@@ -148,8 +119,11 @@ fn an_exited_pane_comes_back_the_same_after_each_restart() {
         .map(|b| b.as_str().unwrap().to_owned())
         .collect();
     let first = server.instance();
-    report(&state, &blocks[2], &first, runs(&ran, 1)[0].0);
     assert_eq!(exits(&state, &first, &blocks), [3, -1, 0]);
+    assert_eq!(
+        own_program(&state, &blocks[2], &first, claude::runs(&ran, 1)[0].0),
+        Some(1)
+    );
     wait_until("the layout to be saved", WAIT, || {
         query::<String>(&state, "SELECT doc FROM session")
             .filter(|doc| blocks.iter().all(|b| doc.contains(b.as_str())))
@@ -158,12 +132,14 @@ fn an_exited_pane_comes_back_the_same_after_each_restart() {
     for restores in 1..=2 {
         let started = restart(&mut server, &state, &bin, restores);
         assert_eq!(started, ["exited", "exited", "agent"], "restart {restores}");
-        let reopened = runs(&ran, usize::try_from(restores).unwrap() + 1);
+        let count = usize::try_from(restores).unwrap() + 1;
+        let reopened = claude::runs(&ran, count);
+        assert_eq!(reopened.len(), count, "restart {restores}");
         let (pid, argv) = reopened.last().unwrap();
         assert_eq!(argv.lines().collect::<Vec<_>>(), ["--resume", "story"]);
         let instance = server.instance();
-        report(&state, &blocks[2], &instance, *pid);
         assert_eq!(exits(&state, &instance, &blocks), [3, -1, 0]);
+        assert_eq!(own_program(&state, &blocks[2], &instance, *pid), Some(1));
     }
     drop(server);
 }
