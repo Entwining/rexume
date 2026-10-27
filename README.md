@@ -2,7 +2,7 @@
 
 rexume brings back your [Rex](https://www.superlogical.com/rex) sessions after the Rex server stops: sessions, tabs, split and floating panes, labels, and each pane's working directory, plus the Claude Code, Codex, or Pi conversation that was running in a pane, reopened with the model and effort it last used. A turn the server's end cut off continues once; a finished, cancelled, or waiting conversation reopens without a new turn. Panes you closed stay closed.
 
-It also lets an orchestrator agent hand work to a worker pane and get the result back: rexume records the task, tells the orchestrator when the worker finishes, even while the orchestrator is idle, and closes a disposable worker's pane once the orchestrator releases it, unless someone has used the pane since.
+It also lets an orchestrator agent hand work to a worker pane and get the result back: rexume records the task, tells the orchestrator when the worker finishes, even while the orchestrator is idle, and closes a disposable worker's pane once the orchestrator releases it, unless someone has used the pane since or a restore brought it back after the worker finished.
 
 rexume is developed on Apple Silicon macOS with the Rex app installed. It also runs on Linux, x86_64 or arm64, on the machine that runs the Rex server, as a systemd user service.
 

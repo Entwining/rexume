@@ -11,6 +11,8 @@ use crate::common::{
     Daemon, REXUME, Server, db, query, rex_bin, shell_block, shell_pids, wait_until,
 };
 
+mod run;
+
 const WAIT: Duration = Duration::from_secs(20);
 
 /// Runs `rexume task ...` as the orchestrator in `block` would.

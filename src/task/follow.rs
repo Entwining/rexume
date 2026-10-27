@@ -88,9 +88,12 @@ impl Follow {
         notice::settle(store, &mut self.receipts, &mut interest)?;
         if let Some((rex, instance)) = connected {
             for id in cleanup::due(store.conn())? {
-                if self.tried.insert(id.clone()) {
-                    let outcome = cleanup::close(rex, store, instance, &id)?;
+                if self.tried.contains(&id) {
+                    continue;
+                }
+                if let Some(outcome) = cleanup::close(rex, store, instance, &id)? {
                     log::info!("task {id}: worker pane {outcome}");
+                    self.tried.insert(id);
                 }
             }
         }

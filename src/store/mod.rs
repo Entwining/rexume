@@ -19,6 +19,8 @@ const SCHEMA: &str = include_str!("schema.sql");
 pub const SCHEMA_VERSION: i64 = 2;
 /// The `application_id` that `schema.sql` sets: 'rexu' in ASCII.
 const APPLICATION_ID: i64 = 0x7265_7875;
+/// A restore that can still create or bind panes: the `restore_op` states before its last.
+pub const UNFINISHED_RESTORE: &str = "state IN ('planned', 'sent', 'unknown', 'created')";
 /// How long finished restores, tasks, and unused conversations are kept.
 const RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
@@ -287,15 +289,16 @@ pub fn sweep(tx: &Transaction, instance: &str, now: i64) -> Result<()> {
         params![instance],
     )?;
     tx.execute(
-        "DELETE FROM block
-          WHERE instance_id != ?1
-            AND lineage NOT IN (SELECT j.value FROM session, json_tree(session.doc) AS j
-                                WHERE j.key = 'lineage')
-            AND lineage NOT IN (SELECT s.block_lineage FROM restore_slot s
-                                JOIN restore_op o ON o.id = s.op_id
-                                WHERE o.instance_id = ?1
-                                  AND o.state IN ('planned', 'sent', 'unknown', 'created'))
-            AND lineage NOT IN (SELECT worker_lineage FROM task WHERE pane_state != 'closed')",
+        &format!(
+            "DELETE FROM block
+              WHERE instance_id != ?1
+                AND lineage NOT IN (SELECT j.value FROM session, json_tree(session.doc) AS j
+                                    WHERE j.key = 'lineage')
+                AND lineage NOT IN (SELECT s.block_lineage FROM restore_slot s
+                                    JOIN restore_op o ON o.id = s.op_id
+                                    WHERE o.instance_id = ?1 AND o.{UNFINISHED_RESTORE})
+                AND lineage NOT IN (SELECT worker_lineage FROM task WHERE pane_state != 'closed')"
+        ),
         params![instance],
     )?;
     // An earlier instance's restore can no longer move, whatever state it stopped in.

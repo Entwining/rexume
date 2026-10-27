@@ -15,7 +15,7 @@ use rusqlite::params;
 use serde_json::{Value, json};
 
 use crate::rex::{CallError, Rex};
-use crate::store::{Store, live_of};
+use crate::store::{Store, UNFINISHED_RESTORE, live_of};
 use crate::task;
 use create::Op;
 use layer::{LayerOutcome, Placement, layer_state};
@@ -73,10 +73,10 @@ impl Restorer {
     pub fn start(&mut self, rex: &mut Rex, store: &mut Store, instance: &str) -> Result<()> {
         let unfinished: Vec<(String, String)> = store
             .conn()
-            .prepare(
-                "SELECT id, state FROM restore_op WHERE instance_id = ?1
-                 AND state IN ('planned', 'sent', 'unknown', 'created') ORDER BY created_at",
-            )?
+            .prepare(&format!(
+                "SELECT id, state FROM restore_op WHERE instance_id = ?1 AND {UNFINISHED_RESTORE}
+                 ORDER BY created_at"
+            ))?
             .query_map(params![instance], |row| Ok((row.get(0)?, row.get(1)?)))?
             .collect::<rusqlite::Result<_>>()?;
         for (op, state) in unfinished {

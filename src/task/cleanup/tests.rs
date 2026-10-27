@@ -20,6 +20,105 @@ fn released_worker(dir: &Path, transcript: &Path) -> Result<Store> {
     Ok(store)
 }
 
+/// Task `t`'s non-interactive run in pane `b`, which exited 0 with its result; the round is
+/// acknowledged and the task released.
+fn released_run(dir: &Path) -> Result<Store> {
+    let store = task_world(dir, &dir.join("unused.jsonl"), Some("/r"))?;
+    store.conn().execute_batch(
+        "UPDATE block SET fg_pid = NULL, last_exit = 0 WHERE lineage = 'b';
+         UPDATE task_round SET state = 'completed', result = 'Done.', result_ref = '/r', finished_at = 100,
+           finished_generation = 5, acked_at = 120;
+         UPDATE task SET released_at = 120;",
+    )?;
+    Ok(store)
+}
+
+/// The server can report the run's pane without a foreground after the exit, once the round has
+/// its result; that moves the generation but runs nothing. A pane restored on a later instance
+/// starts without the run's exit and may be anyone's.
+#[test]
+fn a_pane_whose_run_exited_is_retired_until_it_is_restored() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = released_run(dir.path())?;
+    store
+        .conn()
+        .execute_batch("UPDATE block SET fg_generation = 6 WHERE lineage = 'b'")?;
+    assert_eq!(retired_workers(store.conn())?, ["b"]);
+    store.conn().execute_batch(
+        "UPDATE block SET instance_id = 'i2', fg_pid = 300, last_exit = NULL WHERE lineage = 'b'",
+    )?;
+    assert!(retired_workers(store.conn())?.is_empty());
+    Ok(())
+}
+
+/// A restore on the current instance brings the pane back as a new terminal, which the pane's
+/// record describes only once the server reports it. A restore that can no longer bind the pane
+/// leaves it gone.
+#[test]
+fn a_pane_being_restored_is_not_the_recorded_one() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = released_run(dir.path())?;
+    let conn = store.conn();
+    conn.execute_batch(
+        "INSERT INTO restore_op (id, instance_id, session_lineage, state, doc, created_at)
+           VALUES ('o', 'i2', 's', 'sent', '{}', 130);
+         INSERT INTO restore_slot (op_id, slot, instance_id, block_lineage, start, plan)
+           VALUES ('o', 0, 'i2', 'b', 'shell', '{}');",
+    )?;
+    assert_eq!(live(conn, "i2", "b")?, Live::Restoring);
+    conn.execute_batch("UPDATE restore_op SET state = 'failed'")?;
+    assert_eq!(live(conn, "i2", "b")?, Live::Gone);
+    conn.execute_batch(
+        "INSERT INTO live (instance_id, live_id, lineage) VALUES ('i2', 'block:new', 'b')",
+    )?;
+    assert_eq!(live(conn, "i2", "b")?, Live::Restoring);
+    conn.execute_batch("UPDATE block SET instance_id = 'i2' WHERE lineage = 'b'")?;
+    assert_eq!(live(conn, "i2", "b")?, Live::Block("block:new".into()));
+    Ok(())
+}
+
+/// A close waits for a restore that may still bring the pane back, here through a floating
+/// layer whose reply was lost, without claiming the pane; the pass after the gate's late claim
+/// looks again.
+#[test]
+fn a_close_waits_for_the_restore_and_looks_again_after_the_claim() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut store = released_run(dir.path())?;
+    store.conn().execute_batch(
+        "INSERT INTO restore_op (id, instance_id, session_lineage, state, doc, created_at)
+           VALUES ('o', 'i2', 's', 'partial', '{}', 130);
+         INSERT INTO restore_slot (op_id, slot, instance_id, block_lineage, start, plan, layer_sent_at)
+           VALUES ('o', 0, 'i2', 'b', 'shell', '{}', 140);",
+    )?;
+    let mut rex = Rex::Cli(crate::rex::Cli {
+        bin: dir.path().join("rex"),
+        endpoint: String::new(),
+    });
+    let mut follow = crate::task::Follow::default();
+    let pane = |store: &Store| -> Result<(String, Option<String>)> {
+        Ok(store
+            .conn()
+            .query_row("SELECT pane_state, pane_note FROM task", [], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?)
+    };
+    follow.pass(&mut store, Some((&mut rex, "i2")))?;
+    assert_eq!(pane(&store)?, ("open".into(), None));
+    store.conn().execute_batch(
+        "INSERT INTO live (instance_id, live_id, lineage) VALUES ('i2', 'block:new', 'b');
+         UPDATE block SET instance_id = 'i2', fg_pid = 300, last_exit = NULL WHERE lineage = 'b';",
+    )?;
+    follow.pass(&mut store, Some((&mut rex, "i2")))?;
+    assert_eq!(
+        pane(&store)?,
+        (
+            "kept".into(),
+            Some("the worker's pane was restored after its run".into())
+        )
+    );
+    Ok(())
+}
+
 #[test]
 fn an_untouched_released_worker_is_not_restored() -> Result<()> {
     let dir = tempfile::tempdir()?;

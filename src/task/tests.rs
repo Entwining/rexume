@@ -228,12 +228,13 @@ fn a_closed_worker_pane_ends_its_unbound_round_and_every_task_on_it() -> Result<
 fn every_pass_statement_uses_an_index() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let store = Store::open(dir.path())?;
-    let statements: [(&str, &str, bool); 14] = [
+    let statements: [(&str, &str, bool); 15] = [
         ("OPEN_ROUNDS", &OPEN_ROUNDS, true),
         ("outcome::ROUND", &outcome::ROUND, false),
         ("WORKER_ROUNDS", &WORKER_ROUNDS, true),
         ("cleanup::CLAIM", &cleanup::CLAIM, true),
         ("cleanup::DUE", &cleanup::DUE, true),
+        ("cleanup::RESTORING", &cleanup::RESTORING, false),
         ("notice::PENDING", notice::PENDING, false),
         ("notice::SENT", notice::SENT, false),
         ("notice::READY_OWNER", notice::READY_OWNER, false),
@@ -252,7 +253,11 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
             details.push(row.get::<_, String>(3)?);
         }
         for detail in &details {
-            let Some(scanned) = detail.strip_prefix("SCAN ") else {
+            // A `SELECT` without `FROM`, such as `SELECT EXISTS (...)`, scans no table.
+            let Some(scanned) = detail
+                .strip_prefix("SCAN ")
+                .filter(|scanned| *scanned != "CONSTANT ROW")
+            else {
                 continue;
             };
             let table = scanned.split(' ').next().unwrap_or_default();

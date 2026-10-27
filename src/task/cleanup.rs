@@ -15,7 +15,7 @@ use serde_json::json;
 use super::{LATEST_ROUND, OPEN, block_gone};
 use crate::rex::{CallError, Rex, items, root_status, str_at, time_at};
 use crate::runtime::{Runtime, Turn, last_turn};
-use crate::store::{Store, live_of};
+use crate::store::{Store, UNFINISHED_RESTORE, live_of};
 
 /// Released disposable workers whose panes, as last recorded, still show the worker as its latest
 /// result left it. A restore leaves these out; any other pane, including one the user took over
@@ -64,7 +64,6 @@ pub(super) static CLAIM: LazyLock<String> = LazyLock::new(|| {
 struct Taken {
     interactive: bool,
     worker: String,
-    worker_pid: Option<i64>,
     finished_at: Option<i64>,
     status_at: Option<i64>,
     generation: Option<i64>,
@@ -75,23 +74,22 @@ struct Taken {
 fn taken(conn: &Connection, id: &str) -> Result<Taken> {
     Ok(conn.query_row(
         &format!(
-            "SELECT t.result_file IS NULL, t.worker_lineage, t.worker_pid,
+            "SELECT t.result_file IS NULL, t.worker_lineage,
                r.finished_at, r.finished_status_at, r.finished_generation, t.position,
                t.worker_runtime, t.worker_native_id
              FROM task t JOIN task_round r ON r.task_id = t.id WHERE t.id = ?1 AND {LATEST_ROUND}"
         ),
         params![id],
         |row| {
-            let runtime: Option<Runtime> = row.get(7)?;
-            let native_id: Option<String> = row.get(8)?;
+            let runtime: Option<Runtime> = row.get(6)?;
+            let native_id: Option<String> = row.get(7)?;
             Ok(Taken {
                 interactive: row.get(0)?,
                 worker: row.get(1)?,
-                worker_pid: row.get(2)?,
-                finished_at: row.get(3)?,
-                status_at: row.get(4)?,
-                generation: row.get(5)?,
-                position: row.get(6)?,
+                finished_at: row.get(2)?,
+                status_at: row.get(3)?,
+                generation: row.get(4)?,
+                position: row.get(5)?,
                 conversation: runtime.zip(native_id),
             })
         },
@@ -103,30 +101,38 @@ enum Untouched {
     No(String),
 }
 
-/// Whether the worker's pane, as recorded, is unchanged since its result: the same foreground
-/// generation (or none observed on either side) and status, the task's conversation still the
-/// pane's occupant and not reported since, and no turn in its record after the task's position.
+/// Whether the worker's pane, as recorded, is unchanged since its result. A run's pane still shows
+/// the run's exit; an interactive worker's has the same foreground generation (or none observed
+/// on either side) and status, the task's conversation still the pane's occupant and not reported
+/// since, and no turn in its record after the task's position.
 fn untouched(conn: &Connection, id: &str) -> Result<Untouched> {
     let taken = taken(conn, id)?;
     let no = |reason: &str| Ok(Untouched::No(reason.to_owned()));
     let Some(finished_at) = taken.finished_at else {
         return no("the task has no result");
     };
-    let pane: Option<(Option<i64>, Option<i64>)> = conn
+    let pane: Option<(Option<i64>, Option<i64>, Option<i64>)> = conn
         .query_row(
-            "SELECT status_at, fg_generation FROM block WHERE lineage = ?1",
+            "SELECT status_at, fg_generation, last_exit FROM block WHERE lineage = ?1",
             params![taken.worker],
-            |row| Ok((row.get(0)?, row.get(1)?)),
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )
         .optional()?;
-    let Some((status_at, generation)) = pane else {
+    let Some((status_at, generation, last_exit)) = pane else {
         return no("the worker's pane is not recorded");
     };
+    // A run's round ends on the exit of the terminal's own program, after which Rex starts nothing
+    // in that terminal. Rex can still report an empty foreground after the exit, which moves the
+    // generation, so the generation does not tell whether the pane was used. A pane without the
+    // exit is a new terminal, restored after the run.
+    if !taken.interactive {
+        if last_exit.is_none() {
+            return no("the worker's pane was restored after its run");
+        }
+        return Ok(Untouched::Yes(taken.worker));
+    }
     if generation != taken.generation {
         return no("another program ran in the worker's pane after its result");
-    }
-    if !taken.interactive {
-        return Ok(Untouched::Yes(taken.worker));
     }
     if status_at != taken.status_at {
         return no("the worker's status changed after its result");
@@ -162,6 +168,45 @@ fn untouched(conn: &Connection, id: &str) -> Result<Untouched> {
     Ok(Untouched::Yes(taken.worker))
 }
 
+/// Where the worker's pane is on this server instance.
+#[derive(Debug, PartialEq)]
+enum Live {
+    /// The live pane, which the pane's record describes.
+    Block(String),
+    /// A restore on this instance brings the pane back as a new terminal, or may still, and the
+    /// server has not reported it yet, so the pane's record describes the earlier terminal.
+    Restoring,
+    Gone,
+}
+
+/// Whether a restore on this instance can still bind the pane: the restore is unfinished, or
+/// it sent a floating layer with the pane that may exist and whose gate may still claim.
+pub(super) static RESTORING: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT EXISTS (SELECT 1 FROM restore_op o JOIN restore_slot s ON s.op_id = o.id
+                        WHERE o.instance_id = ?1 AND s.block_lineage = ?2
+                          AND (o.{UNFINISHED_RESTORE} OR s.layer_sent_at IS NOT NULL))"
+    )
+});
+
+fn live(conn: &Connection, instance: &str, worker: &str) -> Result<Live> {
+    let recorded: Option<String> = conn
+        .query_row(
+            "SELECT instance_id FROM block WHERE lineage = ?1",
+            params![worker],
+            |row| row.get(0),
+        )
+        .optional()?;
+    Ok(match live_of(conn, instance, worker)? {
+        Some(block) if recorded.as_deref() == Some(instance) => Live::Block(block),
+        Some(_) => Live::Restoring,
+        None if conn.query_row(&RESTORING, params![instance, worker], |row| row.get(0))? => {
+            Live::Restoring
+        }
+        None => Live::Gone,
+    })
+}
+
 /// How a close attempt ended.
 enum Check {
     /// The pane is no longer on the server, closed by this attempt or before it.
@@ -173,18 +218,39 @@ enum Check {
 }
 
 /// Closes a released disposable worker's pane only while it still shows the worker as the
-/// result left it, both as recorded and as the server reports it now, and is not the pane the
-/// user is looking at. A pane found in use is kept for good; a close put off goes back to `open`
-/// with the reason in `pane_note`. Returns what happened, for the log.
-pub(super) fn close(rex: &mut Rex, store: &mut Store, instance: &str, id: &str) -> Result<String> {
+/// result left it, as recorded and, for an interactive worker, as the server reports it now, and
+/// is not the pane the user is looking at. A pane found in use is kept for good; a close put off
+/// goes back to `open` with the reason in `pane_note`. Returns what happened, for the log, or
+/// `None` without claiming anything while a restore on this instance brings the pane back: the
+/// server's report of the restored pane, or the gate's claim, starts the pass that looks again.
+pub(super) fn close(
+    rex: &mut Rex,
+    store: &mut Store,
+    instance: &str,
+    id: &str,
+) -> Result<Option<String>> {
+    let worker: String = store.conn().query_row(
+        "SELECT worker_lineage FROM task WHERE id = ?1",
+        params![id],
+        |row| row.get(0),
+    )?;
+    // Read before the pane's record: a gate's claim binds the restored pane and moves its record
+    // in one transaction, so once no restore can bind the pane, the record is the pane's own.
+    let block = match live(store.conn(), instance, &worker)? {
+        Live::Restoring => return Ok(None),
+        Live::Block(block) => Some(block),
+        Live::Gone => None,
+    };
     let tx = store.write()?;
     let claimed = tx.execute(&CLAIM, params![id])?;
     tx.commit()?;
     if claimed == 0 {
-        return Ok("not closed: its pane is working again or no longer due".into());
+        return Ok(Some(
+            "not closed: its pane is working again or no longer due".into(),
+        ));
     }
     let check =
-        attempt(rex, store.conn(), instance, id).unwrap_or_else(|e| Check::Later(format!("{e:#}")));
+        attempt(rex, store.conn(), id, block).unwrap_or_else(|e| Check::Later(format!("{e:#}")));
     let tx = store.write()?;
     let outcome = match check {
         // The saved layout loses the pane now, so a restore that starts before the close event
@@ -209,27 +275,27 @@ pub(super) fn close(rex: &mut Rex, store: &mut Store, instance: &str, id: &str) 
         }
     };
     tx.commit()?;
-    Ok(outcome)
+    Ok(Some(outcome))
 }
 
-fn attempt(rex: &mut Rex, conn: &Connection, instance: &str, id: &str) -> Result<Check> {
+fn attempt(rex: &mut Rex, conn: &Connection, id: &str, block: Option<String>) -> Result<Check> {
     let worker = match untouched(conn, id)? {
         Untouched::Yes(worker) => worker,
         Untouched::No(reason) => return Ok(Check::Keep(reason)),
     };
     // A restore leaves an untouched worker out, so on a later server instance it has no pane.
-    let Some(block) = live_of(conn, instance, &worker)? else {
+    let Some(block) = block else {
         return Ok(Check::Gone(worker));
     };
     let Some(session) = rex.block_session(&block)? else {
         return Ok(Check::Gone(worker));
     };
     let taken = taken(conn, id)?;
-    let process = rex.block_method(&session, &block, "process")?;
-    let foreground = process
-        .pointer("/foreground/pid")
-        .and_then(serde_json::Value::as_i64);
     if taken.interactive {
+        let process = rex.block_method(&session, &block, "process")?;
+        let foreground = process
+            .pointer("/foreground/pid")
+            .and_then(serde_json::Value::as_i64);
         let (runtime, native_id) = taken.conversation.unzip();
         let pid: Option<i64> = conn
             .query_row(
@@ -249,10 +315,6 @@ fn attempt(rex: &mut Rex, conn: &Connection, instance: &str, id: &str) -> Result
                 "the worker's status changed after its result".into(),
             ));
         }
-    } else if foreground.is_some() && foreground != taken.worker_pid {
-        return Ok(Check::Keep(
-            "another program runs in the worker's pane".into(),
-        ));
     }
     let view = rex.call("session.view", &json!({ "session_id": session }))?;
     let active = str_at(&view, "/active_window_id");

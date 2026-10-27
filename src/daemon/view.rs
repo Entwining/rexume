@@ -285,8 +285,8 @@ impl View {
                 set_status(&tx, &lineage, record)?;
                 true
             }
-            // The pane's own program ended; with the pane kept open no process change follows,
-            // so the foreground is cleared here.
+            // The pane's own program ended. Rex reports the empty foreground later, if at all, as
+            // it did after a program that printed just before it exited, so it is cleared here.
             Change::Exit(code) => {
                 tx.execute(
                     "UPDATE block SET last_exit = ?1, fg_pid = NULL WHERE lineage = ?2",

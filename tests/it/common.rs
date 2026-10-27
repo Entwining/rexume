@@ -47,16 +47,23 @@ impl Drop for Running {
     }
 }
 
-/// Polls until `check` returns a value; test code may wait, the product never polls.
-pub fn wait_until<T>(what: &str, timeout: Duration, mut check: impl FnMut() -> Option<T>) -> T {
+/// Polls until `check` returns a value or `timeout` passes; test code may wait, the product never
+/// polls.
+pub fn poll<T>(timeout: Duration, mut check: impl FnMut() -> Option<T>) -> Option<T> {
     let until = Instant::now() + timeout;
     loop {
         if let Some(value) = check() {
-            return value;
+            return Some(value);
         }
-        assert!(Instant::now() < until, "timed out waiting for {what}");
+        if Instant::now() >= until {
+            return None;
+        }
         std::thread::sleep(Duration::from_millis(50));
     }
+}
+
+pub fn wait_until<T>(what: &str, timeout: Duration, check: impl FnMut() -> Option<T>) -> T {
+    poll(timeout, check).unwrap_or_else(|| panic!("timed out waiting for {what}"))
 }
 
 pub struct Server {

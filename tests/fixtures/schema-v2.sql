@@ -193,9 +193,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS restore_slot_executor ON restore_slot (instanc
 -- while the pane exists and rexume has neither closed nor given it up; 'closing' while the
 -- daemon, the only closer, holds the pane for one close attempt (add and new rounds refuse it);
 -- 'closed' once the pane is gone, by rexume or by the user; 'kept' when the pane was found in use
--- after the result and is left to whoever uses it, `pane_note` saying why. A close the daemon put
--- off writes its reason to `pane_note` and leaves 'open'. A pane the orchestrator asked to keep is
--- never 'closing' or 'kept'.
+-- or restored after the result and is left to whoever uses it, `pane_note` saying why. A close
+-- the daemon put off writes its reason to `pane_note` and leaves 'open'. A pane the orchestrator
+-- asked to keep is never 'closing' or 'kept'.
 CREATE TABLE IF NOT EXISTS task (
   id               TEXT    PRIMARY KEY,
   title            TEXT    NOT NULL,
