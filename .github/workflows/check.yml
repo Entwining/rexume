@@ -32,7 +32,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.2
         with:
           cache-bin: false
-      - uses: taiki-e/install-action@v2.87.27
+      - uses: taiki-e/install-action@v2.87.29
         with:
           tool: cargo-deny@${{ env.CARGO_DENY_VERSION }},cargo-about@${{ env.CARGO_ABOUT_VERSION }}
           fallback: none

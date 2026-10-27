@@ -44,7 +44,7 @@ jobs:
               --notes-file "docs/releases/${GITHUB_REF_NAME#v}.md" \
               --verify-tag --repo "$GITHUB_REPOSITORY"
           fi
-      - uses: actions/create-github-app-token@v3.2.0
+      - uses: actions/create-github-app-token@v3.3.0
         id: tap-token
         with:
           client-id: ${{ vars.TAP_CLIENT_ID }}
