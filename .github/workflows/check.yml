@@ -100,10 +100,6 @@ jobs:
         with:
           tool: cargo-deny@${{ env.CARGO_DENY_VERSION }},cargo-about@${{ env.CARGO_ABOUT_VERSION }}
           fallback: none
-      # The Pi extension's test runs its TypeScript in Node, which needs type stripping on by default.
-      - uses: actions/setup-node@v7.1.0
-        with:
-          node-version: 24
       - name: Check dependencies, formatting, lints, and tests
         run: make check TARGET="$TARGET"
       - name: Build the archive
