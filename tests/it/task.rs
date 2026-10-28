@@ -8,6 +8,7 @@ use serde_json::{Value, json};
 
 use crate::common::{REXUME, Server, db, query, rex_bin, wait_until};
 
+mod abandon;
 mod blocked;
 mod orchestration;
 mod run;

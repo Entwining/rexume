@@ -108,6 +108,12 @@ pub(super) enum Command {
         #[command(flatten)]
         round: Round,
     },
+    /// Stop waiting for the latest round, which ends as `abandoned`
+    ///
+    /// Acknowledges the round and leaves the worker as it is: a turn it finishes later is unread
+    /// and `task next` takes it, and the task takes further rounds. A request that already left is
+    /// not withdrawn. Fails once the round has finished.
+    Abandon(TaskId),
     /// Release the worker, so the daemon closes an unused disposable worker's pane
     ///
     /// Acknowledges the latest round. Fails while a round is unfinished or turns are unread; a
@@ -180,6 +186,7 @@ pub(super) fn run(command: Command, dir: &Path) -> Result<(Value, u8)> {
         Command::Ack { task, round } => task::ack(dir, &task.id, round.round),
         Command::Next(task) => task::next(dir, &task.id),
         Command::Send { task, message } => task::send(dir, &task.id, &message.read()?),
+        Command::Abandon(task) => task::abandon(dir, &task.id),
         Command::Release(task) => task::release(dir, &task.id),
     }?;
     Ok((value, 0))

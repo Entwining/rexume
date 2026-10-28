@@ -1,4 +1,5 @@
-//! Registering a worker pane for a task, each round after the first, and releasing the worker.
+//! Registering a worker pane for a task, each round after the first, abandoning a round, and
+//! releasing the worker.
 
 use std::path::Path;
 
@@ -6,7 +7,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
-use super::{caller, finished, notice, owned, round_state, shown, unread};
+use super::{caller, finished, notice, outcome, owned, round_state, shown, unread};
 use crate::runtime::Runtime;
 use crate::store::{Store, ensure_lineage, new_id, now_ms};
 
@@ -181,6 +182,30 @@ pub fn send(state_dir: &Path, id: &str, message: &str) -> Result<Value> {
     shown(store.conn(), &caller.instance, id, Some(round))
 }
 
+/// Ends the latest round, still unfinished, as `abandoned` and acknowledges it: the owner stops
+/// waiting for it, and only the owner. The task is not released, so a turn the worker finishes
+/// later is unread and `task next` takes it, and `task release` still refuses until then.
+pub fn abandon(state_dir: &Path, id: &str) -> Result<Value> {
+    let mut store = Store::open(state_dir)?;
+    let caller = caller(&store)?;
+    let tx = store.write()?;
+    owned(&tx, id, &caller)?;
+    let round = abandon_round(&tx, id)?;
+    tx.commit()?;
+    shown(store.conn(), &caller.instance, id, Some(round))
+}
+
+fn abandon_round(tx: &Transaction, id: &str) -> Result<i64> {
+    let (round, state) = round_state(tx, id, None)?;
+    if finished(&state) {
+        bail!("task {id} round {round} has already finished as {state}");
+    }
+    let note = "the owner abandoned the round";
+    outcome::finish(tx, id, round, "abandoned", None, Some(note))?;
+    acknowledge(tx, id, round, "taken by task abandon")?;
+    Ok(round)
+}
+
 /// Records that the orchestrator is done with the worker and acknowledges the latest round; only a
 /// released task's pane is ever closed. Releasing again changes nothing.
 pub fn release(state_dir: &Path, id: &str) -> Result<Value> {
@@ -268,3 +293,6 @@ fn latest_finished(conn: &Connection, id: &str) -> Result<i64> {
     }
     Ok(round)
 }
+
+#[cfg(test)]
+mod tests;

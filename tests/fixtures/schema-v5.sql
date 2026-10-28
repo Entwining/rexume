@@ -264,7 +264,9 @@ CREATE INDEX IF NOT EXISTS task_worker_conversation ON task (worker_runtime, wor
 -- blocked notice. It ends in the transaction that records another status for the pane or clears it,
 -- when a pass finds the status no longer that conversation's `blocked` on the observed instance, or
 -- when the round finishes. A round is 'completed' exactly when its result is saved here, in the
--- transaction that also writes its finished notice; every final state sets `finished_at`.
+-- transaction that also writes its finished notice; every final state sets `finished_at`. A round
+-- is 'abandoned' when its owner stopped waiting for it with `task abandon`, which acknowledges it
+-- in the same transaction and leaves the worker as it is.
 -- `finished_instance_id`, `finished_status_at`, and `finished_generation` are the worker pane's
 -- record when the round finished, to tell later activity in the pane apart: its server instance,
 -- NULL when the pane was not recorded or the round finished before version 3 and no epoch dates
@@ -278,7 +280,8 @@ CREATE TABLE IF NOT EXISTS task_round (
   round                INTEGER NOT NULL,
   waiter_pid           INTEGER,
   state                TEXT    NOT NULL CHECK (state IN ('running', 'blocked', 'completed', 'cancelled',
-                                                         'failed', 'terminated', 'worker_closed')),
+                                                         'failed', 'terminated', 'worker_closed',
+                                                         'abandoned')),
   blocked_at           INTEGER,
   note                 TEXT,
   finished_at          INTEGER,
