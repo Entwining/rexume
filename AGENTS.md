@@ -57,6 +57,7 @@ Each gives its reason; reopen one only with evidence that the reason no longer h
 ## Environment traps
 
 - Agent sandboxes block what the integration tests need: signalling and listing processes (`kill`, `ps`, `pgrep`) and Unix sockets outside the allowlist. Run the `--ignored` scenarios and the bench from an ordinary shell.
+- An agent a harness starts on a test Rex server still runs the user's installed hooks, which find `rexume` through a login shell that puts the installed binary before the test's `PATH`, so they report into `~/.local/state/rexume`. Start Claude Code with `--setting-sources project,local` and a settings file whose hook names the test binary by absolute path, and Pi with `-ne` and `-e` naming a copy of the extension whose `rexume` command and inbox are the test's. Codex runs hooks through a login shell, and neither a `SHELL` override nor `-c features.hooks=false` kept its hook out of the user's state, so leave Codex out of such a harness.
 - Kill a test daemon by its process group (`kill -KILL -- -PGID`), or its `rex do` and relay outlive it.
 - The Pi extension's unit test runs the TypeScript extension in `node`, which must strip types without a flag (Node 22.18 or 23.6 and later).
 - macOS has no `timeout`; use `perl -e 'alarm shift; exec @ARGV' SECONDS COMMAND`.

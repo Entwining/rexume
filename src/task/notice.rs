@@ -89,7 +89,8 @@ pub(super) fn supersede(
 }
 
 /// Pending notices with the round each tells of, the worker pane's Rex block ID on the instance
-/// the daemon observes last, and the state of the round's request.
+/// the daemon observes last, and the state of the round's request, in the order they come due, so
+/// that an owner's notices, which go one at a time, reach it in that order.
 pub(super) const PENDING: &str = "SELECT n.id, n.kind = 'blocked', t.id, t.title, n.round,
     r.state, r.note, r.waiter_pid, n.created_at, l.live_id, q.state
   FROM notice n JOIN task t ON t.id = n.task_id
@@ -97,7 +98,8 @@ pub(super) const PENDING: &str = "SELECT n.id, n.kind = 'blocked', t.id, t.title
   LEFT JOIN request q ON q.task_id = n.task_id AND q.round = n.round
   LEFT JOIN epoch e ON e.id = (SELECT MAX(id) FROM epoch)
   LEFT JOIN live l ON l.instance_id = e.instance_id AND l.lineage = t.worker_lineage
-  WHERE n.state = 'pending'";
+  WHERE n.state = 'pending'
+  ORDER BY n.created_at, n.id";
 
 struct Due {
     notice: String,
@@ -116,6 +118,13 @@ struct Due {
 
 /// Sends each due notice to its owner once the owner is running and between turns, unless a live
 /// `task wait` will take it, and returns when the next notice comes due.
+///
+/// An owner gets one notice at a time: the next waits until the owner's record shows the last one
+/// or its pane reports a status after the send, and the owner is between turns again. Codex and Pi
+/// run one queued message per turn and Claude Code holds what arrives during a turn, so sending the
+/// rest at once saves no turn; it only moves them from this outbox, where `task wait`, `task ack`,
+/// and `task release` can still drop them, into the runtime's queue, where Codex replays them on
+/// resume and Pi loses them on exit.
 pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Option<Instant>> {
     let pending: Vec<Due> = store
         .conn()
@@ -172,7 +181,9 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
         log::info!("notice {} for task {}: {state}", due.notice, due.task);
         let tx = store.write()?;
         tx.execute(
-            "UPDATE notice SET state = ?1, note = ?2 WHERE id = ?3",
+            "UPDATE notice SET state = ?1, note = ?2,
+               sent_at = CASE ?1 WHEN 'pending' THEN NULL ELSE sent_at END
+             WHERE id = ?3",
             params![state, note, due.notice],
         )?;
         tx.commit()?;
@@ -180,16 +191,16 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
     Ok(next)
 }
 
-/// Claims a pending notice for sending, unless a `task wait` registered since `?2`, the dead
-/// waiter (or none) the daemon saw before the transaction.
+/// Claims a pending notice for sending at `?3`, unless a `task wait` registered since `?2`, the
+/// dead waiter (or none) the daemon saw before the transaction.
 pub(super) const CLAIM: &str =
-    "UPDATE notice SET state = 'sending' WHERE id = ?1 AND state = 'pending'
+    "UPDATE notice SET state = 'sending', sent_at = ?3 WHERE id = ?1 AND state = 'pending'
   AND NOT EXISTS (SELECT 1 FROM task_round r
                   WHERE r.task_id = notice.task_id AND r.round = notice.round
                     AND r.waiter_pid IS NOT NULL AND r.waiter_pid IS NOT ?2)";
 
 pub(super) fn claim(tx: &Transaction, notice: &str, seen_waiter: Option<i64>) -> Result<bool> {
-    Ok(tx.execute(CLAIM, params![notice, seen_waiter])? == 1)
+    Ok(tx.execute(CLAIM, params![notice, seen_waiter, now_ms()])? == 1)
 }
 
 /// Notices and requests a stopped daemon left mid-send. Only the daemon holding the state
@@ -223,7 +234,11 @@ pub fn orphaned_sends(store: &mut Store) -> Result<Vec<(&'static str, String)>> 
 }
 
 /// The task's owner when its conversation runs as the foreground program of a pane on the
-/// instance the running daemon observes, and is between turns.
+/// instance the running daemon observes, is between turns, and has no notice on its way that was
+/// sent after the pane last reported its status: such an owner has not come back between turns
+/// since, so its runtime may still take that notice. Any later status means the runtime had its
+/// chance, so a notice it dropped, as one held during a turn the user interrupts can be, holds
+/// nothing, and neither does one sent to a program whose status the pane no longer has.
 pub(super) const READY_OWNER: &str = "SELECT o.runtime, o.native_id, o.transport
   FROM task t
   JOIN occupant o ON o.runtime = t.owner_runtime AND o.native_id = t.owner_native_id
@@ -232,6 +247,9 @@ pub(super) const READY_OWNER: &str = "SELECT o.runtime, o.native_id, o.transport
   WHERE t.id = ?1 AND e.ended_at IS NULL AND e.instance_id = b.instance_id AND b.fg_pid = o.pid
     AND (o.instance_id IS NULL OR o.instance_id = b.instance_id)
     AND (b.status IS NULL OR b.status NOT IN ('working', 'blocked'))
+    AND NOT EXISTS (SELECT 1 FROM task s JOIN notice n ON n.task_id = s.id
+                    WHERE s.owner_runtime = o.runtime AND s.owner_native_id = o.native_id
+                      AND n.state IN ('sending', 'sent', 'accepted') AND n.sent_at > b.status_at)
   ORDER BY o.reported_at DESC LIMIT 1";
 
 struct Owner {

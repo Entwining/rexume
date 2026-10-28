@@ -336,7 +336,12 @@ CREATE TABLE IF NOT EXISTS request (
 -- never sent, because before anything was sent the owner took it through `task wait`, acknowledged
 -- the round, or the blocked episode ended (`note` says which). A 'pending' notice with a `note` is
 -- one whose send failed before anything left. `id` is the token the notice text carries and the
--- owner's record is searched for.
+-- owner's record is searched for. `sent_at`: when the daemon claimed the notice for a send that may
+-- have left, kept through every state after 'sending'. A send that failed before anything left
+-- returns the notice to 'pending' without it, so a 'pending' or 'superseded' notice has none, and
+-- neither has one sent before version 5. An owner gets its next notice only once none is still on
+-- its way ('sending', 'sent', or 'accepted') that was sent after the owner's pane last reported
+-- a status (`block.status_at`).
 CREATE TABLE IF NOT EXISTS notice (
   id         TEXT    PRIMARY KEY,
   task_id    TEXT    NOT NULL,
@@ -346,6 +351,8 @@ CREATE TABLE IF NOT EXISTS notice (
                                                'delivered', 'unknown', 'superseded')),
   note       TEXT,
   created_at INTEGER NOT NULL,
+  sent_at    INTEGER,
+  CHECK (sent_at IS NULL OR state NOT IN ('pending', 'superseded')),
   FOREIGN KEY (task_id, round) REFERENCES task_round (task_id, round) ON DELETE CASCADE
 ) STRICT;
 CREATE INDEX IF NOT EXISTS notice_round ON notice (task_id, round);

@@ -263,3 +263,5 @@ fn a_blocked_notice_left_mid_send_stays_unknown_and_unsent() -> Result<()> {
     assert!(listener.accept().is_err(), "the notice was sent again");
     Ok(())
 }
+
+mod pacing;
