@@ -6,10 +6,11 @@ use std::sync::LazyLock;
 use anyhow::{Result, bail};
 use rusqlite::{OptionalExtension, Transaction, params};
 
-use super::OPEN;
 use super::evidence::{Evidence, Pane, Reading, RunProcess, Take};
+use super::notice::{self, Kind};
+use super::{OPEN, blocked};
 use crate::runtime::Turn;
-use crate::store::{new_id, now_ms};
+use crate::store::now_ms;
 
 /// Claude Code can write the end of a turn after its idle status, so an idle status ends a turn
 /// the record leaves open only once the record still shows it open this long after the status.
@@ -19,7 +20,7 @@ const IDLE_GRACE_MS: i64 = 3000;
 pub(super) static ROUND: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT t.worker_lineage, t.worker_pid, t.result_file, t.worker_runtime, t.worker_native_id,
-           t.pane_state = 'closed', t.worker_instance_id
+           t.pane_state = 'closed', t.worker_instance_id, r.state = 'blocked'
          FROM task t JOIN task_round r ON r.task_id = t.id
          WHERE t.id = ?1 AND r.round = ?2 AND {OPEN}"
     )
@@ -40,6 +41,7 @@ pub(super) fn evaluate(
         Option<(String, String)>,
         bool,
         Option<String>,
+        bool,
     );
     let row: Option<Row> = tx
         .prepare_cached(&ROUND)?
@@ -53,10 +55,12 @@ pub(super) fn evaluate(
                 runtime.zip(native_id),
                 row.get(5)?,
                 row.get(6)?,
+                row.get(7)?,
             ))
         })
         .optional()?;
-    let Some((worker, worker_pid, result_file, bound, closed, worker_instance)) = row else {
+    let Some((worker, worker_pid, result_file, bound, closed, worker_instance, blocked)) = row
+    else {
         return Ok(None);
     };
     match evidence {
@@ -85,7 +89,7 @@ pub(super) fn evaluate(
                 pane,
                 process,
             };
-            interactive_outcome(tx, id, round, &worker, reading)
+            interactive_outcome(tx, id, round, blocked, &worker, reading)
         }
         Evidence::Run {
             file: Some(read), ..
@@ -151,11 +155,13 @@ fn idle_after(pane: &Pane, (pid, reported_at): (i64, i64), since: i64) -> bool {
 /// An interactive round's result is the turn its tracker chose from the worker's record, not the
 /// worker's status: a worker that went idle may have been cancelled or be waiting on a question.
 /// A turn the record leaves open is taken only once nothing more can come of it: the pane closed,
-/// or the process that wrote it went idle after it.
+/// or the process that wrote it went idle after it. `blocked` is whether the round is in a blocked
+/// episode.
 fn interactive_outcome(
     tx: &Transaction,
     id: &str,
     round: i64,
+    blocked: bool,
     worker: &Worker,
     reading: Reading,
 ) -> Result<Option<i64>> {
@@ -190,6 +196,7 @@ fn interactive_outcome(
         {
             let due = worker.pane.status_at.unwrap_or(since) + IDLE_GRACE_MS;
             if now_ms() < due {
+                blocked::follow(tx, id, round, blocked, &worker.pane, worker.process)?;
                 return Ok(Some(due));
             }
             let note = (!answered).then_some("the worker went idle without answering");
@@ -202,16 +209,7 @@ fn interactive_outcome(
         finish(tx, id, round, "worker_closed", None, Some(note))?;
         return Ok(None);
     }
-    let state = if worker.pane.status.as_deref() == Some("blocked") {
-        "blocked"
-    } else {
-        "running"
-    };
-    tx.prepare_cached(
-        "UPDATE task_round SET state = ?1 WHERE task_id = ?2 AND round = ?3 AND state != ?1",
-    )?
-    .execute(params![state, id, round])?;
-    Ok(None)
+    blocked::follow(tx, id, round, blocked, &worker.pane, worker.process)
 }
 
 /// Finishes a round with the turn it takes, records the turn as taken, and moves the task's
@@ -257,8 +255,9 @@ pub(super) struct Finished {
     reference: String,
 }
 
-/// Ends a round and writes its notice in the same transaction. The worker pane's status time and
-/// foreground generation are kept to tell later activity in the pane apart.
+/// Ends a round, and any blocked episode it was in, and writes its finished notice in the same
+/// transaction. The worker pane's status time and foreground generation are kept to tell later
+/// activity in the pane apart.
 pub(super) fn finish(
     tx: &Transaction,
     id: &str,
@@ -275,27 +274,18 @@ pub(super) fn finish(
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
         )?;
     let (result, reference) = done.map(|d| (d.result, d.reference)).unzip();
+    let now = now_ms();
     tx.execute(
         "UPDATE task_round SET state = ?1, result = ?2, result_ref = ?3, finished_at = ?4,
-           finished_instance_id = ?5, finished_status_at = ?6, finished_generation = ?7, note = ?8
+           finished_instance_id = ?5, finished_status_at = ?6, finished_generation = ?7, note = ?8,
+           blocked_at = NULL
          WHERE task_id = ?9 AND round = ?10",
         params![
-            state,
-            result,
-            reference,
-            now_ms(),
-            instance,
-            status_at,
-            generation,
-            note,
-            id,
-            round
+            state, result, reference, now, instance, status_at, generation, note, id, round
         ],
     )?;
-    tx.execute(
-        "INSERT INTO notice (id, task_id, round, state) VALUES (?1, ?2, ?3, 'pending')",
-        params![new_id(), id, round],
-    )?;
+    notice::write(tx, Kind::Finished, id, round, now)?;
+    blocked::end(tx, id, round)?;
     tx.execute(
         "UPDATE request SET state = 'superseded', note = 'the round ended before it was sent'
          WHERE task_id = ?1 AND round = ?2 AND state = 'pending'",

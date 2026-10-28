@@ -9,11 +9,10 @@ use super::follow::{Follow, OPEN_ROUNDS, TAKEN};
 use super::gone::{WORKER_ROUNDS, block_gone};
 use super::outcome;
 use super::register::{Kind, refuse_stopped, start_round};
-use super::wait::register_waiter;
-use super::{cleanup, notice, request, shown, unread};
+use super::{blocked, cleanup, evidence, notice, request, shown, unread};
 use crate::store::Store;
 
-pub(super) const PROMPT: &str = r#"{"type":"user","timestamp":"2026-10-24T15:29:45.738Z","message":{"role":"user","content":"Count"}}"#;
+pub(crate) const PROMPT: &str = r#"{"type":"user","timestamp":"2026-10-24T15:29:45.738Z","message":{"role":"user","content":"Count"}}"#;
 pub(super) const ANSWER: &str = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}"#;
 /// What Claude Code writes after a turn's last record, which seals its answer.
 pub(super) const DURATION: &str = r#"{"type":"system","subtype":"turn_duration"}"#;
@@ -21,7 +20,7 @@ pub(super) const PROMPT_2: &str =
     r#"{"type":"user","message":{"role":"user","content":"Count again"}}"#;
 pub(super) const ANSWER_2: &str = r#"{"type":"assistant","message":{"id":"m2","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Again."}]}}"#;
 
-pub(super) fn record(lines: &[&str]) -> Result<tempfile::NamedTempFile> {
+pub(crate) fn record(lines: &[&str]) -> Result<tempfile::NamedTempFile> {
     let mut file = tempfile::NamedTempFile::new()?;
     for line in lines {
         writeln!(file, "{line}")?;
@@ -33,7 +32,7 @@ pub(super) fn record(lines: &[&str]) -> Result<tempfile::NamedTempFile> {
 /// The owner `claude/owner` in pane `a` and task `t` on its first round, running in pane `b`,
 /// whose occupant is `claude/worker` with record `transcript` and foreground pid 100. Without
 /// `result_file` the round follows that conversation; with it the task is a run of pid 100.
-pub(super) fn task_world(
+pub(crate) fn task_world(
     dir: &Path,
     transcript: &Path,
     result_file: Option<&str>,
@@ -170,21 +169,6 @@ fn a_released_task_has_no_unread_turns() -> Result<()> {
     Ok(())
 }
 
-#[test]
-fn a_waiter_replaces_only_the_dead_waiter_it_saw() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let transcript = record(&[PROMPT])?;
-    let mut store = task_world(dir.path(), transcript.path(), None)?;
-    store
-        .conn()
-        .execute("UPDATE task_round SET waiter_pid = 111", [])?;
-    let tx = store.write()?;
-    assert!(!register_waiter(&tx, "t", 1, 222, None)?);
-    assert!(!register_waiter(&tx, "t", 1, 222, Some(333))?);
-    assert!(register_waiter(&tx, "t", 1, 222, Some(111))?);
-    Ok(())
-}
-
 /// A task registers on an instance unless the daemon started to observe another one after the
 /// instance answered: servers run one after another, so that one came later.
 #[test]
@@ -201,7 +185,6 @@ fn a_task_on_an_instance_a_later_one_followed_is_refused() -> Result<()> {
     refuse_stopped(store.conn(), "i3", 6)?;
     Ok(())
 }
-
 /// A round no record can finish, here one whose worker never reported, ends with its pane.
 #[test]
 fn a_closed_worker_pane_ends_its_unbound_round_and_every_task_on_it() -> Result<()> {
@@ -239,29 +222,49 @@ fn a_closed_worker_pane_ends_its_unbound_round_and_every_task_on_it() -> Result<
     Ok(())
 }
 
-/// The statements every daemon pass runs reach their rows through an index, apart from scans of
-/// `task` and `notice`, which retention bounds; the ones on unfinished rounds use the partial
-/// index, which only a predicate matching its own text can use.
+/// The statements every daemon pass runs, and the one every pane status event runs, reach their
+/// rows through an index, apart from scans of `task` and `notice`, which retention bounds; the ones
+/// on unfinished rounds, and on one kind of a round's notice, use exactly the partial index their
+/// predicate names, which only a predicate matching its own text can use.
 #[test]
 fn every_pass_statement_uses_an_index() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let store = Store::open(dir.path())?;
-    let statements: [(&str, &str, bool); 15] = [
-        ("OPEN_ROUNDS", &OPEN_ROUNDS, true),
-        ("outcome::ROUND", &outcome::ROUND, false),
-        ("WORKER_ROUNDS", &WORKER_ROUNDS, true),
-        ("cleanup::CLAIM", &cleanup::CLAIM, true),
-        ("cleanup::DUE", &cleanup::DUE, true),
-        ("cleanup::RESTORING", &cleanup::RESTORING, false),
-        ("notice::PENDING", notice::PENDING, false),
-        ("notice::receipt::SENT", notice::receipt::SENT, false),
-        ("notice::READY_OWNER", notice::READY_OWNER, false),
-        ("notice::CLAIM", notice::CLAIM, false),
-        ("TAKEN", TAKEN, false),
-        ("request::PENDING", &request::PENDING, true),
-        ("request::WORKER", request::WORKER, false),
-        ("request::CLAIM", &request::CLAIM, false),
-        ("request::SENT_TO_PI", &request::SENT_TO_PI, true),
+    let (open, finished, blocked) = (
+        Some("task_round_open"),
+        Some("notice_finished"),
+        Some("notice_blocked_unsent"),
+    );
+    let statements: [(&str, &str, Option<&str>); 21] = [
+        ("OPEN_ROUNDS", &OPEN_ROUNDS, open),
+        ("outcome::ROUND", &outcome::ROUND, None),
+        ("evidence::PANE", evidence::PANE, None),
+        ("WORKER_ROUNDS", &WORKER_ROUNDS, open),
+        ("blocked::BEGIN", blocked::BEGIN, None),
+        ("blocked::RESUME", blocked::RESUME, None),
+        ("blocked::ON_PANE", &blocked::ON_PANE, open),
+        ("cleanup::CLAIM", &cleanup::CLAIM, open),
+        ("cleanup::DUE", &cleanup::DUE, open),
+        ("cleanup::RESTORING", &cleanup::RESTORING, None),
+        ("notice::PENDING", notice::PENDING, None),
+        ("notice::receipt::SENT", notice::receipt::SENT, None),
+        ("notice::READY_OWNER", notice::READY_OWNER, None),
+        ("notice::CLAIM", notice::CLAIM, None),
+        (
+            "notice::SUPERSEDE_FINISHED",
+            &notice::SUPERSEDE_FINISHED,
+            finished,
+        ),
+        (
+            "notice::SUPERSEDE_BLOCKED",
+            &notice::SUPERSEDE_BLOCKED,
+            blocked,
+        ),
+        ("TAKEN", TAKEN, None),
+        ("request::PENDING", &request::PENDING, open),
+        ("request::WORKER", request::WORKER, None),
+        ("request::CLAIM", &request::CLAIM, None),
+        ("request::SENT_TO_PI", &request::SENT_TO_PI, open),
     ];
     for (name, sql, partial) in statements {
         let mut plan = store.conn().prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
@@ -284,11 +287,13 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
                 "{name}: {detail}"
             );
         }
-        assert_eq!(
-            details.iter().any(|d| d.contains("task_round_open")),
-            partial,
-            "{name}: {details:?}"
-        );
+        for index in [open, finished, blocked].into_iter().flatten() {
+            assert_eq!(
+                details.iter().any(|d| d.contains(index)),
+                partial == Some(index),
+                "{name}: {details:?}"
+            );
+        }
     }
     Ok(())
 }

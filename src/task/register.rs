@@ -6,7 +6,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
-use super::{caller, finished, owned, round_state, shown, unread};
+use super::{caller, finished, notice, owned, round_state, shown, unread};
 use crate::runtime::Runtime;
 use crate::store::{Store, ensure_lineage, new_id, now_ms};
 
@@ -209,11 +209,7 @@ pub(super) fn acknowledge(tx: &Transaction, id: &str, round: i64, by: &str) -> R
         "UPDATE task_round SET acked_at = COALESCE(acked_at, ?1) WHERE task_id = ?2 AND round = ?3",
         params![now_ms(), id, round],
     )?;
-    tx.execute(
-        "UPDATE notice SET state = 'superseded', note = ?1
-         WHERE task_id = ?2 AND round = ?3 AND state = 'pending'",
-        params![by, id, round],
-    )?;
+    notice::supersede(tx, notice::Kind::Finished, id, round, by)?;
     Ok(())
 }
 

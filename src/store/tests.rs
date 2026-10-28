@@ -117,6 +117,25 @@ fn sweep_keeps_what_a_layout_or_an_open_task_still_names() -> Result<()> {
     Ok(())
 }
 
+/// The sweep reaches a task's notices through an index, both its own check for notices that may
+/// still reach their owner and the foreign key's lookup when a deleted task takes its rounds along.
+#[test]
+fn notices_are_found_by_task_and_round_through_an_index() -> Result<()> {
+    let (_dir, store) = store();
+    for sql in [
+        "SELECT 1 FROM notice n WHERE n.task_id = ?1 AND n.state IN ('pending', 'sent')",
+        "SELECT 1 FROM notice WHERE task_id = ?1 AND round = ?2",
+    ] {
+        let mut plan = store.conn().prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
+        let mut rows = plan.raw_query();
+        while let Some(row) = rows.next()? {
+            let detail: String = row.get(3)?;
+            assert!(!detail.starts_with("SCAN"), "{sql}: {detail}");
+        }
+    }
+    Ok(())
+}
+
 #[test]
 fn settle_returns_after_another_connections_commit() -> Result<()> {
     let (dir, mut store) = store();

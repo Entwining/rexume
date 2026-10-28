@@ -254,22 +254,30 @@ CREATE INDEX IF NOT EXISTS task_worker_conversation ON task (worker_runtime, wor
 -- so no two rounds of a task take the same turn. A round with a `request` row takes the turn that
 -- took its request in; any other takes the earliest turn after the task's `position` that no round
 -- took.
--- `waiter_pid`: a `task wait` process that takes the result itself while it runs. A round is
--- 'completed' exactly when its result is saved here, in the transaction that also writes its
--- notice; every final state sets `finished_at`. `finished_instance_id`, `finished_status_at`,
--- and `finished_generation` are the worker pane's record when the round finished, to tell later
--- activity in the pane apart: its server instance, NULL when the pane was not recorded or the
--- round finished before version 3 and no epoch dates it, and its status time and foreground
--- generation, which mean something only on that instance. `acked_at`: when the owner
--- acknowledged the result. `result_ref` is the record ID of an interactive worker's answer, or a
--- non-interactive run's result file; `note` says why a round ended without a result. `result` is
--- last: the one large column, so reads of the others never cross its overflow pages.
+-- `waiter_pid`: the `task wait` process that takes the round's notices itself while it runs; a
+-- wait takes its place whenever it is empty or names a process that is gone.
+-- `blocked_at`: when the round's current blocked episode began, set exactly while it is 'blocked'.
+-- An episode begins once the task's own conversation has reported `blocked` from the worker's pane
+-- on the observed server instance without a break for a grace, in the transaction that writes its
+-- blocked notice. It ends in the transaction that records another status for the pane or clears it,
+-- when a pass finds the status no longer that conversation's `blocked` on the observed instance, or
+-- when the round finishes. A round is 'completed' exactly when its result is saved here, in the
+-- transaction that also writes its finished notice; every final state sets `finished_at`.
+-- `finished_instance_id`, `finished_status_at`, and `finished_generation` are the worker pane's
+-- record when the round finished, to tell later activity in the pane apart: its server instance,
+-- NULL when the pane was not recorded or the round finished before version 3 and no epoch dates
+-- it, and its status time and foreground generation, which mean something only on that instance.
+-- `acked_at`: when the owner acknowledged the result. `result_ref` is the record ID of an
+-- interactive worker's answer, or a non-interactive run's result file; `note` says why a round
+-- ended without a result. `result` is last: the one large column, so reads of the others never
+-- cross its overflow pages.
 CREATE TABLE IF NOT EXISTS task_round (
   task_id              TEXT    NOT NULL REFERENCES task (id) ON DELETE CASCADE,
   round                INTEGER NOT NULL,
   waiter_pid           INTEGER,
   state                TEXT    NOT NULL CHECK (state IN ('running', 'blocked', 'completed', 'cancelled',
                                                          'failed', 'terminated', 'worker_closed')),
+  blocked_at           INTEGER,
   note                 TEXT,
   finished_at          INTEGER,
   finished_instance_id TEXT,
@@ -282,6 +290,7 @@ CREATE TABLE IF NOT EXISTS task_round (
   result               TEXT,
   PRIMARY KEY (task_id, round),
   CHECK ((state IN ('running', 'blocked')) = (finished_at IS NULL)),
+  CHECK ((blocked_at IS NOT NULL) = (state = 'blocked')),
   CHECK ((state = 'completed') = (result IS NOT NULL)),
   CHECK ((state = 'completed') = (result_ref IS NOT NULL)),
   CHECK (turn_start IS NULL OR state IN ('completed', 'cancelled', 'failed')),
@@ -311,26 +320,38 @@ CREATE TABLE IF NOT EXISTS request (
   FOREIGN KEY (task_id, round) REFERENCES task_round (task_id, round) ON DELETE CASCADE
 ) STRICT;
 
--- The notice that tells the owner its round finished, written in the transaction that finishes
--- the round; its kind is the round's final state and its time is the round's `finished_at`.
--- Exactly one claimant, the daemon or the owner's own `task wait` or acknowledgement, moves it out
--- of 'pending'. 'sending' is the running daemon's claim and every state after it is the daemon's.
--- 'unknown': the send may have happened, so only the owner's own record settles it, never a
--- resend. 'superseded': the owner had the result before anything was sent, through `task wait`
--- or by acknowledging the round (`note` says which). A 'pending' notice with a `note` is one whose
--- send failed before anything left. `id` is the token the notice text carries and the owner's
--- record is searched for.
+-- What a task's owner is told about one of its rounds. `kind` 'finished': the round finished; one
+-- per round, written in the transaction that finishes it. 'blocked': the round began a blocked
+-- episode; one per episode, written in the transaction that sets the round's `blocked_at`.
+-- `created_at`: when the notice was written, the time that transaction gives the round's
+-- `finished_at` or `blocked_at`, and what the notice is due from. Exactly one claimant, the daemon
+-- or the owner's own `task wait` or acknowledgement, moves a notice out of 'pending'. 'sending' is
+-- the running daemon's claim and every state after it is the daemon's. 'unknown': the send may have
+-- happened, so only the owner's own record settles it, never a resend. 'superseded': the notice is
+-- never sent, because before anything was sent the owner took it through `task wait`, acknowledged
+-- the round, or the blocked episode ended (`note` says which). A 'pending' notice with a `note` is
+-- one whose send failed before anything left. `id` is the token the notice text carries and the
+-- owner's record is searched for.
 CREATE TABLE IF NOT EXISTS notice (
-  id      TEXT    PRIMARY KEY,
-  task_id TEXT    NOT NULL,
-  round   INTEGER NOT NULL,
-  state   TEXT    NOT NULL CHECK (state IN ('pending', 'sending', 'sent', 'accepted', 'delivered',
-                                            'unknown', 'superseded')),
-  note    TEXT,
-  UNIQUE (task_id, round),
+  id         TEXT    PRIMARY KEY,
+  task_id    TEXT    NOT NULL,
+  round      INTEGER NOT NULL,
+  kind       TEXT    NOT NULL CHECK (kind IN ('finished', 'blocked')),
+  state      TEXT    NOT NULL CHECK (state IN ('pending', 'sending', 'sent', 'accepted',
+                                               'delivered', 'unknown', 'superseded')),
+  note       TEXT,
+  created_at INTEGER NOT NULL,
   FOREIGN KEY (task_id, round) REFERENCES task_round (task_id, round) ON DELETE CASCADE
 ) STRICT;
+CREATE INDEX IF NOT EXISTS notice_round ON notice (task_id, round);
+-- One finished notice per round, and at most one blocked notice per round that may still be sent.
+-- The second holds because only the daemon begins an episode, ending the earlier one first, and it
+-- sends a claimed notice within the same pass, while a stopped daemon's 'sending' rows become
+-- 'unknown' when the next one starts: no blocked notice is 'sending' when an episode begins.
+CREATE UNIQUE INDEX IF NOT EXISTS notice_finished ON notice (task_id, round) WHERE kind = 'finished';
+CREATE UNIQUE INDEX IF NOT EXISTS notice_blocked_unsent ON notice (task_id, round)
+  WHERE kind = 'blocked' AND state IN ('pending', 'sending');
 
 -- 'rexu' in ASCII, which Store::open checks before it uses a database.
 PRAGMA application_id = 0x72657875;
-PRAGMA user_version = 4;
+PRAGMA user_version = 5;

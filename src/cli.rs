@@ -25,9 +25,6 @@ Examples:
   rexume task add --worker \"$WORKER_BLOCK\" --title 'review the parser'
   rexume task show 0192f3a0-7c1e-7a2b-9c3d-1e2f3a4b5c6d";
 
-/// The exit status of `task wait` when its timeout passes first, as coreutils `timeout` uses.
-const TIMED_OUT: u8 = 124;
-
 #[derive(clap::Args)]
 struct StateDir {
     /// The directory holding the state database
@@ -177,17 +174,12 @@ pub fn main() -> ExitCode {
         },
         command => run(command),
     };
-    let printed = result.and_then(|value| {
-        let Some(value) = value else {
+    let printed = result.and_then(|printed| {
+        let Some((value, status)) = printed else {
             return Ok(ExitCode::SUCCESS);
         };
-        let code = if value.get("timed_out") == Some(&json!(true)) {
-            ExitCode::from(TIMED_OUT)
-        } else {
-            ExitCode::SUCCESS
-        };
         writeln!(std::io::stdout().lock(), "{value:#}").context("failed to write to stdout")?;
-        Ok(code)
+        Ok(ExitCode::from(status))
     });
     printed.unwrap_or_else(|e| {
         eprintln!("rexume: {e:#}");
@@ -195,7 +187,8 @@ pub fn main() -> ExitCode {
     })
 }
 
-fn run(command: Command) -> Result<Option<Value>> {
+/// Runs a command, returning what it prints and its exit status.
+fn run(command: Command) -> Result<Option<(Value, u8)>> {
     match command {
         Command::Install(server) => {
             let options = install::Install {
@@ -205,9 +198,9 @@ fn run(command: Command) -> Result<Option<Value>> {
                 theme: server.theme_foreground.zip(server.theme_background),
                 path: std::env::var("PATH").context("PATH is not set")?,
             };
-            install::install(&home()?, &options).map(Some)
+            install::install(&home()?, &options).map(|value| Some((value, 0)))
         }
-        Command::Uninstall => install::uninstall(&home()?).map(Some),
+        Command::Uninstall => install::uninstall(&home()?).map(|value| Some((value, 0))),
         Command::Daemon { server, state } => {
             let options = daemon::Options {
                 state_dir: state.resolve()?,
@@ -224,7 +217,7 @@ fn run(command: Command) -> Result<Option<Value>> {
             };
             daemon::run(&options).map(|()| None)
         }
-        Command::Status(state) => status::run(&state.resolve()?).map(Some),
+        Command::Status(state) => status::run(&state.resolve()?).map(|value| Some((value, 0))),
         Command::Task { command, state } => task::run(command, &state.resolve()?).map(Some),
         Command::Relay { socket, token } => rex::relay::run(&socket, &token).map(|()| None),
         Command::Report { .. } | Command::Gate { .. } => unreachable!("handled in main"),

@@ -99,6 +99,9 @@ pub(super) struct Pane {
     pub status_at: Option<i64>,
     pub fg_pid: Option<i64>,
     pub last_exit: Option<i64>,
+    /// Recorded on the server instance the daemon observes last. A row of an earlier instance
+    /// keeps what that instance last showed, which restore planning reads.
+    pub current: bool,
 }
 
 /// The process a non-interactive run is: the pane's foreground when the task was registered, on
@@ -120,13 +123,16 @@ pub fn is_run(conn: &Connection, lineage: &str, instance: &str, pid: i64) -> Res
     )?)
 }
 
+/// One pane's record, for `Pane::read`.
+pub(super) const PANE: &str = "SELECT b.instance_id, b.status, b.status_pid, b.status_at, b.fg_pid,
+    b.last_exit, b.instance_id IS e.instance_id
+  FROM block b LEFT JOIN epoch e ON e.id = (SELECT MAX(id) FROM epoch)
+  WHERE b.lineage = ?1";
+
 impl Pane {
     pub fn read(conn: &Connection, lineage: &str) -> Result<Self> {
         Ok(conn
-            .prepare_cached(
-                "SELECT instance_id, status, status_pid, status_at, fg_pid, last_exit FROM block
-                 WHERE lineage = ?1",
-            )?
+            .prepare_cached(PANE)?
             .query_row(params![lineage], |row| {
                 Ok(Self {
                     instance_id: row.get(0)?,
@@ -135,6 +141,7 @@ impl Pane {
                     status_at: row.get(3)?,
                     fg_pid: row.get(4)?,
                     last_exit: row.get(5)?,
+                    current: row.get(6)?,
                 })
             })
             .optional()?

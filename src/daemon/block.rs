@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use crate::rex::{str_at, time_at};
 use crate::store::ensure_lineage;
+use crate::task;
 
 /// Whether the pane has a record on this instance.
 pub(super) fn recorded(conn: &Connection, instance: &str, block: &str) -> Result<bool> {
@@ -20,10 +21,10 @@ pub(super) fn recorded(conn: &Connection, instance: &str, block: &str) -> Result
 
 /// Makes sure a block has a row on this instance and returns its lineage. A lineage on a new
 /// instance is a new pane: its processes, their statuses and exit, and the generation that orders
-/// their reports, start again.
+/// their reports, start again, and a dialog its worker waited on went with the earlier instance.
 pub(super) fn touch_block(tx: &Transaction, instance: &str, block: &str) -> Result<String> {
     let lineage = ensure_lineage(tx, instance, block)?;
-    tx.execute(
+    let written = tx.execute(
         "INSERT INTO block (lineage, instance_id) VALUES (?1, ?2)
          ON CONFLICT (lineage) DO UPDATE SET fg_pid = NULL, fg_generation = NULL, last_exit = NULL,
            status = NULL, status_pid = NULL, status_name = NULL, status_at = NULL,
@@ -31,6 +32,9 @@ pub(super) fn touch_block(tx: &Transaction, instance: &str, block: &str) -> Resu
          WHERE instance_id != excluded.instance_id",
         params![lineage, instance],
     )?;
+    if written == 1 {
+        task::end_blocked_episodes(tx, &lineage)?;
+    }
     Ok(lineage)
 }
 
@@ -81,11 +85,12 @@ pub(super) fn set_size(tx: &Transaction, lineage: &str, size: &Value) -> Result<
 }
 
 pub(super) fn set_status(tx: &Transaction, lineage: &str, record: Option<&Value>) -> Result<()> {
+    let state = record.and_then(|r| str_at(r, "/state"));
     tx.execute(
         "UPDATE block SET status = ?1, status_pid = ?2, status_name = ?3, status_at = ?4
          WHERE lineage = ?5",
         params![
-            record.and_then(|r| str_at(r, "/state")),
+            state,
             record
                 .and_then(|r| r.pointer("/owner/pid"))
                 .and_then(Value::as_i64),
@@ -94,5 +99,11 @@ pub(super) fn set_status(tx: &Transaction, lineage: &str, record: Option<&Value>
             lineage
         ],
     )?;
+    if state != Some("blocked") {
+        task::end_blocked_episodes(tx, lineage)?;
+    }
     Ok(())
 }
+
+#[cfg(test)]
+mod tests;

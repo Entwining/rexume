@@ -3,6 +3,7 @@
 //! the only closer, closes a disposable worker's pane only while nothing has happened in it since
 //! its result. These are the commands the orchestrator runs; `follow` is the daemon's side.
 
+mod blocked;
 mod cleanup;
 mod evidence;
 mod follow;
@@ -12,7 +13,7 @@ mod outcome;
 mod register;
 mod request;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 mod wait;
 
 use std::path::Path;
@@ -26,13 +27,14 @@ use crate::rex::{Cli, Rex, require_str};
 use crate::runtime::{Runtime, Tracker};
 use crate::store::{Store, lineage_of};
 
+pub use blocked::end_blocked_episodes;
 pub use cleanup::retired_workers;
 pub use evidence::is_run;
 pub use follow::{Follow, Interest};
 pub use gone::block_gone;
 pub use notice::{orphaned_sends, undelivered};
 pub use register::{MESSAGE_LIMIT, NewTask, add, next, refuse_too_large, release, send};
-pub use wait::wait;
+pub use wait::{Returned, wait};
 
 pub const VERSION: u32 = 1;
 /// Selects a task's latest round as `r` for a task joined as `t`.

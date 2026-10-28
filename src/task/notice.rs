@@ -3,6 +3,7 @@
 //! or acknowledgement. A send that may have happened is never repeated; only the owner's record
 //! settles it.
 
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
@@ -11,63 +12,106 @@ use serde_json::{Map, Value};
 
 use super::Interest;
 use crate::proc;
-use crate::runtime::{self, Runtime, Sent, Target};
-use crate::store::{Store, now_ms};
+use crate::runtime::{Runtime, Sent, Target};
+use crate::store::{Store, new_id, now_ms};
 
-/// How long a finished round waits before the daemon sends its notice, so a `task wait` running
-/// in the owner's turn can take the result first.
+pub(super) mod receipt;
+mod text;
+
+/// How long after the round finished, or began its blocked episode, the daemon waits before it
+/// sends the notice, so a `task wait` running in the owner's turn can take it first.
 const GRACE_MS: i64 = 3000;
 
-fn text(due: &Due, unread: Option<usize>) -> String {
-    let Due {
-        notice,
-        task,
-        title,
-        round,
-        round_state,
-        note,
-        ..
-    } = due;
-    let token = runtime::token(notice);
-    let unread = match unread {
-        Some(0) | None => String::new(),
-        Some(1) => format!(" The worker has 1 unread turn, which `rexume task next {task}` takes."),
-        Some(n) => format!(
-            " The worker has {n} unread turns, which `rexume task next {task}` takes in order."
-        ),
-    };
-    if round_state == "completed" {
-        format!(
-            "{token} Worker task {task} \"{title}\" finished round {round}. Read its result with \
-             `rexume task show {task} --round {round}`, then acknowledge it with \
-             `rexume task ack {task} --round {round}`.{unread}"
-        )
-    } else {
-        let reason = note.as_ref().map_or(String::new(), |n| format!(" ({n})"));
-        format!(
-            "{token} Worker task {task} \"{title}\" ended round {round} without a result: \
-             {round_state}{reason}. Check it with `rexume task show {task} --round {round}`; once \
-             it is dealt with, acknowledge it with `rexume task ack {task} --round {round}`.{unread}"
-        )
-    }
+/// What a notice tells its owner.
+#[derive(Clone, Copy)]
+pub(super) enum Kind {
+    /// The round finished.
+    Finished,
+    /// The round began a blocked episode.
+    Blocked,
 }
 
-/// Pending notices with the round each tells of.
-pub(super) const PENDING: &str = "SELECT n.id, t.id, t.title, n.round, r.state, r.note,
-    r.waiter_pid, r.finished_at
+/// A round's finished notice as `n`: the predicate of the partial index `notice_finished`,
+/// written once so that every query relying on the index matches it.
+const FINISHED: &str = "n.kind = 'finished'";
+/// A round's blocked notice as `n` that has not been sent: the predicate of the partial index
+/// `notice_blocked_unsent`.
+const UNSENT_BLOCKED: &str = "n.kind = 'blocked' AND n.state IN ('pending', 'sending')";
+
+/// Drops a round's pending finished notice, with `?3` saying why.
+pub(super) static SUPERSEDE_FINISHED: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "UPDATE notice AS n SET state = 'superseded', note = ?3
+         WHERE n.task_id = ?1 AND n.round = ?2 AND {FINISHED} AND n.state = 'pending'"
+    )
+});
+
+/// Drops a round's pending blocked notice, with `?3` saying why.
+pub(super) static SUPERSEDE_BLOCKED: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "UPDATE notice AS n SET state = 'superseded', note = ?3
+         WHERE n.task_id = ?1 AND n.round = ?2 AND {UNSENT_BLOCKED} AND n.state = 'pending'"
+    )
+});
+
+/// Writes a round's notice at `now`, the time its transaction gives the round, which the daemon
+/// sends once it is due.
+pub(super) fn write(tx: &Transaction, kind: Kind, id: &str, round: i64, now: i64) -> Result<()> {
+    let kind = match kind {
+        Kind::Finished => "finished",
+        Kind::Blocked => "blocked",
+    };
+    tx.execute(
+        "INSERT INTO notice (id, task_id, round, kind, state, created_at)
+         VALUES (?1, ?2, ?3, ?4, 'pending', ?5)",
+        params![new_id(), id, round, kind, now],
+    )?;
+    Ok(())
+}
+
+/// Drops a round's notice while it is still pending, so that it is never sent, with `note` saying
+/// why. Returns whether there was one.
+pub(super) fn supersede(
+    tx: &Transaction,
+    kind: Kind,
+    id: &str,
+    round: i64,
+    note: &str,
+) -> Result<bool> {
+    let statement = match kind {
+        Kind::Finished => &SUPERSEDE_FINISHED,
+        Kind::Blocked => &SUPERSEDE_BLOCKED,
+    };
+    Ok(tx
+        .prepare_cached(statement)?
+        .execute(params![id, round, note])?
+        == 1)
+}
+
+/// Pending notices with the round each tells of, the worker pane's Rex block ID on the instance
+/// the daemon observes last, and the state of the round's request.
+pub(super) const PENDING: &str = "SELECT n.id, n.kind = 'blocked', t.id, t.title, n.round,
+    r.state, r.note, r.waiter_pid, n.created_at, l.live_id, q.state
   FROM notice n JOIN task t ON t.id = n.task_id
   JOIN task_round r ON r.task_id = n.task_id AND r.round = n.round
+  LEFT JOIN request q ON q.task_id = n.task_id AND q.round = n.round
+  LEFT JOIN epoch e ON e.id = (SELECT MAX(id) FROM epoch)
+  LEFT JOIN live l ON l.instance_id = e.instance_id AND l.lineage = t.worker_lineage
   WHERE n.state = 'pending'";
 
 struct Due {
     notice: String,
+    blocked: bool,
     task: String,
     title: String,
     round: i64,
     round_state: String,
     note: Option<String>,
     waiter: Option<i64>,
-    finished_at: i64,
+    /// When the notice was written.
+    since: i64,
+    worker: Option<String>,
+    request: Option<String>,
 }
 
 /// Sends each due notice to its owner once the owner is running and between turns, unless a live
@@ -79,20 +123,23 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
         .query_map([], |row| {
             Ok(Due {
                 notice: row.get(0)?,
-                task: row.get(1)?,
-                title: row.get(2)?,
-                round: row.get(3)?,
-                round_state: row.get(4)?,
-                note: row.get(5)?,
-                waiter: row.get(6)?,
-                finished_at: row.get(7)?,
+                blocked: row.get(1)?,
+                task: row.get(2)?,
+                title: row.get(3)?,
+                round: row.get(4)?,
+                round_state: row.get(5)?,
+                note: row.get(6)?,
+                waiter: row.get(7)?,
+                since: row.get(8)?,
+                worker: row.get(9)?,
+                request: row.get(10)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
     let now = now_ms();
     let mut next = None;
     for due in pending {
-        let due_at = due.finished_at + GRACE_MS;
+        let due_at = due.since + GRACE_MS;
         if due_at > now {
             let at = Instant::now() + Duration::from_millis(u64::try_from(due_at - now)?);
             next = Some(next.map_or(at, |n: Instant| n.min(at)));
@@ -105,7 +152,11 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
         let Some(owner) = ready_owner(store.conn(), &due.task)? else {
             continue;
         };
-        let unread = super::unread(store.conn(), &due.task)?;
+        let text = if due.blocked {
+            text::blocked(&due)
+        } else {
+            text::finished(&due, super::unread(store.conn(), &due.task)?)
+        };
         let tx = store.write()?;
         let claimed = claim(&tx, &due.notice, due.waiter)?;
         tx.commit()?;
@@ -116,12 +167,8 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
             native_id: &owner.native_id,
             transport: &owner.transport,
         };
-        let (state, note) = Sent::recorded(owner.runtime.send(
-            &target,
-            store.dir(),
-            &due.notice,
-            &text(&due, unread),
-        ));
+        let (state, note) =
+            Sent::recorded(owner.runtime.send(&target, store.dir(), &due.notice, &text));
         log::info!("notice {} for task {}: {state}", due.notice, due.task);
         let tx = store.write()?;
         tx.execute(
@@ -211,7 +258,7 @@ fn ready_owner(conn: &Connection, task: &str) -> Result<Option<Owner>> {
 
 /// Notices not yet confirmed as delivered, with the round each tells of. A `pending` notice
 /// with a note is one whose send failed, which keeps failing until its cause is fixed.
-const UNDELIVERED: &str = "SELECT n.id, n.task_id, n.round, r.state, n.state, n.note
+const UNDELIVERED: &str = "SELECT n.id, n.kind, n.task_id, n.round, r.state, n.state, n.note
   FROM notice n JOIN task t ON t.id = n.task_id
   JOIN task_round r ON r.task_id = n.task_id AND r.round = n.round
   WHERE (n.state IN ('unknown', 'sending', 'sent', 'accepted')
@@ -222,11 +269,12 @@ pub fn undelivered(conn: &Connection, owner: Option<(Runtime, &str)>) -> Result<
     let notice = |row: &rusqlite::Row| -> rusqlite::Result<Value> {
         Ok(serde_json::json!({
             "id": row.get::<_, String>(0)?,
-            "task_id": row.get::<_, String>(1)?,
-            "round": row.get::<_, i64>(2)?,
-            "round_state": row.get::<_, String>(3)?,
-            "state": row.get::<_, String>(4)?,
-            "note": row.get::<_, Option<String>>(5)?,
+            "kind": row.get::<_, String>(1)?,
+            "task_id": row.get::<_, String>(2)?,
+            "round": row.get::<_, i64>(3)?,
+            "round_state": row.get::<_, String>(4)?,
+            "state": row.get::<_, String>(5)?,
+            "note": row.get::<_, Option<String>>(6)?,
         }))
     };
     Ok(match owner {
@@ -243,6 +291,5 @@ pub fn undelivered(conn: &Connection, owner: Option<(Runtime, &str)>) -> Result<
     })
 }
 
-pub(super) mod receipt;
 #[cfg(test)]
 mod tests;

@@ -1,5 +1,5 @@
 use anyhow::Result;
-use rusqlite::Connection;
+use rusqlite::{Connection, params};
 
 use crate::store::Store;
 
@@ -16,13 +16,22 @@ fn definitions(conn: &Connection) -> Result<Vec<(String, String, Option<String>)
         .collect::<rusqlite::Result<_>>()?)
 }
 
+/// A notice's kind, state, and when it was written.
+fn notice_of(store: &Store, id: &str) -> Result<(String, String, i64)> {
+    Ok(store.conn().query_row(
+        "SELECT kind, state, created_at FROM notice WHERE id = ?1",
+        params![id],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?)
+}
+
 #[test]
 fn open_upgrades_a_version_1_database_and_keeps_its_tasks() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let conn = Connection::open(dir.path().join("state.db"))?;
     conn.execute_batch(include_str!("../../../tests/fixtures/schema-v1.sql"))?;
-    // Task `i` is interactive: its worker reported for round 2 only, which is running from
-    // offset 250. Task `r` is a run whose acknowledged round left its pane being closed. Task `k`
+    // Task `i` is interactive: its worker reported for round 2 only, which is blocked at offset
+    // 250. Task `r` is a run whose acknowledged round left its pane being closed. Task `k`
     // keeps its pane, so its acknowledged round did not release it. Task `u` was rearmed before
     // its pane's next conversation reported.
     conn.execute_batch(
@@ -37,7 +46,7 @@ fn open_upgrades_a_version_1_database_and_keeps_its_tasks() -> Result<()> {
          INSERT INTO task_round (task_id, round, worker_runtime, worker_native_id, cursor, state,
            finished_at, acked_at, created_at, result_ref, result)
            VALUES ('i', 1, NULL, NULL, 100, 'completed', 3, 4, 1, 'm1', 'first'),
-             ('i', 2, 'claude', 'worker', 250, 'running', NULL, NULL, 5, NULL, NULL),
+             ('i', 2, 'claude', 'worker', 250, 'blocked', NULL, NULL, 5, NULL, NULL),
              ('r', 1, NULL, NULL, 0, 'completed', 6, 7, 2, '/r', 'done'),
              ('k', 1, 'claude', 'worker', 120, 'completed', 6, 7, 3, 'm2', 'kept'),
              ('u', 1, 'claude', 'worker', 300, 'completed', 6, 7, 4, 'm3', 'before'),
@@ -85,13 +94,11 @@ fn open_upgrades_a_version_1_database_and_keeps_its_tasks() -> Result<()> {
         .collect::<rusqlite::Result<_>>()?;
     assert_eq!(rounds.len(), 6);
     assert_eq!(rounds[0].3.as_deref(), Some("first"));
-    let notice: String =
-        store
-            .conn()
-            .query_row("SELECT state FROM notice WHERE id = 'n'", [], |row| {
-                row.get(0)
-            })?;
-    assert_eq!(notice, "delivered");
+    assert_eq!(rounds[1].2, "running");
+    assert_eq!(
+        notice_of(&store, "n")?,
+        ("finished".into(), "delivered".into(), 3)
+    );
     Ok(())
 }
 
@@ -119,7 +126,7 @@ fn open_upgrades_a_version_2_database_dating_each_process_by_its_epoch() -> Resu
              ('e', 'v', 'claude', 'owner', 'b5', 11, '/r', 0, 85);
          INSERT INTO task_round (task_id, round, state, finished_at, created_at)
            VALUES ('a', 1, 'running', NULL, 15), ('b', 1, 'cancelled', 48, 45),
-             ('b', 2, 'running', NULL, 50), ('c', 1, 'running', NULL, 30);
+             ('b', 2, 'running', NULL, 50), ('c', 1, 'blocked', NULL, 30);
          INSERT INTO request (id, task_id, round, state, text) VALUES ('q', 'b', 2, 'sent', 'go');
          INSERT INTO notice (id, task_id, round, state) VALUES ('n', 'b', 1, 'delivered');
          INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env, reported_at)
@@ -160,6 +167,16 @@ fn open_upgrades_a_version_2_database_dating_each_process_by_its_epoch() -> Resu
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
     )?;
     assert_eq!(kept, (4, "i2".into(), "sent".into(), "delivered".into()));
+    assert_eq!(
+        notice_of(&store, "n")?,
+        ("finished".into(), "delivered".into(), 48)
+    );
+    let blocked: (String, Option<i64>) = store.conn().query_row(
+        "SELECT state, blocked_at FROM task_round WHERE task_id = 'c'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(blocked, ("running".into(), None));
     let occupants: Vec<(Option<String>, Option<bool>)> = store
         .conn()
         .prepare("SELECT instance_id, own_program FROM occupant ORDER BY block_lineage")?
@@ -214,5 +231,72 @@ fn open_upgrades_a_version_3_database_and_keeps_its_occupants() -> Result<()> {
         },
     )?;
     assert_eq!(occupant, ("i1".into(), 7, Some(true), 5, 0));
+    Ok(())
+}
+
+/// Version 5 adds blocked episodes. A blocked round has none until the daemon sees its pane blocked
+/// again, and every earlier notice told of a finished round.
+#[test]
+fn open_upgrades_versions_3_and_4_and_keeps_rounds_notices_and_requests() -> Result<()> {
+    for fixture in [
+        include_str!("../../../tests/fixtures/schema-v3.sql"),
+        include_str!("../../../tests/fixtures/schema-v4.sql"),
+    ] {
+        let dir = tempfile::tempdir()?;
+        let conn = Connection::open(dir.path().join("state.db"))?;
+        conn.execute_batch(fixture)?;
+        // Task `i` finished round 1, whose notice was delivered, and its request round 2 is
+        // blocked with the request still unsent.
+        conn.execute_batch(
+            "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+               VALUES ('claude', 'owner', 1, 0), ('claude', 'worker', 1, 0);
+             INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage,
+               keep_pane, worker_runtime, worker_native_id, position, created_at)
+               VALUES ('i', 'x', 'claude', 'owner', 'b1', 0, 'claude', 'worker', 300, 1);
+             INSERT INTO task_round (task_id, round, state, finished_at, acked_at, created_at,
+               turn_start, result_ref, result)
+               VALUES ('i', 1, 'completed', 3, 4, 1, 0, 'm1', 'first'),
+                 ('i', 2, 'blocked', NULL, NULL, 5, NULL, NULL, NULL);
+             INSERT INTO notice (id, task_id, round, state) VALUES ('n', 'i', 1, 'delivered');
+             INSERT INTO request (id, task_id, round, text) VALUES ('q', 'i', 2, 'go');",
+        )?;
+        drop(conn);
+        let store = Store::open(dir.path())?;
+        assert_eq!(definitions(store.conn())?, fresh()?);
+        type Round = (i64, String, Option<i64>, Option<i64>, Option<String>);
+        let rounds: Vec<Round> = store
+            .conn()
+            .prepare(
+                "SELECT round, state, blocked_at, turn_start, result FROM task_round
+                 ORDER BY round",
+            )?
+            .query_map([], |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<_>>()?;
+        assert_eq!(
+            rounds,
+            [
+                (1, "completed".into(), None, Some(0), Some("first".into())),
+                (2, "running".into(), None, None, None)
+            ]
+        );
+        assert_eq!(
+            notice_of(&store, "n")?,
+            ("finished".into(), "delivered".into(), 3)
+        );
+        let request: (String, String) = store.conn().query_row(
+            "SELECT state, text FROM request WHERE id = 'q'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(request, ("pending".into(), "go".into()));
+    }
     Ok(())
 }

@@ -6,6 +6,7 @@ use serde_json::Value;
 
 use super::{SessionDoc, from_view};
 use crate::store::{bind_live, ensure_lineage, lineage_of, move_block, now_ms, unbind_provisional};
+use crate::task;
 
 /// Saves a session's layout as the server shows it.
 pub fn save_view(
@@ -85,6 +86,10 @@ pub fn forget_block(tx: &Transaction, lineage: &str) -> Result<()> {
 /// found. Any other binding of the live ID is refused.
 pub fn bind_restored(tx: &Transaction, instance: &str, live_id: &str, lineage: &str) -> Result<()> {
     if let Some(provisional) = unbind_provisional(tx, instance, live_id)? {
+        // The merge gives the pane this instance's statuses, and a dialog its worker waited on
+        // went with the earlier one. Ended first, so that a task registered on the provisional
+        // pane keeps its own episode.
+        task::end_blocked_episodes(tx, lineage)?;
         move_block(tx, &provisional, lineage)?;
         move_session(tx, &provisional, lineage)?;
         rename(tx, &provisional, lineage)?;

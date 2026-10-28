@@ -6,15 +6,19 @@
 use anyhow::{Result, bail};
 use rusqlite::Transaction;
 
-use super::SCHEMA;
+use super::{SCHEMA, SCHEMA_VERSION};
 
 pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
+    if !(1..SCHEMA_VERSION).contains(&version) {
+        bail!("schema {version} has no upgrade");
+    }
+    blocked_episodes(tx)?;
     match version {
         1 => from_v1(tx)?,
         2 => rebuild(tx, &["notice", "request", "task_round", "task"])?,
         // Version 4 adds `occupant.start_position`.
-        3 => return rebuild(tx, &["occupant"]),
-        _ => bail!("schema {version} has no upgrade"),
+        3 => return rebuild(tx, &["notice", "request", "task_round", "occupant"]),
+        _ => return rebuild(tx, &["notice", "request", "task_round"]),
     }
     // Version 3 drops the start that typed the reopen command: such a slot starts a shell.
     tx.execute_batch(
@@ -108,11 +112,28 @@ fn from_v1(tx: &Transaction) -> Result<()> {
          SELECT task_id, round, waiter_pid, state, note, finished_at, finished_status_at,
            finished_generation, acked_at, created_at, result_ref, result
          FROM v1_round;
-         INSERT INTO main.notice (id, task_id, round, state, note)
-         SELECT id, task_id, round, state, note FROM v1_notice;
+         INSERT INTO main.notice (id, task_id, round, kind, state, note, created_at)
+         SELECT id, task_id, round, kind, state, note, created_at FROM v1_notice;
          DROP TABLE temp.v1_notice;
          DROP TABLE temp.v1_round;
          DROP TABLE temp.v1_task;",
+    )?;
+    Ok(())
+}
+
+/// Version 5 records blocked episodes: a round's `blocked_at`, and a notice's `kind`, so that a
+/// round can have a blocked notice per episode besides its finished one, and a notice's own
+/// `created_at`. Every earlier notice told of a finished round, written when the round finished. A
+/// blocked round becomes running, with no episode and no notice, so that the daemon judges it again
+/// from its pane's status. The earlier tables take the new values in place, so that the step of
+/// each version copies them with the rest of their rows.
+fn blocked_episodes(tx: &Transaction) -> Result<()> {
+    tx.execute_batch(
+        "UPDATE task_round SET state = 'running' WHERE state = 'blocked';
+         ALTER TABLE notice ADD COLUMN kind TEXT NOT NULL DEFAULT 'finished';
+         ALTER TABLE notice ADD COLUMN created_at INTEGER;
+         UPDATE notice SET created_at = (SELECT r.finished_at FROM task_round r
+           WHERE r.task_id = notice.task_id AND r.round = notice.round);",
     )?;
     Ok(())
 }

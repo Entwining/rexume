@@ -7,10 +7,11 @@ use serde_json::json;
 
 use super::receipt::settle;
 use super::*;
+use crate::runtime;
 use crate::task::tests::{ANSWER, ANSWER_2, DURATION, PROMPT, PROMPT_2, task_world};
 
-/// Task `t`'s completed first round and its notice `d` in `state`, to the owner idle in pane
-/// `a`, whose record is `transcript` and whose messaging socket is the returned listener.
+/// Task `t`'s completed first round and its finished notice `d` in `state`, to the owner idle in
+/// pane `a`, whose record is `transcript` and whose messaging socket is the returned listener.
 fn notice_world(dir: &Path, transcript: &Path, state: &str) -> Result<(Store, UnixListener)> {
     let socket = dir.join("owner.sock");
     let listener = UnixListener::bind(&socket)?;
@@ -29,7 +30,8 @@ fn notice_world(dir: &Path, transcript: &Path, state: &str) -> Result<(Store, Un
         [],
     )?;
     store.conn().execute(
-        "INSERT INTO notice (id, task_id, round, state) VALUES ('d', 't', 1, ?1)",
+        "INSERT INTO notice (id, task_id, round, kind, state, created_at)
+         VALUES ('d', 't', 1, 'finished', ?1, 0)",
         params![state],
     )?;
     Ok((store, listener))
@@ -120,7 +122,7 @@ fn a_notice_waits_for_its_owner_to_report_on_the_running_instance() -> Result<()
 }
 
 #[test]
-fn a_notice_goes_to_its_idle_owner_once_its_grace_after_the_round_has_passed() -> Result<()> {
+fn a_notice_goes_to_its_idle_owner_once_its_grace_has_passed() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = tempfile::NamedTempFile::new()?;
     let (mut store, listener) = notice_world(dir.path(), transcript.path(), "pending")?;
@@ -132,7 +134,7 @@ fn a_notice_goes_to_its_idle_owner_once_its_grace_after_the_round_has_passed() -
         .execute_batch("UPDATE task_round SET turn_start = 0")?;
     store
         .conn()
-        .execute("UPDATE task_round SET finished_at = ?1", params![now_ms()])?;
+        .execute("UPDATE notice SET created_at = ?1", params![now_ms()])?;
     let mut interest = Interest::default();
     assert!(send_due(&mut store, &mut interest)?.is_some());
     assert!(
@@ -140,7 +142,7 @@ fn a_notice_goes_to_its_idle_owner_once_its_grace_after_the_round_has_passed() -
         "the notice was sent within its grace"
     );
     store.conn().execute(
-        "UPDATE task_round SET finished_at = ?1",
+        "UPDATE notice SET created_at = ?1",
         params![now_ms() - GRACE_MS - 1],
     )?;
     assert!(send_due(&mut store, &mut interest)?.is_none());
@@ -194,5 +196,70 @@ fn a_registered_waiter_keeps_the_notice_from_the_daemon() -> Result<()> {
     assert!(!claim(&tx, "d", None)?);
     assert!(!claim(&tx, "d", Some(alive + 1))?);
     assert!(claim(&tx, "d", Some(alive))?);
+    Ok(())
+}
+
+/// `notice_world` with round 1 blocked since long ago and `d` its blocked notice, the worker's pane
+/// `b` known on the observed instance as `block:w`.
+fn blocked_world(dir: &Path, transcript: &Path, state: &str) -> Result<(Store, UnixListener)> {
+    let (store, listener) = notice_world(dir, transcript, state)?;
+    store.conn().execute_batch(
+        "UPDATE task_round SET state = 'blocked', blocked_at = 0, result = NULL, result_ref = NULL,
+           finished_at = NULL;
+         UPDATE notice SET kind = 'blocked';
+         INSERT INTO live (instance_id, live_id, lineage) VALUES ('i1', 'block:w', 'b');",
+    )?;
+    Ok((store, listener))
+}
+
+#[test]
+fn a_blocked_notice_waits_for_a_live_waiter_and_goes_once_otherwise() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = tempfile::NamedTempFile::new()?;
+    let (mut store, listener) = blocked_world(dir.path(), transcript.path(), "pending")?;
+    store.conn().execute_batch(
+        "INSERT INTO request (id, task_id, round, text) VALUES ('q', 't', 1, 'go')",
+    )?;
+    let alive = i64::from(std::process::id());
+    store
+        .conn()
+        .execute("UPDATE task_round SET waiter_pid = ?1", params![alive])?;
+    let mut interest = Interest::default();
+    send_due(&mut store, &mut interest)?;
+    assert!(interest.pids.contains(&alive));
+    assert!(listener.accept().is_err(), "sent past a live waiter");
+
+    store
+        .conn()
+        .execute_batch("UPDATE task_round SET waiter_pid = NULL")?;
+    send_due(&mut store, &mut interest)?;
+    send_due(&mut store, &mut interest)?;
+    assert_eq!(notice(&store)?.0, "sent");
+    let mut line = String::new();
+    std::io::Read::read_to_string(&mut listener.accept()?.0, &mut line)?;
+    assert!(listener.accept().is_err(), "the notice was sent twice");
+    let message = serde_json::from_str::<Value>(&line)?;
+    let sent = message["message"]["content"].as_str().unwrap_or_default();
+    for part in [
+        runtime::token("d").as_str(),
+        "\"count\" is blocked in round 1",
+        "in pane block:w",
+        "may have been answered since",
+        "`rexume task show t --round 1`",
+        "request is still pending",
+    ] {
+        assert!(sent.contains(part), "{part}: {sent}");
+    }
+    assert!(!sent.contains("task ack"), "{sent}");
+    Ok(())
+}
+
+#[test]
+fn a_blocked_notice_left_mid_send_stays_unknown_and_unsent() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = tempfile::NamedTempFile::new()?;
+    let (mut store, listener) = blocked_world(dir.path(), transcript.path(), "sending")?;
+    assert_eq!(restart_daemon(&mut store)?.0, "unknown");
+    assert!(listener.accept().is_err(), "the notice was sent again");
     Ok(())
 }

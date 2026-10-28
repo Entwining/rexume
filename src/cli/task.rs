@@ -10,6 +10,11 @@ use serde_json::Value;
 
 use crate::task;
 
+/// The exit status of `task wait` when it returns because the round's worker is blocked.
+const BLOCKED: u8 = 3;
+/// The exit status of `task wait` when its timeout passes first, as coreutils `timeout` uses.
+const TIMED_OUT: u8 = 124;
+
 pub(super) const EXAMPLES: &str = "\
 Examples:
   rexume task add --worker \"$WORKER_BLOCK\" --title 'review the parser'
@@ -81,9 +86,11 @@ pub(super) enum Command {
         #[command(flatten)]
         round: Round,
     },
-    /// Wait until the task's latest round finishes, then show it
+    /// Wait until the task's latest round finishes or its worker blocks, then show it
     ///
-    /// Exits 124 when the timeout passes first; the task is still printed, with `timed_out` true.
+    /// Exits 3 when the worker is blocked on a dialog or a question that no notice or earlier wait
+    /// reported, and 124 when the timeout passes first; the task is printed either way, with
+    /// `timed_out`.
     Wait {
         #[command(flatten)]
         task: TaskId,
@@ -147,8 +154,9 @@ fn absolute_path(text: &str) -> Result<PathBuf, &'static str> {
     }
 }
 
-pub(super) fn run(command: Command, dir: &Path) -> Result<Value> {
-    match command {
+/// Runs a task command, returning what it prints and its exit status.
+pub(super) fn run(command: Command, dir: &Path) -> Result<(Value, u8)> {
+    let value = match command {
         Command::Add {
             worker,
             title,
@@ -165,17 +173,41 @@ pub(super) fn run(command: Command, dir: &Path) -> Result<Value> {
         ),
         Command::List => task::list(dir),
         Command::Show { task, round } => task::show(dir, &task.id, round.round),
-        Command::Wait { task, timeout } => task::wait(dir, &task.id, Duration::from_secs(timeout)),
+        Command::Wait { task, timeout } => {
+            let (value, returned) = task::wait(dir, &task.id, Duration::from_secs(timeout))?;
+            return Ok((value, exit_status(returned)));
+        }
         Command::Ack { task, round } => task::ack(dir, &task.id, round.round),
         Command::Next(task) => task::next(dir, &task.id),
         Command::Send { task, message } => task::send(dir, &task.id, &message.read()?),
         Command::Release(task) => task::release(dir, &task.id),
+    }?;
+    Ok((value, 0))
+}
+
+fn exit_status(returned: task::Returned) -> u8 {
+    match returned {
+        task::Returned::Finished => 0,
+        task::Returned::Blocked => BLOCKED,
+        task::Returned::TimedOut => TIMED_OUT,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn task_wait_exits_by_why_it_returned() {
+        for (returned, status) in [
+            (task::Returned::Finished, 0),
+            (task::Returned::Blocked, 3),
+            (task::Returned::TimedOut, 124),
+        ] {
+            assert_eq!(exit_status(returned), status, "{returned:?}");
+        }
+    }
+
     /// A message over the limit is refused before anything is recorded, as text or as a file whose
     /// limit falls inside a character.
     #[test]

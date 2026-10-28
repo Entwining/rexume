@@ -77,7 +77,7 @@ An orchestrator agent registers a worker pane right after starting it, then carr
 rexume task add --worker "$WORKER_BLOCK" --title 'review the parser'
 ```
 
-When the worker's turn ends, rexume saves its result and sends the orchestrator one notice. The orchestrator reads the result with `rexume task show ID` and acknowledges it with `rexume task ack ID`. The result is the first turn the worker finishes after it starts, so a worker that resumes an earlier conversation hands back its new answer, not an earlier one.
+When the worker's turn ends, rexume saves its result and sends the orchestrator one notice. When the worker instead stops on a question or a permission dialog, rexume sends one notice for that stop too, and `rexume task wait ID`, which waits for the result in the orchestrator's own turn, returns for it with exit status 3. The orchestrator reads the result with `rexume task show ID` and acknowledges it with `rexume task ack ID`. The result is the first turn the worker finishes after it starts, so a worker that resumes an earlier conversation hands back its new answer, not an earlier one.
 
 To give the same worker a new prompt, the orchestrator runs `rexume task send ID --message-file PATH`: rexume delivers the prompt to the worker's conversation itself, without typing into the pane, and the result is the turn that answers it. A turn the worker ends on its own, such as an interim report while it waits for CI, is collected with `rexume task next ID`. Once the orchestrator is done with the worker, `rexume task release ID` lets the daemon close a disposable worker's pane, but only if nothing has happened in it since the result.
 
