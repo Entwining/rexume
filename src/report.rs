@@ -11,7 +11,7 @@ use serde_json::{Map, Value, json};
 
 use crate::proc;
 use crate::rex::{Cli, Rex, require_str, str_at};
-use crate::runtime::{Runtime, claude};
+use crate::runtime::Runtime;
 use crate::store::{Store, ensure_lineage, now_ms};
 
 /// What a session start says about the session's place in the agent process that reports it.
@@ -31,10 +31,9 @@ pub struct Report {
     pub role: Role,
     pub transcript: Option<String>,
     pub resumable: bool,
-    /// Only the settings this report carries; a later report merges into the recorded ones.
+    /// A merge patch (RFC 7396) over the recorded settings: a key it leaves out is kept, and one
+    /// it sets to `null` is removed.
     pub settings: Map<String, Value>,
-    /// JSON paths to remove before merging this report's settings.
-    pub replace_settings: &'static [&'static str],
     /// The record's length when the session started, from a runtime that measures it itself: the
     /// Pi extension, which goes on with the session while its report runs. A hook holds the
     /// session until the report ends, so the report measures it for Claude Code and Codex.
@@ -77,11 +76,6 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
             transcript: text("transcript_path"),
             resumable: role == Role::Own,
             settings: settings_from(&[("model", "model"), ("effort", "effort")]),
-            replace_settings: if runtime == Runtime::Claude {
-                &["$.launch_flags", "$.launch_env"]
-            } else {
-                &[]
-            },
             record_length: None,
         },
         Runtime::Pi => {
@@ -98,7 +92,6 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
                     ("model", "model"),
                     ("thinking", "effort"),
                 ]),
-                replace_settings: &[],
                 record_length: input.get("session_file_size").and_then(Value::as_u64),
             }
         }
@@ -142,13 +135,9 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
             "this {runtime} process is not the pane's foreground program, so nothing was recorded"
         );
     };
-    if runtime == Runtime::Claude {
-        // The hook is the agent's child, so its environment is the agent's environment.
-        report.settings.extend(claude::launch_settings(
-            &proc::argv(u32::try_from(foreground)?).unwrap_or_default(),
-            std::env::vars_os(),
-        ));
-    }
+    report
+        .settings
+        .extend(runtime.launch_settings(u32::try_from(foreground)?));
     let instance = require_str(&rex.call("server.status", &json!({}))?, "/instance_id")?;
     let transport: Map<String, Value> = std::env::var_os("CLAUDE_CODE_MESSAGING_SOCKET")
         .map(|socket| {
@@ -229,20 +218,15 @@ pub fn record(
     if inner {
         return Ok(());
     }
-    for path in report.replace_settings {
-        tx.execute(
-            "UPDATE conversation SET settings = json_remove(settings, ?3)
-             WHERE runtime = ?1 AND native_id = ?2",
-            params![runtime.as_str(), report.native_id, path],
-        )?;
-    }
     let now = now_ms();
+    // The update patches with the report's own settings: `excluded.settings` is the inserted
+    // value, which no longer holds the `null`s that remove a key.
     tx.execute(
         "INSERT INTO conversation (runtime, native_id, transcript, resumable, settings, reported_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+           VALUES (?1, ?2, ?3, ?4, json_patch('{}', ?5), ?6)
          ON CONFLICT (runtime, native_id) DO UPDATE SET
            transcript = COALESCE(excluded.transcript, transcript), resumable = excluded.resumable,
-           settings = json_patch(settings, excluded.settings), reported_at = excluded.reported_at",
+           settings = json_patch(settings, ?5), reported_at = excluded.reported_at",
         params![
             runtime.as_str(),
             report.native_id,

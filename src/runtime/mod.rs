@@ -2,7 +2,7 @@
 //! its turns from the conversation's own record, how to pass it a notice, and which record shows
 //! it took the notice in. A new runtime is a variant here and a file beside this one.
 
-pub mod claude;
+mod claude;
 mod codex;
 mod lines;
 pub mod pi;
@@ -42,13 +42,30 @@ impl Runtime {
     }
 
     /// The command that reopens a conversation. Its identity, settings, and an allowlist of launch
-    /// flags and provider variables are carried over. Original arguments are never replayed
-    /// wholesale: those can hold a launch prompt that would run a finished task again.
+    /// flags are carried over. Original arguments are never replayed wholesale: those can hold a
+    /// launch prompt that would run a finished task again.
     pub fn resume_argv(self, conversation: &Conversation) -> Vec<String> {
         match self {
             Self::Claude => claude::resume_argv(conversation),
             Self::Codex => codex::resume_argv(conversation),
             Self::Pi => pi::resume_argv(conversation),
+        }
+    }
+
+    /// The variables the command that reopens a conversation runs with, by name and value.
+    pub fn resume_env(self, conversation: &Conversation) -> Vec<(String, String)> {
+        match self {
+            Self::Claude => claude::resume_env(conversation),
+            Self::Codex | Self::Pi => Vec::new(),
+        }
+    }
+
+    /// What the reporting process `pid` was started with that its resume command takes again, as
+    /// a patch over the recorded settings.
+    pub fn launch_settings(self, pid: u32) -> Map<String, Value> {
+        match self {
+            Self::Claude => claude::launch::settings(pid),
+            Self::Codex | Self::Pi => Map::new(),
         }
     }
 
@@ -153,12 +170,13 @@ impl Conversation {
         self.settings.get(key).and_then(Value::as_str)
     }
 
-    fn setting_array(&self, key: &str) -> Option<&Vec<Value>> {
-        self.settings.get(key).and_then(Value::as_array)
-    }
-
-    fn setting_object(&self, key: &str) -> Option<&Map<String, Value>> {
-        self.settings.get(key).and_then(Value::as_object)
+    fn setting_strings(&self, key: &str) -> impl Iterator<Item = &str> {
+        self.settings
+            .get(key)
+            .and_then(Value::as_array)
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
     }
 }
 

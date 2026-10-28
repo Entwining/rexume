@@ -132,4 +132,36 @@ fn an_open_prompt_carries_when_it_was_recorded() -> Result<()> {
     Ok(())
 }
 
-mod launch;
+#[test]
+fn a_resume_sets_the_launch_environment_and_puts_launch_flags_before_resume() {
+    let c = Conversation {
+        native_id: "id".into(),
+        settings: serde_json::from_value(json!({
+            "model": "big",
+            "launch_flags": ["--rc", "--add-dir", "/x"],
+            "launch_env": ["CLAUDE_CODE_USE_VERTEX=1", "CLOUD_ML_REGION=global"]
+        }))
+        .unwrap(),
+        ..Conversation::default()
+    };
+    assert_eq!(
+        resume_argv(&c),
+        [
+            "claude",
+            "--rc",
+            "--add-dir",
+            "/x",
+            "--resume",
+            "id",
+            "--model",
+            "big"
+        ]
+    );
+    assert_eq!(
+        resume_env(&c),
+        [
+            ("CLAUDE_CODE_USE_VERTEX".into(), "1".into()),
+            ("CLOUD_ML_REGION".into(), "global".into())
+        ]
+    );
+}

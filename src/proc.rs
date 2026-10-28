@@ -1,4 +1,5 @@
-//! The process tree, to tell which agent process a command runs under.
+//! The process tree, to tell which agent process a command runs under, and what a process was
+//! started with.
 #![cfg_attr(
     target_os = "macos",
     expect(
@@ -15,21 +16,35 @@ use std::mem::{MaybeUninit, size_of};
 /// Programs that only pass a command along: hooks and tool calls reach this tool through them.
 const WRAPPERS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "env", "rexume"];
 
-#[cfg(target_os = "linux")]
-pub fn argv(pid: u32) -> Option<Vec<String>> {
-    let bytes = std::fs::read(format!("/proc/{pid}/cmdline")).ok()?;
-    let bytes = bytes.strip_suffix(&[0])?;
-    if bytes.is_empty() {
-        return None;
-    }
+/// What a process was started with, as the kernel keeps it: its arguments, and its environment as
+/// `NAME=value` entries before the process changed any of them.
+pub struct Launch {
+    pub argv: Vec<String>,
+    pub env: Vec<String>,
+}
+
+/// NUL-terminated strings. A byte that is not UTF-8 reads as U+FFFD, so that one such string
+/// leaves the others readable.
+fn strings(bytes: &[u8]) -> Vec<String> {
     bytes
+        .strip_suffix(&[0])
+        .unwrap_or(bytes)
         .split(|byte| *byte == 0)
-        .map(|arg| std::str::from_utf8(arg).ok().map(str::to_owned))
+        .map(|string| String::from_utf8_lossy(string).into_owned())
         .collect()
 }
 
+#[cfg(target_os = "linux")]
+pub fn launch(pid: u32) -> Option<Launch> {
+    let read = |file| std::fs::read(format!("/proc/{pid}/{file}")).ok();
+    Some(Launch {
+        argv: strings(&read("cmdline")?),
+        env: strings(&read("environ")?),
+    })
+}
+
 #[cfg(target_os = "macos")]
-pub fn argv(pid: u32) -> Option<Vec<String>> {
+pub fn launch(pid: u32) -> Option<Launch> {
     let mut mib = [
         libc::CTL_KERN,
         libc::KERN_PROCARGS2,
@@ -65,25 +80,23 @@ pub fn argv(pid: u32) -> Option<Vec<String>> {
     if result != 0 {
         return None;
     }
-    parse_argv(bytes.get(..size)?)
+    parse(bytes.get(..size)?)
 }
 
+/// `KERN_PROCARGS2` holds `argc`, the executable's path padded with NULs, the arguments, and the
+/// environment, which the kernel follows with strings of its own (`ptr_munge=` and the like).
 #[cfg(target_os = "macos")]
-fn parse_argv(bytes: &[u8]) -> Option<Vec<String>> {
-    let argc = u32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?);
-    if argc == 0 {
-        return None;
-    }
+fn parse(bytes: &[u8]) -> Option<Launch> {
+    let argc = usize::try_from(u32::from_ne_bytes(bytes.get(..4)?.try_into().ok()?)).ok()?;
     let mut bytes = bytes.get(4..)?;
     bytes = bytes.get(bytes.iter().position(|byte| *byte == 0)?..)?;
     bytes = bytes.get(bytes.iter().position(|byte| *byte != 0)?..)?;
-    let mut args = Vec::new();
-    for _ in 0..argc {
-        let end = bytes.iter().position(|byte| *byte == 0)?;
-        args.push(std::str::from_utf8(&bytes[..end]).ok()?.to_owned());
-        bytes = &bytes[end + 1..];
-    }
-    Some(args)
+    let mut strings = strings(bytes).into_iter();
+    let argv: Vec<String> = strings.by_ref().take(argc).collect();
+    (argv.len() == argc).then(|| Launch {
+        argv,
+        env: strings.filter(|string| !string.is_empty()).collect(),
+    })
 }
 
 /// A process's parent and executable name, or `None` when no such process is visible or it has
@@ -180,28 +193,28 @@ mod tests {
     }
 
     #[test]
-    fn reads_this_process_arguments() {
-        let args = argv(std::process::id()).expect("this process is visible");
+    fn reads_what_this_process_was_started_with() {
+        let launch = launch(std::process::id()).expect("this process is visible");
         let executable = std::env::current_exe().expect("this process has an executable");
-        assert!(args[0].ends_with(executable.file_name().unwrap().to_str().unwrap()));
+        assert!(launch.argv[0].ends_with(executable.file_name().unwrap().to_str().unwrap()));
+        let path = format!(
+            "PATH={}",
+            std::env::var("PATH").expect("tests run with a PATH")
+        );
+        assert!(launch.env.contains(&path));
     }
 
+    /// A short read is unknown, which keeps what was recorded; it never reads as no arguments.
     #[cfg(target_os = "macos")]
     #[test]
-    fn process_arguments_stop_before_the_environment_and_reject_incomplete_buffers() {
+    fn a_kernel_buffer_splits_into_arguments_and_environment() {
         let mut bytes = 3_u32.to_ne_bytes().to_vec();
-        bytes.extend_from_slice(b"/bin/agent\0\0\0agent\0\0--remote-control\0SECRET=value\0");
-        assert_eq!(
-            parse_argv(&bytes).unwrap(),
-            ["agent", "", "--remote-control"]
-        );
-        for invalid in [
-            &bytes[..3],
-            &bytes[..10],
-            &bytes[..bytes.len() - 14],
-            &0_u32.to_ne_bytes(),
-        ] {
-            assert!(parse_argv(invalid).is_none());
+        bytes.extend_from_slice(b"/bin/agent\0\0\0agent\0\0--rc\0AWS_REGION=x\0\0ptr_munge=\0\0\0");
+        let launch = parse(&bytes).unwrap();
+        assert_eq!(launch.argv, ["agent", "", "--rc"]);
+        assert_eq!(launch.env, ["AWS_REGION=x", "ptr_munge="]);
+        for short in [&bytes[..3], &bytes[..10], &bytes[..23]] {
+            assert!(parse(short).is_none());
         }
     }
 

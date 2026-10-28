@@ -243,63 +243,38 @@ fn a_new_process_takes_the_pane_even_without_the_runtimes_mark() -> Result<()> {
     Ok(())
 }
 
+/// Launch settings are a patch like any other: an array replaces the recorded one, `null` removes
+/// it, and a report that leaves a key out, as one that cannot read its process does, keeps it.
 #[test]
-fn a_claude_report_replaces_launch_settings_and_merges_model_and_effort() -> Result<()> {
+fn a_report_replaces_or_removes_what_it_names_and_keeps_the_rest() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let mut store = Store::open(dir.path())?;
     let tx = store.write()?;
-    let mut report = parse(
-        Runtime::Claude,
-        &json!({"session_id": "s", "model": "big", "effort": "high"}),
-    )?;
-    let argv = ["claude", "--remote-control"].map(str::to_owned);
-    report.settings.extend(claude::launch_settings(
-        &argv,
-        [
-            ("CLAUDE_CODE_USE_VERTEX".into(), "1".into()),
-            ("CLOUD_ML_REGION".into(), "global".into()),
-        ],
-    ));
-    record(&tx, "b", Runtime::Claude, &report, &process(100))?;
-    let saved = || -> Result<Value> {
+    let saved = |settings: Value| -> Result<Value> {
+        let mut report = parse(Runtime::Claude, &json!({"session_id": "s"}))?;
+        report.settings = serde_json::from_value(settings)?;
+        record(&tx, "b", Runtime::Claude, &report, &process(100))?;
         Ok(tx.query_row(
-            "SELECT settings FROM conversation WHERE runtime = 'claude' AND native_id = 's'",
+            "SELECT settings FROM conversation WHERE native_id = 's'",
             [],
             |row| row.get(0),
         )?)
     };
+    let vertex =
+        json!({"model": "big", "launch_flags": null, "launch_env": ["CLOUD_ML_REGION=global"]});
     assert_eq!(
-        saved()?,
-        json!({
-            "model": "big", "effort": "high", "launch_flags": ["--remote-control"],
-            "launch_env": {"CLAUDE_CODE_USE_VERTEX": "1", "CLOUD_ML_REGION": "global"}
-        })
+        saved(vertex)?,
+        json!({"model": "big", "launch_env": ["CLOUD_ML_REGION=global"]})
     );
-    let partial = Report {
-        replace_settings: &[],
-        ..parse(Runtime::Claude, &json!({"session_id": "s"}))?
-    };
-    record(&tx, "b", Runtime::Claude, &partial, &process(100))?;
-    assert_eq!(saved()?["launch_flags"], json!(["--remote-control"]));
-    assert_eq!(saved()?["launch_env"]["CLAUDE_CODE_USE_VERTEX"], "1");
-    let mut resume = parse(
-        Runtime::Claude,
-        &json!({"session_id": "s", "source": "resume"}),
-    )?;
-    resume.settings.extend(claude::launch_settings(
-        &[],
-        [("CLAUDE_CODE_USE_BEDROCK".into(), "1".into())],
-    ));
-    record(&tx, "b", Runtime::Claude, &resume, &process(100))?;
+    let flags = json!({"launch_flags": ["--rc"]});
     assert_eq!(
-        saved()?,
-        json!({
-            "model": "big", "effort": "high", "launch_env": {"CLAUDE_CODE_USE_BEDROCK": "1"}
-        })
+        saved(flags)?,
+        json!({"model": "big", "launch_flags": ["--rc"], "launch_env": ["CLOUD_ML_REGION=global"]})
     );
-    resume.settings = claude::launch_settings(&[], []);
-    record(&tx, "b", Runtime::Claude, &resume, &process(100))?;
-    assert_eq!(saved()?, json!({"model": "big", "effort": "high"}));
-    tx.commit()?;
+    let bedrock = json!({"launch_flags": null, "launch_env": ["AWS_REGION=us-east-1"]});
+    assert_eq!(
+        saved(bedrock)?,
+        json!({"model": "big", "launch_env": ["AWS_REGION=us-east-1"]})
+    );
     Ok(())
 }

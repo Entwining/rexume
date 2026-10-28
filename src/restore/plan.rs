@@ -65,6 +65,9 @@ impl fmt::Display for Start {
 pub struct Plan {
     /// The reopen command, without the continuation prompt.
     pub argv: Vec<String>,
+    /// Variables the reopen command runs with, by name and value.
+    #[serde(default)]
+    pub env: Vec<(String, String)>,
     /// The continuation prompt, added to `argv` only when the gate still finds the turn open.
     pub prompt: Option<String>,
     /// The conversation's record, which the gate reads again before it continues a turn.

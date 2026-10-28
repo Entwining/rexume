@@ -9,7 +9,7 @@ license = "MIT"
 repository = "https://github.com/Entwining/rexume"
 
 [lints.rust]
-# Only src/proc.rs may use unsafe code, for libc::proc_pidinfo; AGENTS.md records why.
+# Only src/proc.rs may use unsafe code, for libc::proc_pidinfo and libc::sysctl; AGENTS.md records why.
 unsafe_code = "deny"
 
 [lints.clippy]

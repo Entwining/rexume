@@ -177,4 +177,26 @@ fn a_claim_refuses_a_pane_bound_to_another_restored_lineage() -> Result<()> {
     Ok(())
 }
 
+#[test]
+fn a_reopen_command_takes_its_variables_as_assignments_before_exec() -> Result<()> {
+    let plan = Plan {
+        argv: vec!["claude".into(), "--resume".into(), "c".into()],
+        env: vec![("CLOUD_ML_REGION".into(), "us east".into())],
+        ..Plan::default()
+    };
+    assert_eq!(
+        command_line(&plan, Some("go on"))?,
+        "CLOUD_ML_REGION='us east' claude --resume c 'go on'"
+    );
+    let own = Plan {
+        own_program: true,
+        ..plan
+    };
+    assert_eq!(
+        command_line(&own, None)?,
+        "CLOUD_ML_REGION='us east' exec claude --resume c"
+    );
+    Ok(())
+}
+
 mod occupant;

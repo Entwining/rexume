@@ -86,10 +86,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS live_lineage ON live (instance_id, lineage);
 -- runtimes grows in code (enum Runtime), which refuses an unknown name before writing.
 -- `settings` is a JSON object owned by the runtime's module (model, effort, provider, ...,
 -- whatever its resume command needs); a later report merges into it (json_patch), so a value
--- a resumed session's start omits is kept. `transcript` is the runtime's record of the
--- conversation, which a later report without one leaves in place. `resumable` is 0 for a
--- conversation its runtime cannot reopen, such as a run its runtime keeps no record of or a
--- Pi session without a session file.
+-- a resumed session's start omits is kept and one the report sets to null is removed.
+-- `transcript` is the runtime's record of the conversation, which a later report without one
+-- leaves in place. `resumable` is 0 for a conversation its runtime cannot reopen, such as a run
+-- its runtime keeps no record of or a Pi session without a session file.
 -- `reported_at` is when the conversation was last reported.
 CREATE TABLE IF NOT EXISTS conversation (
   runtime     TEXT    NOT NULL,

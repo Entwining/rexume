@@ -1,137 +1,46 @@
 //! Claude Code.
 
-use std::ffi::{OsStr, OsString};
+pub mod launch;
+
 use std::io::Write;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
 
 use anyhow::{Context, Result};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use super::lines::last_record;
 use super::{Conversation, Open, Sealed, Sent, Span, Target, Turn, content_texts, text_at};
 use crate::rex::time_at;
 
-/// Saves allowlisted launch flags and provider variables; credentials never reach the store.
-pub fn launch_settings(
-    argv: &[String],
-    env: impl IntoIterator<Item = (OsString, OsString)>,
-) -> Map<String, Value> {
-    let mut flags: Vec<Value> = Vec::new();
-    let mut args = argv.iter().skip(1).peekable();
-    while let Some(arg) = args.next() {
-        if arg == "--" {
-            break;
-        }
-        let (flag, inline) = arg
-            .split_once('=')
-            .map_or((arg.as_str(), None), |(flag, value)| (flag, Some(value)));
-        match flag {
-            "--remote-control" | "--rc" => {
-                flags.push(flag.into());
-                if let Some(name) = inline.or_else(|| {
-                    args.next_if(|arg| !arg.starts_with('-'))
-                        .map(String::as_str)
-                }) {
-                    flags.push(name.into());
-                }
-            }
-            "--strict-mcp-config" | "--chrome" | "--no-chrome" if inline.is_none() => {
-                flags.push(arg.clone().into())
-            }
-            "--settings" | "--add-dir" | "--mcp-config" => {
-                let start = flags.len();
-                flags.push(flag.into());
-                let mut value = inline.or_else(|| {
-                    args.next_if(|arg| !arg.starts_with('-'))
-                        .map(String::as_str)
-                });
-                while let Some(path) = value {
-                    if flag == "--add-dir" || !path.trim_start().starts_with(['{', '[']) {
-                        flags.push(path.into());
-                    }
-                    if flag == "--settings" {
-                        break;
-                    }
-                    value = args
-                        .next_if(|arg| !arg.starts_with('-'))
-                        .map(String::as_str);
-                }
-                if flags.len() == start + 1 {
-                    flags.pop();
-                }
-            }
-            _ => {}
-        }
-    }
-    let env: Map<String, Value> = env
-        .into_iter()
-        .filter(|(name, _)| {
-            [
-                "CLAUDE_CODE_USE_VERTEX",
-                "CLAUDE_CODE_USE_BEDROCK",
-                "CLAUDE_CODE_USE_FOUNDRY",
-                "CLOUD_ML_REGION",
-                "ANTHROPIC_VERTEX_PROJECT_ID",
-                "ANTHROPIC_MODEL",
-                "ANTHROPIC_SMALL_FAST_MODEL",
-                "AWS_REGION",
-                "AWS_PROFILE",
-            ]
-            .iter()
-            .any(|allowed| name.as_os_str() == OsStr::new(allowed))
-        })
-        .filter_map(|(name, value)| {
-            Some((
-                name.into_string().ok()?,
-                value.to_str().filter(|value| !value.is_empty())?.into(),
-            ))
-        })
-        .collect();
-    let mut settings = Map::new();
-    if !flags.is_empty() {
-        settings.insert("launch_flags".into(), flags.into());
-    }
-    if !env.is_empty() {
-        settings.insert("launch_env".into(), env.into());
-    }
-    settings
-}
-
 /// Claude Code takes the model and effort of a resumed session from the command line; its session
 /// start leaves them out on resume, so the reported launch settings are what reopen it. Its resume
 /// starts a session that was bypassing permissions in a new session's mode, and a Manual one in a
-/// settings `defaultMode`, so the mode the record shows is passed too.
-/// The gate joins argv with shlex into a shell command; `env` carries provider variables portably
-/// across the shells it may use.
+/// settings `defaultMode`, so the mode the record shows is passed too. Launch flags go before
+/// `--resume`, so a continuation prompt the gate appends stays positional after an optional or
+/// variadic value.
 pub fn resume_argv(c: &Conversation) -> Vec<String> {
-    let mut argv = vec!["claude".to_owned()];
-    if let Some(flags) = c.setting_array("launch_flags") {
-        argv.extend(flags.iter().filter_map(Value::as_str).map(str::to_owned));
-    }
-    argv.extend(["--resume".to_owned(), c.native_id.clone()]);
+    let mut argv = vec!["claude"];
+    argv.extend(c.setting_strings("launch_flags"));
+    argv.extend(["--resume", &c.native_id]);
     for (key, flag) in [
         ("model", "--model"),
         ("effort", "--effort"),
         ("permission_mode", "--permission-mode"),
     ] {
         if let Some(value) = c.setting(key) {
-            argv.extend([flag.to_owned(), value.to_owned()]);
+            argv.extend([flag, value]);
         }
     }
-    if let Some(env) = c.setting_object("launch_env").filter(|env| !env.is_empty()) {
-        let mut entries: Vec<_> = env.iter().collect();
-        entries.sort_by_key(|(name, _)| *name);
-        let mut prefix = vec!["env".to_owned()];
-        prefix.extend(
-            entries
-                .into_iter()
-                .filter_map(|(name, value)| Some(format!("{name}={}", value.as_str()?))),
-        );
-        prefix.extend(argv);
-        argv = prefix;
-    }
-    argv
+    argv.into_iter().map(str::to_owned).collect()
+}
+
+/// The provider variables Claude Code was started with, saved as `NAME=value`.
+pub fn resume_env(c: &Conversation) -> Vec<(String, String)> {
+    c.setting_strings("launch_env")
+        .filter_map(|entry| entry.split_once('='))
+        .map(|(name, value)| (name.to_owned(), value.to_owned()))
+        .collect()
 }
 
 /// The permission mode the conversation was last in. Claude Code writes it on each prompt and in

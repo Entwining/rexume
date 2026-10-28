@@ -85,13 +85,12 @@ fn agent(shell: &str, plan: &Plan, started: Start) -> std::io::Error {
         .prompt
         .as_deref()
         .filter(|_| started == Start::Continue);
-    let argv = plan.argv.iter().map(String::as_str).chain(prompt);
-    let command = match shlex::try_join(argv) {
+    let command = match command_line(plan, prompt) {
         Ok(command) => command,
         Err(e) => return std::io::Error::other(e.to_string()),
     };
     let script = if plan.own_program {
-        format!("exec {command}")
+        command
     } else {
         let quoted_shell =
             shlex::try_quote(shell).map_or_else(|_| FALLBACK_SHELL.into(), |s| s.into_owned());
@@ -103,6 +102,21 @@ fn agent(shell: &str, plan: &Plan, started: Start) -> std::io::Error {
         process.env_remove("REX_SESSION");
     }
     process.exec()
+}
+
+/// The reopen command as the shell reads it. The plan's variables are assignments before it,
+/// which set them for that command alone: `env` would skip the user's alias or shell function of
+/// the same name.
+fn command_line(plan: &Plan, prompt: Option<&str>) -> Result<String, shlex::QuoteError> {
+    let mut line = String::new();
+    for (name, value) in &plan.env {
+        line += &format!("{name}={} ", shlex::try_quote(value)?);
+    }
+    if plan.own_program {
+        line += "exec ";
+    }
+    line += &shlex::try_join(plan.argv.iter().map(String::as_str).chain(prompt))?;
+    Ok(line)
 }
 
 /// Claims the slot for the pane this process runs in.
@@ -238,7 +252,6 @@ fn occupy(
         transcript: plan.transcript.clone(),
         resumable: true,
         settings: Map::new(),
-        replace_settings: &[],
         record_length: None,
     };
     let process = Process {

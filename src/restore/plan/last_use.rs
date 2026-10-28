@@ -213,6 +213,7 @@ fn reopen(
         conversation: Some((occupant.runtime, occupant.conversation.native_id.clone())),
         plan: Plan {
             argv: occupant.runtime.resume_argv(&occupant.conversation),
+            env: occupant.runtime.resume_env(&occupant.conversation),
             prompt,
             transcript: occupant.conversation.transcript.clone(),
             keeps_session_env: occupant.keeps_session_env,

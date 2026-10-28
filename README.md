@@ -1,6 +1,6 @@
 # rexume
 
-rexume brings back your [Rex](https://www.superlogical.com/rex) sessions after the Rex server stops: sessions, tabs, split and floating panes, labels, and each pane's working directory, plus the Claude Code, Codex, or Pi conversation that was running in a pane, reopened with the model, effort, and permission mode it last used, plus Claude Code launch flags such as `--remote-control` and its provider environment (Vertex, Bedrock, or Foundry variables). A turn the server's end cut off continues once; a finished, cancelled, or waiting conversation reopens without a new turn. Panes you closed stay closed.
+rexume brings back your [Rex](https://www.superlogical.com/rex) sessions after the Rex server stops: sessions, tabs, split and floating panes, labels, and each pane's working directory, plus the Claude Code, Codex, or Pi conversation that was running in a pane, reopened with the model, effort, and permission mode it last used, and for Claude Code with the provider and the launch flags, such as `--remote-control`, it was started with. A turn the server's end cut off continues once; a finished, cancelled, or waiting conversation reopens without a new turn. Panes you closed stay closed.
 
 It also lets an orchestrator agent hand work to a worker pane and get the result back: rexume records the task, tells the orchestrator when the worker finishes, even while the orchestrator is idle, and closes a disposable worker's pane once the orchestrator releases it, unless someone has used the pane since or a restore brought it back.
 
@@ -115,9 +115,10 @@ Rex and the agents do not provide what these would need:
 - Claude Code applies [its inbound-message rules](https://code.claude.com/docs/en/cross-session-messaging#control-inbound-messages) to rexume's notices and requests, which carry no permission class. With `crossSessionInbound` unset, a session that prompts for permissions receives them, but one that bypasses permission prompts holds each for your approval and drops it when you deny it or leave the approval unanswered for [`dialogExpiry`](https://code.claude.com/docs/en/settings-reference#dialogexpiry), five minutes by default; `hold` holds them until an `accept` applies, and `refuse` drops them. A held request that is dropped is never delivered: its round stays unfinished until the worker's pane closes, and rexume never sends it again. You can set it to `accept` to receive them without approval, which also lets that session's other cross-session messages through; rexume does not change the setting.
 - Codex holds queued messages while a conversation's last turn was interrupted and no turn has run since, so a notice or request to it waits until someone gives it input. This was observed on Codex 0.164.0, and [openai/codex#56914](https://github.com/openai/codex/issues/56914) asks Codex to show when it holds them.
 
-This one is rexume's own trade-off:
+These are rexume's own trade-offs:
 
 - The daemon reads a session's layout at once after a change but at most once per 300 ms, so a change made within 300 ms of the previous read is lost if the server crashes before that interval ends.
+- A provider variable your shell exports to every program, such as `AWS_PROFILE` from a shell profile, looks to rexume like one set for a single `claude` launch, so a Claude Code conversation reopens with the value it was started with even after you change the profile, until you start that conversation again yourself.
 
 ## Contributing
 
