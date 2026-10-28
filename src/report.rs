@@ -112,11 +112,7 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
     let report = parse(runtime, &input)?;
     let start_position = match (report.record_length, &report.transcript) {
         (Some(length), _) => length,
-        (None, Some(path)) => match std::fs::metadata(path) {
-            Ok(metadata) => metadata.len(),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => 0,
-            Err(e) => return Err(e).with_context(|| format!("failed to read {path}")),
-        },
+        (None, Some(path)) => record_length(path)?,
         (None, None) => 0,
     };
     let mut rex = Rex::Cli(Cli::from_env()?);
@@ -170,6 +166,15 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
     Ok(())
 }
 
+/// The length of a conversation's record now; 0 before the runtime has written it.
+pub fn record_length(path: &str) -> Result<u64> {
+    match std::fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.len()),
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
+        Err(e) => Err(e).with_context(|| format!("failed to read {path}")),
+    }
+}
+
 pub struct Process {
     /// How a notice reaches this process (`occupant.transport`).
     pub transport: Map<String, Value>,
@@ -193,12 +198,14 @@ pub fn record(
     report: &Report,
     process: &Process,
 ) -> Result<()> {
+    // An occupant recorded without a process name, as the gate records the conversation it
+    // starts, holds the pane for a process of any name.
     let inner = match report.role {
         Role::Own => false,
         Role::Inner => true,
         Role::Unmarked => tx.query_row(
             "SELECT EXISTS (SELECT 1 FROM occupant
-               WHERE block_lineage = ?1 AND pid = ?2 AND pid_name IS ?3
+               WHERE block_lineage = ?1 AND pid = ?2 AND (pid_name IS NULL OR pid_name = ?3)
                  AND (instance_id IS NULL OR instance_id = ?4))",
             params![lineage, process.pid, process.name, process.instance],
             |row| row.get(0),

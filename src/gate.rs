@@ -9,9 +9,11 @@ use std::process::Command;
 
 use anyhow::{Context, Result, bail};
 use nix::sys::signal::{Signal, raise};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{OptionalExtension, Transaction, params};
+use serde_json::Map;
 
 use crate::layout;
+use crate::report::{self, Process, Report, Role};
 use crate::restore::{Plan, Start};
 use crate::runtime::{self, Runtime, Turn};
 use crate::store::{Store, now_ms};
@@ -120,7 +122,8 @@ fn claim_here(state_dir: &Path, op: &str, slot: i64) -> Result<(Start, Plan)> {
 /// Claims the slot for `block` and returns what it starts. A slot is claimed once; a
 /// conversation that reported itself from another pane since the restore was planned is already
 /// running there and is not started, and a turn its record shows ended since is not continued.
-/// The claim binds this block and its session to their lineages.
+/// The claim binds this block and its session to their lineages, and makes a conversation it
+/// starts as the terminal's own program the pane's occupant.
 fn claim(
     store: &mut Store,
     op: &str,
@@ -146,6 +149,10 @@ fn claim(
     {
         started = Start::Agent;
     }
+    let start_position = match plan.transcript.as_deref() {
+        Some(path) if plan.own_program => report::record_length(path)?,
+        _ => 0,
+    };
     let tx = store.write()?;
     let (instance, lineage, session_lineage, native_id, planned_at): (
         String,
@@ -181,6 +188,20 @@ fn claim(
     }
     layout::bind_restored(&tx, &instance, block, &lineage)?;
     layout::bind_restored(&tx, &instance, session, &session_lineage)?;
+    if plan.own_program
+        && started.runs_conversation()
+        && let (Some(runtime), Some(native_id)) = (runtime, native_id)
+    {
+        occupy(
+            &tx,
+            &lineage,
+            &instance,
+            runtime.parse()?,
+            native_id,
+            &plan,
+            start_position,
+        )?;
+    }
     // A floating layer whose reply was lost reports here only after the restore gave up waiting.
     tx.execute(
         "UPDATE restore_op SET state = 'completed', note = NULL WHERE id = ?1 AND state = 'partial'
@@ -194,6 +215,41 @@ fn claim(
         bail!("the conversation was opened in another pane after the restore was planned");
     }
     Ok((started, plan))
+}
+
+/// Records a conversation that was the terminal's own program as the pane's occupant: `agent`
+/// replaces this process with the shell and the shell with the conversation, which therefore
+/// runs as this process. Its own report may come much later, since Codex runs a resumed
+/// conversation's session-start hook only when its first turn starts, and until then requests and
+/// notices would wait for input nobody gives. The name of the process is not known before it
+/// runs; its own report adds it and keeps the start measured here.
+fn occupy(
+    tx: &Transaction,
+    lineage: &str,
+    instance: &str,
+    runtime: Runtime,
+    native_id: String,
+    plan: &Plan,
+    start_position: u64,
+) -> Result<()> {
+    let report = Report {
+        native_id,
+        role: Role::Own,
+        transcript: plan.transcript.clone(),
+        resumable: true,
+        settings: Map::new(),
+        record_length: None,
+    };
+    let process = Process {
+        transport: Map::new(),
+        keeps_session_env: plan.keeps_session_env,
+        instance: instance.to_owned(),
+        pid: i64::from(std::process::id()),
+        name: None,
+        own_program: true,
+        start_position,
+    };
+    report::record(tx, lineage, runtime, &report, &process)
 }
 
 /// Whether the conversation's record still ends with the turn the plan would continue.

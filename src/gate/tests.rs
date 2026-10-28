@@ -3,13 +3,15 @@ use super::*;
 const PROMPT: &str = r#"{"type":"user","message":{"role":"user","content":"Write a story"}}"#;
 const ANSWER: &str = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}"#;
 
-/// A store with one restore of session `s` on instance `i2` whose slot 0 continues pane `b`.
-fn planned(dir: &Path, transcript: &Path) -> Result<Store> {
+/// A store with one restore of session `s` on instance `i2` whose slot 0 continues pane `b`, from
+/// a shell unless the conversation was the terminal's own program.
+fn planned(dir: &Path, transcript: &Path, own_program: bool) -> Result<Store> {
     let mut store = Store::open(dir)?;
     let plan = Plan {
         argv: vec!["claude".into(), "--resume".into(), "c".into()],
         prompt: Some("go on".into()),
         transcript: Some(transcript.to_string_lossy().into_owned()),
+        own_program,
         ..Plan::default()
     };
     let tx = store.write()?;
@@ -41,7 +43,7 @@ fn a_claim_continues_only_a_turn_still_open_and_binds_the_pane_and_session() -> 
     let dir = tempfile::tempdir()?;
     let transcript = dir.path().join("t.jsonl");
     std::fs::write(&transcript, format!("{PROMPT}\n"))?;
-    let mut store = planned(dir.path(), &transcript)?;
+    let mut store = planned(dir.path(), &transcript, false)?;
     let (start, _) = claim(&mut store, "op", 0, "block:new", "session:new")?;
     assert_eq!(start, Start::Continue);
     assert_eq!(started(&store)?, (Some("continue".into()), true));
@@ -59,7 +61,7 @@ fn a_claim_takes_over_a_pane_and_session_the_daemon_recorded_first() -> Result<(
     let dir = tempfile::tempdir()?;
     let transcript = dir.path().join("t.jsonl");
     std::fs::write(&transcript, format!("{PROMPT}\n"))?;
-    let mut store = planned(dir.path(), &transcript)?;
+    let mut store = planned(dir.path(), &transcript, false)?;
     let doc = |block: &str| {
         format!(
             r#"{{"label":"s","active":0,"windows":[{{"lineage":"w","label":null,"focused":"{block}",
@@ -112,7 +114,7 @@ fn a_turn_that_ended_after_the_plan_reopens_without_the_prompt() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = dir.path().join("t.jsonl");
     std::fs::write(&transcript, format!("{PROMPT}\n{ANSWER}\n"))?;
-    let mut store = planned(dir.path(), &transcript)?;
+    let mut store = planned(dir.path(), &transcript, false)?;
     let (start, _) = claim(&mut store, "op", 0, "block:new", "session:new")?;
     assert_eq!(start, Start::Agent);
     assert_eq!(started(&store)?, (Some("agent".into()), true));
@@ -124,7 +126,7 @@ fn a_conversation_reported_elsewhere_since_the_plan_starts_a_shell() -> Result<(
     let dir = tempfile::tempdir()?;
     let transcript = dir.path().join("t.jsonl");
     std::fs::write(&transcript, format!("{PROMPT}\n"))?;
-    let mut store = planned(dir.path(), &transcript)?;
+    let mut store = planned(dir.path(), &transcript, false)?;
     // Reported in the same millisecond as the plan: counted as later.
     store.conn().execute(
         "INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env,
@@ -142,7 +144,7 @@ fn a_claim_keeps_a_pane_record_it_has_nothing_to_replace_with() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = dir.path().join("t.jsonl");
     std::fs::write(&transcript, format!("{PROMPT}\n"))?;
-    let mut store = planned(dir.path(), &transcript)?;
+    let mut store = planned(dir.path(), &transcript, false)?;
     // The daemon saved the new session's layout, binding the pane, before any of its events.
     store.conn().execute_batch(
         "INSERT INTO block (lineage, instance_id, cwd) VALUES ('b', 'i1', '/old');
@@ -164,7 +166,7 @@ fn a_claim_refuses_a_pane_bound_to_another_restored_lineage() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = dir.path().join("t.jsonl");
     std::fs::write(&transcript, format!("{PROMPT}\n"))?;
-    let mut store = planned(dir.path(), &transcript)?;
+    let mut store = planned(dir.path(), &transcript, false)?;
     store.conn().execute(
         "INSERT INTO live (instance_id, live_id, lineage) VALUES ('i2', 'block:new', 'other')",
         [],
@@ -174,3 +176,5 @@ fn a_claim_refuses_a_pane_bound_to_another_restored_lineage() -> Result<()> {
     assert_eq!(started(&store)?, (None, false));
     Ok(())
 }
+
+mod occupant;

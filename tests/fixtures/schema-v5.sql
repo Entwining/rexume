@@ -101,21 +101,23 @@ CREATE TABLE IF NOT EXISTS conversation (
   PRIMARY KEY (runtime, native_id)
 ) STRICT, WITHOUT ROWID;
 
--- The conversation whose process last reported itself as a pane's foreground program: the
+-- The conversation whose process last reported itself as a pane's foreground program, or that a
+-- restore's gate started as the terminal's own program and so runs as the gate's process: the
 -- pane's current binding, not its history. A report may come before the daemon has seen the
 -- pane, so there is no reference to `block`; store::forget_block deletes the occupant with the
 -- block. `transport` is a JSON object owned by the runtime's module: how a notice reaches this
--- process (Claude Code's messaging socket; nothing for Codex and Pi). `pid` and `pid_name` are
--- the reporting process and the name Rex reported for it, which tell whether a pane's later
--- status came from the same process; `instance_id` is the server instance they are from, NULL
+-- process (Claude Code's messaging socket, known only from its report; nothing for Codex and
+-- Pi). `pid` and `pid_name` are the process and the name Rex reported for it, which tell whether
+-- a pane's later status came from the same process; a process the gate recorded has no name until
+-- it reports, and matches any name. `instance_id` is the server instance they are from, NULL
 -- for a report before version 3 that no epoch dates. `own_program`: the process was the
 -- terminal's own program rather than one started from its shell, so its exit is the terminal's;
 -- NULL, unknown, before version 3. `keeps_session_env`: the process ran with `REX_SESSION`, so its
 -- reopened conversation gets it too. `start_position`: the length of the conversation's record
--- when the process first reported it, where a task bound to this report starts reading, so that
+-- when the process was first recorded, where a task bound to this report starts reading, so that
 -- turns the record already held, as a resumed conversation's does, never belong to a task; 0
 -- before version 4. A later report of the same conversation from the same process, such as Claude
--- Code's after a compaction, keeps it.
+-- Code's after a compaction or its first after the gate started it, keeps it.
 CREATE TABLE IF NOT EXISTS occupant (
   block_lineage     TEXT    PRIMARY KEY,
   runtime           TEXT    NOT NULL,
