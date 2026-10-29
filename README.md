@@ -1,6 +1,6 @@
 # Rexume
 
-![Rexume: Pick up where you left off. Worker results, returned.](https://github.com/user-attachments/assets/a0957c9a-54ac-44f2-bef2-d6fe537acd85)
+![Rexume: Pick up where you left off. Worker results, returned.](https://github.com/user-attachments/assets/87e5b8a8-ec76-4532-b353-7384ea249325)
 
 Rexume restores your [Rex](https://www.superlogical.com/rex) sessions and the Claude Code, Codex, or Pi conversations in them after the Rex server stops. Only a turn cut off by that stop continues once. Finished, cancelled, or waiting conversations reopen without a new turn; panes you closed stay closed.
 
