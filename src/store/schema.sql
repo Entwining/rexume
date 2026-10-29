@@ -1,4 +1,4 @@
--- rexume state. One SQLite database (state.db) shared by the daemon and the short-lived
+-- Rexume state. One SQLite database (state.db) shared by the daemon and the short-lived
 -- commands; Store::open sets the connection pragmas and applies this file to a new database.
 -- Conventions: every table is STRICT; every closed set of states is a CHECK, and a state the
 -- code adds is added to the CHECK, never loosened; every time is Unix milliseconds; an ID this
@@ -209,9 +209,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS restore_slot_executor ON restore_slot (instanc
 -- turn has been taken by a round; it starts at the bound report's `occupant.start_position` and
 -- moves in the transaction that takes a turn. `released_at`: when the orchestrator released the
 -- worker; a released task starts no more rounds, and only its pane may be closed. `pane_state`:
--- 'open' while the pane exists and rexume has neither closed nor given it up; 'closing' while the
+-- 'open' while the pane exists and Rexume has neither closed nor given it up; 'closing' while the
 -- daemon, the only closer, holds the pane for one close attempt (add and new rounds refuse it);
--- 'closed' once the pane is gone, by rexume or by the user; 'kept' when the pane was found in use
+-- 'closed' once the pane is gone, by Rexume or by the user; 'kept' when the pane was found in use
 -- or restored after the result and is left to whoever uses it, `pane_note` saying why. A close
 -- the daemon put off writes its reason to `pane_note` and leaves 'open'. A pane the orchestrator
 -- asked to keep is never 'closing' or 'kept'.

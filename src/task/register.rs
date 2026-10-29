@@ -154,7 +154,7 @@ pub fn refuse_too_large(len: usize) -> Result<()> {
 pub(super) enum Kind<'a> {
     /// The earliest finished turn no round took, from a closed pane too while turns are unread.
     Next { unread: Option<usize> },
-    /// The turn that takes in this message, which rexume delivers.
+    /// The turn that takes in this message, which Rexume delivers.
     Request(&'a str),
 }
 

@@ -32,7 +32,7 @@ pub fn retired_workers(conn: &Connection) -> Result<Vec<String>> {
     Ok(retired)
 }
 
-/// Released disposable workers whose panes rexume may still close: no round of any task on the
+/// Released disposable workers whose panes Rexume may still close: no round of any task on the
 /// same pane is unfinished.
 pub(super) static DUE: LazyLock<String> = LazyLock::new(|| {
     format!(

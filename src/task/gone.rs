@@ -48,7 +48,7 @@ fn on_worker_closed(tx: &Transaction, lineage: &str) -> Result<()> {
         "worker_closed",
         "the worker's pane closed before it finished",
     )?;
-    // Whatever rexume meant to do with the pane, it is gone now.
+    // Whatever Rexume meant to do with the pane, it is gone now.
     tx.execute(
         "UPDATE task SET pane_state = 'closed', pane_closed_at = ?1, pane_note = NULL
          WHERE worker_lineage = ?2 AND pane_state != 'closed'",

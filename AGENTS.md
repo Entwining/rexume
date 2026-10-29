@@ -1,22 +1,22 @@
-# rexume
+# Rexume
 
-rexume restores Rex sessions after the Rex server stops, including the Claude Code, Codex, or Pi conversation each pane ran, and carries task results from worker panes back to the orchestrator conversation that registered them. One job, `rexume daemon` under launchd or systemd, observes the server; hooks, restored panes, and task commands are short processes writing the same SQLite state. [docs/design.md](docs/design.md) explains the states; read it before changing restore, task, notice, or cleanup code.
+Rexume restores Rex sessions after the Rex server stops, including the Claude Code, Codex, or Pi conversation each pane ran, and carries task results from worker panes back to the orchestrator conversation that registered them. One job, `rexume daemon` under launchd or systemd, observes the server; hooks, restored panes, and task commands are short processes writing the same SQLite state. [docs/design.md](docs/design.md) explains the states; read it before changing restore, task, notice, or cleanup code.
 
 ## Goals
 
 - **A pane the user closed stays closed; everything else comes back** after a Rex crash, a server restart, or a normal stop. The only accepted loss is a change the machine had no time to save.
-- **Continue only what the server's end cut off, exactly once.** A finished, cancelled, or waiting conversation reopens without a new turn, and no conversation runs in two panes. rexume decides this from the runtimes' own records, not from each agent's resume setting.
+- **Continue only what the server's end cut off, exactly once.** A finished, cancelled, or waiting conversation reopens without a new turn, and no conversation runs in two panes. Rexume decides this from the runtimes' own records, not from each agent's resume setting.
 - **An unknown side effect is never repeated.** A create, layer, or notice that may have happened is reconciled from claims or the owner's own record, or left visibly `unknown` or `partial`; it is not retried to make a state look complete.
 - **A worker's result reaches its owner, and only an unused disposable worker's pane is closed.** An acknowledged worker and a pane someone took over are different states and stay distinguishable in the schema.
-- **No work while nothing changes.** rexume's own code sets no timers, does not poll, and starts no process per event; with nothing changing, the daemon does not wake. `rex do` is Rex's program, and its runtime's own wakeups are not rexume's to remove.
+- **No work while nothing changes.** Rexume's own code sets no timers, does not poll, and starts no process per event; with nothing changing, the daemon does not wake. `rex do` is Rex's program, and its runtime's own wakeups are not Rexume's to remove.
 - **Saved soon, restored soon.** A rename reaches disk within a second, so a crash loses only the latest changes, and 20 sessions are restored within about a second of the new server starting. `tests/it/bench.rs` measures both, and memory, which has no target but is reported with any change that may move it.
-- **Install once, then forget it.** `rexume install` owns every hook and launchd or systemd resource rexume needs. Running it again leaves one copy of each entry, nothing left over from an earlier install, and the user's other settings as they were.
+- **Install once, then forget it.** `rexume install` owns every hook and launchd or systemd resource Rexume needs. Running it again leaves one copy of each entry, nothing left over from an earlier install, and the user's other settings as they were.
 
 ## Where things are owned
 
 | File | Owns |
 | --- | --- |
-| `README.md` | What rexume is for, installing the program and its hooks, checking a restore, uninstall, and known limits |
+| `README.md` | What Rexume is for, installing the program and its hooks, checking a restore, uninstall, and known limits |
 | `docs/cli.md` | Commands, JSON outputs, exit codes, and how `install` recognizes its entries: the contract hooks, skills, and configuration managers rely on |
 | `docs/design.md` | Processes, saved state, restore and task states, notices, cleanup, limits, and how to read the bench |
 | `src/store/schema.sql` | The schema; table comments are the only place a column's meaning lives |
@@ -28,7 +28,7 @@ Change the owner, not a copy. A change to a command, output field, hook identity
 
 Each gives its reason; reopen one only with evidence that the reason no longer holds.
 
-- **Unsafe code only in `src/proc.rs`.** rexume denies unsafe code crate-wide, so that what the compiler cannot check stays in one small module, and allows it there, on macOS only, for `libc::proc_pidinfo`, which reads a process's parent and name, and `libc::sysctl` with `KERN_PROCARGS2`, which reads its arguments and the environment it started with; Linux reads them from `/proc`. Forking `ps` per report was rejected, and the `libproc` crate needs bindgen with a hard-coded Command Line Tools SDK path in its build script, which makes CI and bottle builds depend on that path. Every unsafe block carries a `SAFETY` comment (`undocumented_unsafe_blocks` is denied).
+- **Unsafe code only in `src/proc.rs`.** Rexume denies unsafe code crate-wide, so that what the compiler cannot check stays in one small module, and allows it there, on macOS only, for `libc::proc_pidinfo`, which reads a process's parent and name, and `libc::sysctl` with `KERN_PROCARGS2`, which reads its arguments and the environment it started with; Linux reads them from `/proc`. Forking `ps` per report was rejected, and the `libproc` crate needs bindgen with a hard-coded Command Line Tools SDK path in its build script, which makes CI and bottle builds depend on that path. Every unsafe block carries a `SAFETY` comment (`undocumented_unsafe_blocks` is denied).
 - **The product never polls or sleeps to wait.** The daemon's event loop wakes on its socket, the database's write-ahead log, followed files and process exits, `SIGTERM` and `SIGINT`, and deadlines it computes; `task wait` waits on the write-ahead log. Tests may poll.
 - **Settle after a write-ahead-log wake.** A commit wakes the log's watchers before readers can see it, so after each such wake the daemon calls `Store::settle` and `task wait` reads inside a write transaction, which takes the same lock; without it a woken reader can miss the commit and sleep through it. `docs/design.md` explains the race.
 - **The adapter starts its relay with `detach = true`.** Rex stops a script's non-detached commands when the script's top level finishes.
@@ -43,6 +43,7 @@ Each gives its reason; reopen one only with evidence that the reason no longer h
 ## Develop and validate
 
 - The repository is public. Never copy real session content, conversation IDs, paths, host names, or user names into code, tests, docs, commit messages, or issues; fixtures are synthetic.
+- Prose names the project Rexume. Literals keep `rexume`: the command, crate, paths, and job names, and the `` // Written by `rexume install` `` line by which install recognizes the Pi extension it wrote.
 - `make check` runs what CI runs: `cargo deny --locked check` (needs network), `cargo fmt --check`, Clippy with warnings denied, and `cargo test --locked`; on Linux, CI runs it with `TARGET` set to each static musl target the release ships, such as `make check TARGET=x86_64-unknown-linux-musl`. A workflow change also needs `actionlint`. Workflows name each action by its version tag, and `.github/workflows/actions.lock` pins it to a commit; run `gh actions-lock` after adding a workflow or changing a `uses` line, because GitHub enforces the lockfile only for the workflows it lists.
 - Tests of pure functions and in-memory data stay in their module; tests that need a `Store` live in the owning module's `tests.rs` with a temporary database; only tests that need the built binary, the job's service manager, or a Rex server go to `tests/it`.
 - Functions stay within Clippy's `too_many_lines` (100 lines, tests included); a test that is one continuous scenario may carry `#[expect(clippy::too_many_lines, reason = "...")]` after its fixtures and observations are extracted. Rust files stay within 300 lines not counting blank and `//` lines, which `tests/it/structure.rs` enforces. Over the limit, move the test block to `foo/tests.rs` first, then split along an owner seam; never delete comments or squeeze blank lines to get under it.

@@ -68,7 +68,7 @@ pub(super) enum Command {
     Next(TaskId),
     /// Start the next round with a new request to the interactive worker
     ///
-    /// rexume delivers the message to the worker's conversation once it is idle, without typing
+    /// Rexume delivers the message to the worker's conversation once it is idle, without typing
     /// into its pane; the round's result is the turn that takes it in. Acknowledges the previous
     /// round.
     Send {

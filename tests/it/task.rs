@@ -69,7 +69,7 @@ fn message(listener: &UnixListener, what: &str) -> String {
     message["message"]["content"].as_str().unwrap().to_owned()
 }
 
-/// The acknowledged worker takes a new request: rexume delivers it to the worker's socket, and the
+/// The acknowledged worker takes a new request: Rexume delivers it to the worker's socket, and the
 /// round's result is the turn that took it in.
 fn next_request_round(
     server: &Server,
