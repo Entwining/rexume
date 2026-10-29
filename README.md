@@ -1,12 +1,26 @@
 # rexume
 
-rexume brings back your [Rex](https://www.superlogical.com/rex) sessions after the Rex server stops: sessions, tabs, split and floating panes, labels, and each pane's working directory, plus the Claude Code, Codex, or Pi conversation that was running in a pane, reopened with the model, effort, and permission mode it last used, and for Claude Code with the provider and the launch flags, such as `--remote-control`, it was started with. A turn the server's end cut off continues once; a finished, cancelled, or waiting conversation reopens without a new turn. Panes you closed stay closed.
+**Cover A: graphite**
 
-It also lets an orchestrator agent hand work to a worker pane and get the result back: rexume records the task, tells the orchestrator when the worker finishes, even while the orchestrator is idle, and closes a disposable worker's pane once the orchestrator releases it, unless someone has used the pane since or a restore brought it back.
+<div><a href="https://github.com/user-attachments/assets/5e9cce64-482e-4d19-820c-e1f14d0db404"><img alt="rexume restores Rex sessions and returns worker results. Play the restore demonstration." src="https://github.com/user-attachments/assets/b89442d7-b4eb-4bea-8057-e8f91e83e4a4"></a></div>
 
-rexume runs on the machine that runs the Rex server: macOS with the Rex app installed, where it is developed on Apple Silicon, or Linux 5.3 or later on x86_64 or arm64, as a systemd user service. Installing its hooks and job needs the Rex CLI, `rex`, on `PATH`.
+**Cover B: paper**
+
+<div><a href="https://github.com/user-attachments/assets/5e9cce64-482e-4d19-820c-e1f14d0db404"><img alt="rexume restores Rex sessions and returns worker results. Play the restore demonstration." src="https://github.com/user-attachments/assets/fa9f2b97-db01-4cf9-a7ac-c8f483edd03d"></a></div>
+
+**Cover C: threads**
+
+<div><a href="https://github.com/user-attachments/assets/5e9cce64-482e-4d19-820c-e1f14d0db404"><img alt="rexume restores Rex sessions and returns worker results. Play the restore demonstration." src="https://github.com/user-attachments/assets/36c621bd-518b-4f4f-a176-8a23066926af"></a></div>
+
+rexume restores your [Rex](https://www.superlogical.com/rex) layout and Claude Code, Codex, or Pi conversations after the Rex server stops. Only a turn cut off by that stop continues, once. Finished, cancelled, or waiting conversations reopen without a new turn; panes you closed stay closed.
+
+It also returns worker results to the orchestrator conversation that registered them, even while the orchestrator is idle.
+
+Runs on macOS and Linux.
 
 ## Install
+
+rexume runs on the machine that runs the Rex server: macOS with the Rex app installed, where it is developed on Apple Silicon, or Linux 5.3 or later on x86_64 or arm64, as a systemd user service. Installing its hooks and job needs the Rex CLI, `rex`, on `PATH`.
 
 On macOS:
 
@@ -60,14 +74,16 @@ Upgrading the program, with `brew upgrade` or by installing over it, is enough: 
 
 ## What comes back, and what does not
 
-When the daemon sees a server go away and a new one start, it recreates every saved session that the new server does not already have. Each pane starts with one of:
+When the daemon sees a server go away and a new one start, it recreates every saved session that the new server does not already have. It restores tabs, split and floating panes, labels, and each pane's working directory. Each pane starts with one of:
 
 - the conversation, reopened as it was, when it was still the pane's program, or when the pane was created to run it and it had exited;
 - the conversation with one prompt to continue, when it was working and its own record shows a turn nothing ended;
 - the same exit status, when the program the pane was created to run had exited and the pane stayed open; the program does not run again;
 - a login shell in the pane's directory, for anything else, including a conversation that had already left the pane, one another pane reopens, a Claude Code or Codex conversation that had no prompt yet, and a run its runtime keeps no record of to reopen, such as an ephemeral `codex exec` or `pi -p`. Other programs are not restarted.
 
-rexume saves no terminal output, so a restored pane starts without the output it showed before. Each restored pane first runs `rexume gate`, which starts what the pane gets and makes sure no conversation starts in two panes. A reopened conversation keeps its permission mode: a Claude Code conversation reopens in the mode its record last shows, including bypass mode, which Claude Code's own resume does not bring back; Codex restores its approval policy and permissions itself; Pi has no permission modes.
+rexume [saves no terminal output or scrollback](https://github.com/Entwining/rexume/issues/19), so a restored pane starts without the output it showed before. Each restored pane first runs `rexume gate`, which starts what the pane gets and makes sure no conversation starts in two panes.
+
+Conversations reopen with the model and effort they last used. Claude Code also keeps the provider and launch flags, such as `--remote-control`, it was started with. A reopened conversation keeps its permission mode: a Claude Code conversation reopens in the mode its record last shows, including bypass mode, which Claude Code's own resume does not bring back; Codex restores its approval policy and permissions itself; Pi has no permission modes.
 
 ## Hand work to a worker
 
@@ -79,7 +95,7 @@ rexume task add --worker "$WORKER_BLOCK" --title 'review the parser'
 
 When the worker's turn ends, rexume saves its result and sends the orchestrator one notice. When the worker instead stops on a question or a permission dialog, rexume sends one notice for that stop too, and `rexume task wait ID`, which waits for the result in the orchestrator's own turn, returns for it with exit status 3. The orchestrator reads the result with `rexume task show ID` and acknowledges it with `rexume task ack ID`. The result is the first turn the worker finishes after it starts, so a worker that resumes an earlier conversation hands back its new answer, not an earlier one.
 
-To give the same worker a new prompt, the orchestrator runs `rexume task send ID --message-file PATH`: rexume delivers the prompt to the worker's conversation itself, without typing into the pane, and the result is the turn that answers it. A turn the worker ends on its own, such as an interim report while it waits for CI, is collected with `rexume task next ID`. When the orchestrator no longer waits for a round, such as one whose worker never takes its prompt in, `rexume task abandon ID` ends that round without touching the worker; an answer the worker gives later is still collected with `task next`. Once the orchestrator is done with the worker, `rexume task release ID` lets the daemon close a disposable worker's pane, but only if nothing has happened in it since the result.
+To give the same worker a new prompt, the orchestrator runs `rexume task send ID --message-file PATH`: rexume delivers the prompt to the worker's conversation itself, without typing into the pane, and the result is the turn that answers it. A turn the worker ends on its own, such as an interim report while it waits for CI, is collected with `rexume task next ID`. When the orchestrator no longer waits for a round, such as one whose worker never takes its prompt in, `rexume task abandon ID` ends that round without touching the worker; an answer the worker gives later is still collected with `task next`. Once the orchestrator is done with the worker, `rexume task release ID` lets the daemon close a disposable worker's pane, but only if nothing has happened in it since the result and no restore has brought it back.
 
 A non-interactive run that writes its result to a file is registered with `--result-file PATH` instead, and the file is its result once the run exits 0. [docs/cli.md](docs/cli.md#task) gives every task command, its output, and what a result file may hold.
 
