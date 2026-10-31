@@ -3,7 +3,7 @@ use std::sync::{Arc, Mutex};
 
 use super::*;
 use crate::task::tests::{PROMPT, task_world};
-use server::{SHELL, STARTUP, Server, TYPED, connect};
+use server::{MOVED_BACK, SHELL, STARTUP, Server, TYPED, connect};
 
 mod server;
 
@@ -116,6 +116,24 @@ fn a_pane_with_text_at_its_prompt_is_left_to_the_user() -> Result<()> {
     Ok(())
 }
 
+/// A shell still reading its startup files takes the line whatever they printed before the cursor:
+/// it waits in the terminal for the first prompt.
+#[test]
+fn a_shell_reading_its_startup_files_takes_the_line() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (mut store, server, mut rex) = restarted(dir.path(), SHELL, SHELL)?;
+    {
+        let mut server = server.lock().unwrap();
+        server.screen = Some(TYPED);
+        server.startup = true;
+    }
+    let mut restorer = new_restorer();
+    restorer.start(&mut rex, &mut store, "i2")?;
+    restorer.reconcile(&mut rex, &mut store, "i2");
+    assert_eq!(restore_of(&store, "a")?.1, "typed");
+    Ok(())
+}
+
 /// A refused line ran nothing; one whose answer was lost waits for its gate and is then left
 /// unknown, which the gate still claims, and is never typed again.
 #[test]
@@ -201,21 +219,35 @@ fn a_conversation_opened_elsewhere_is_not_reopened() -> Result<()> {
 }
 
 /// The pane of a released worker that nothing used after its result comes back with the rest; it
-/// is closed while it shows only the server's shell, and kept when something else runs there, the
-/// user looks at it, or the server will not describe it, past the wait.
+/// is closed while it shows only the server's shell, and kept when something else runs there, text
+/// is typed in it, the user looks at it, or the server will not describe it, past the wait.
 #[test]
 fn a_retired_workers_pane_is_closed_unless_it_is_in_use() -> Result<()> {
     // A pane the server will not describe is kept at the end of its wait too, and nothing reads it
     // again.
-    for (shown, focused, refuse, kept) in [
-        (SHELL, None, None, None),
-        (STARTUP, None, None, Some("sleep runs in the pane")),
-        (SHELL, Some("b"), None, Some("the worker's pane has focus")),
-        (SHELL, None, Some("modes"), Some("refused")),
+    for (shown, screen, focused, refuse, kept) in [
+        (SHELL, None, None, None, None),
+        (STARTUP, None, None, None, Some("sleep runs in the pane")),
+        (
+            SHELL,
+            Some(MOVED_BACK),
+            None,
+            None,
+            Some("typed after the cursor"),
+        ),
+        (
+            SHELL,
+            None,
+            Some("b"),
+            None,
+            Some("the worker's pane has focus"),
+        ),
+        (SHELL, None, None, Some("input_mode"), Some("refused")),
     ] {
         let dir = tempfile::tempdir()?;
         let (mut store, server, mut rex) = restarted(dir.path(), SHELL, shown)?;
         server.lock().unwrap().focused = focused;
+        server.lock().unwrap().screen = screen;
         store.conn().execute_batch(
             "UPDATE block SET fg_pid = NULL, last_exit = 0 WHERE lineage = 'b';
              UPDATE task SET result_file = '/r', worker_runtime = NULL, worker_native_id = NULL,

@@ -81,7 +81,12 @@ impl Restorer {
             None => Pane::Gone,
         };
         let kept = match (pane, located) {
-            (Pane::Shell, Some((session, live))) => task::close_unfocused(rex, &session, &live)?,
+            (Pane::Shell { typed_after: false }, Some((session, live))) => {
+                task::close_unfocused(rex, &session, &live)?
+            }
+            (Pane::Shell { typed_after: true }, _) => {
+                Some("text is typed after the cursor in the pane".into())
+            }
             (Pane::Busy(reason), _) => Some(reason),
             _ => None,
         };

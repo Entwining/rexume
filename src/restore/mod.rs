@@ -208,7 +208,7 @@ impl Restorer {
             return skip(store, instance, restore, "the pane closed");
         };
         match pane::read(rex, &session, &live)? {
-            Pane::Shell => {}
+            Pane::Shell { .. } => {}
             Pane::Gone => return skip(store, instance, restore, "the pane closed"),
             Pane::Busy(reason) if now >= until => {
                 return skip(store, instance, restore, &reason);
@@ -255,8 +255,11 @@ impl Restorer {
         }
     }
 
-    /// Whether a pane waited for shows the foreground it showed when last read, before `until`:
-    /// reading it again could only show the same. Otherwise records the foreground read now.
+    /// Whether a pane waited for shows the foreground it showed when last read, before `until`.
+    /// The server reports no change of the screen, so a pane is read again when its foreground
+    /// changes and once more at `until`; a shell still reading its startup files takes the line at
+    /// once, so what waits for `until` is a prompt someone typed at. Otherwise records the
+    /// foreground read now.
     fn unchanged(&mut self, store: &Store, block: &str, until: i64, now: i64) -> Result<bool> {
         let foreground: Foreground = store
             .conn()

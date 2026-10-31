@@ -96,7 +96,7 @@ Upgrading the program, with `brew upgrade` or by installing over it, is enough: 
 
 `rexume status` lists the restored panes where Rexume set out to reopen a conversation that has not reopened, and notices not yet confirmed as delivered; a reopened conversation is not listed, and the daemon's log records it. When the daemon's latest observation of the server ended with an error, `epoch_error` gives it: the daemon records nothing until it connects again without one. A pane is listed in one of these states, and its `note` says why:
 
-- `planned`: Rexume waits for the pane to show its shell's prompt with nothing typed at it; a prompt that does not end in a space keeps it waiting.
+- `planned`: Rexume waits for the pane's shell to read its startup files or show its prompt with nothing typed at it; a prompt that does not end in a space keeps it waiting.
 - `typed`, `unknown`: the line was typed, and the conversation has not started yet; after 5 seconds it is `unknown`. Rexume does not type it again, because the line may still be running.
 - `skipped`: the pane closed, the conversation was opened in another pane, or the pane did not show an empty prompt within 30 seconds; start the conversation yourself if you want it there.
 - `failed`: the server refused the line.
@@ -135,7 +135,8 @@ Rex and the agents do not provide what these would need:
 
 These are Rexume's own trade-offs:
 
-- Rexume reads a pane as showing an empty prompt only when the prompt ends in a space and nothing follows the cursor but a right-hand prompt that reaches the end of the row. Text typed after a leading space up to the end of the row, with the cursor moved back before it, looks like such a prompt, and the line clears it or runs it as described above.
+- At a prompt, Rexume reads what stands before the cursor and the rows below it, so a prompt that does not end in a space keeps the pane waiting, and text after the cursor on its row, such as text you typed and then moved back before, is left to the line, which clears it or, in a vi keymap, runs it as described above. In zsh, the earlier lines of a command of several lines, with the cursor after a blank on a later one, run with the line.
+- While the shell still reads its startup files, Rexume types the line at once, and the terminal holds it for the shell's first prompt. A startup file that reads from the terminal, such as one that asks a question, takes the line instead, and the conversation does not reopen.
 - A provider variable your shell exports to every program, such as `AWS_PROFILE` from a shell profile, looks to Rexume like one set for a single `claude` launch, so a Claude Code conversation reopens with the value it was started with even after you change the profile, until you start that conversation again yourself.
 
 ## Uninstall

@@ -11,62 +11,45 @@ const TYPED: (&str, &str) = (
     "p% echo typed\u{1b}[62C[rp]\r\n\r\n\u{1b}[2;14H",
 );
 
+/// A prompt of a ZWJ emoji sequence and a space, with a right-hand prompt, as a test server laid it
+/// out: each code point in its own width, so the cursor stands at column 9.
+const FAMILY: &str = "\u{1f468}\u{200d}\u{1f469}\u{200d}\u{1f467}\u{200d}\u{1f466} ";
+
 #[test]
-fn text_typed_at_the_prompt_shows_before_the_cursor() {
-    let columns = Some(80);
-    assert_eq!(typed_at_prompt(IDLE.0, IDLE.1, columns), Some(false));
-    assert_eq!(typed_at_prompt(TYPED.0, TYPED.1, columns), Some(true));
-    // Wide characters take two cells each.
-    assert_eq!(
-        typed_at_prompt("p% 日本", "\u{1b}[1;8H", columns),
-        Some(true)
-    );
-    assert_eq!(
-        typed_at_prompt("日本 ", "\u{1b}[1;6H", columns),
-        Some(false)
-    );
-    // Before the first prompt: text the terminal echoes, or only the startup files' output.
-    assert_eq!(
-        typed_at_prompt("Last login\nls", "\u{1b}[2;3H", columns),
-        Some(true)
-    );
-    assert_eq!(
-        typed_at_prompt("Last login", "\u{1b}[2;1H", columns),
-        Some(false)
-    );
-    assert_eq!(
-        typed_at_prompt("Last login\n", "\u{1b}[2;1H", columns),
-        Some(false)
-    );
+fn the_cursor_must_follow_a_blank_with_nothing_below() {
+    fn after<'a>((text, vt): (&'a str, &str)) -> Option<Option<&'a str>> {
+        at_prompt(text, vt).map(|p| p.map(|(_, after)| after.trim_start()))
+    }
+    assert_eq!(after(IDLE), Some(Some("[rp]")));
+    assert_eq!(after(TYPED), Some(None));
+    let idle = format!("{FAMILY}{}[rp]", " ".repeat(63));
+    let vt = format!("{FAMILY}\u{1b}[63C[rp]\u{1b}[1;10H");
+    assert!(at_prompt(&idle, &vt).is_some_and(|p| p.is_some()));
+    let typed = format!("{FAMILY}pwd{}[rp]", " ".repeat(60));
+    let vt = format!("{FAMILY}pwd\u{1b}[60C[rp]\u{1b}[1;13H");
+    assert_eq!(at_prompt(&typed, &vt), Some(None));
+    // Wide characters take two cells each, and cells past a row's text are blank.
+    assert_eq!(after(("p% 日本", "\u{1b}[1;8H")), Some(None));
+    assert_eq!(after(("日本 ", "\u{1b}[1;6H")), Some(Some("")));
+    assert_eq!(after(("p%", "\u{1b}[1;4H")), Some(Some("")));
+    // Lines of a buffer below the cursor, as after moving back to its start, and the start of a
+    // later line, which no prompt precedes.
+    assert_eq!(after(("p% echo a\necho b", "\u{1b}[1;4H")), Some(None));
+    assert_eq!(after(("p% echo a\necho b", "\u{1b}[2;1H")), Some(None));
     // A screen without the position report says nothing.
-    assert_eq!(typed_at_prompt(IDLE.0, "p% ", columns), None);
+    assert_eq!(after((IDLE.0, "p% ")), None);
 }
 
-/// Text typed and then moved past, as by Ctrl-A, stands after the cursor; a right-hand prompt
-/// stands there too, apart from the cursor and at the row's end.
 #[test]
-fn text_after_the_cursor_is_typed_unless_it_is_a_right_hand_prompt() {
-    let columns = Some(80);
-    let at_start = "\u{1b}[2;4H";
-    assert_eq!(
-        typed_at_prompt("Last login\np% :; echo ran", at_start, columns),
-        Some(true)
-    );
-    // Typed text that reaches the row's end and wraps onto the next row.
-    let wrapped = format!("p% {}\n{}", "x".repeat(77), "y");
-    assert_eq!(
-        typed_at_prompt(&wrapped, "\u{1b}[1;4H", columns),
-        Some(true)
-    );
-    let spaced = format!("p% {}{}\ny", " ".repeat(4), "x".repeat(73));
-    assert_eq!(typed_at_prompt(&spaced, "\u{1b}[1;4H", columns), Some(true));
-    // Typed blanks that fill the row, before text that wraps onto the next.
-    let blanks = format!("p% {}\n; echo ran", " ".repeat(77));
-    assert_eq!(typed_at_prompt(&blanks, "\u{1b}[1;4H", columns), Some(true));
-    // The right-hand prompt alone, unless the pane's width is unknown or the prompt falls short of
-    // the row's end.
-    assert_eq!(typed_at_prompt(IDLE.0, IDLE.1, None), Some(true));
-    assert_eq!(typed_at_prompt(IDLE.0, IDLE.1, Some(100)), Some(true));
+fn only_a_right_hand_prompt_may_follow_the_cursor() {
+    let row = IDLE.0.lines().nth(1).unwrap_or_default();
+    let (_, after) = row.split_at(3);
+    assert!(!typed_after(row, after, Some(80)));
+    assert!(typed_after(row, after, None));
+    // Text the user moved back before, and text that stops short of the row's end.
+    assert!(typed_after("p% echo kept", "echo kept", Some(80)));
+    assert!(typed_after("p%  echo kept", " echo kept", Some(80)));
+    assert!(!typed_after("p% ", "", None));
 }
 
 #[test]

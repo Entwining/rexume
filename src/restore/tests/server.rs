@@ -18,6 +18,8 @@ pub(super) struct Server {
     pub(super) process: HashMap<String, Value>,
     /// The screen as text and as escape sequences, if not `IDLE`.
     pub(super) screen: Option<(&'static str, &'static str)>,
+    /// Whether the shell still reads its startup files, with the terminal in canonical mode.
+    pub(super) startup: bool,
     /// The error a write gets, if any.
     pub(super) refuse_write: Option<&'static str>,
     pub(super) written: Vec<(String, String)>,
@@ -34,6 +36,8 @@ pub(super) const STARTUP: &str =
     r#"{"foreground":{"pid":3,"argv0":"sleep","name":"sleep"},"ancestors":["zsh","login"]}"#;
 const IDLE: (&str, &str) = ("p% ", "p% \u{1b}[1;4H");
 pub(super) const TYPED: (&str, &str) = ("p% ls", "p% ls\u{1b}[1;6H");
+/// What `TYPED` shows once the cursor is moved back to the start of the text.
+pub(super) const MOVED_BACK: (&str, &str) = ("p% ls", "p% ls\u{1b}[1;4H");
 
 fn answer(server: &Mutex<Server>, method: &str, params: &Value) -> Result<Value, String> {
     let mut server = server.lock().unwrap();
@@ -68,8 +72,8 @@ fn answer(server: &Mutex<Server>, method: &str, params: &Value) -> Result<Value,
         }
         "block.method" => match params["method"].as_str() {
             Some("process") => server.process[&block].clone(),
-            Some("modes") => json!({ "screen": "primary" }),
-            Some("size") => json!({ "columns": 80, "rows": 24 }),
+            Some("input_mode") => json!({ "echo": server.startup, "canonical": server.startup }),
+            Some("size") => json!({ "columns": 80 }),
             Some("format") => {
                 let (text, vt) = server.screen.unwrap_or(IDLE);
                 let vt_wanted = params["args"]["format"] == "vt";
