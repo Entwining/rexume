@@ -69,14 +69,15 @@ The process the job runs. It runs until stopped, logs to stderr (set `RUST_LOG=r
 rexume status
 ```
 
-What to check after a restart, read without changing anything: restores that did not complete and notices not yet confirmed as delivered.
+What to check after a restart, read without changing anything: restores that did not complete, notices not yet confirmed as delivered, and the error that ended the daemon's latest epoch.
 
 ```json
 { "version": 1, "restores": [{ "id": "…", "session": "work", "state": "partial", "note": "…", "created_at": 1792855785738 }],
-  "undelivered_notices": [NOTICE] }
+  "undelivered_notices": [NOTICE],
+  "epoch_error": { "error": "…", "started_at": 1792855785738, "ended_at": 1792855785790 } }
 ```
 
-`session` is the session's label. [docs/design.md](design.md#restore) explains each restore state.
+`session` is the session's label. [docs/design.md](design.md#restore) explains each restore state. `epoch_error` is `null` unless the daemon's latest observation of the server ended on an error rather than with its connection or with the daemon's own stop or replacement; the daemon then connects again, and records nothing until it observes the server without one.
 
 ## report
 
@@ -125,7 +126,7 @@ A message is the text itself or a file's contents, at most 256 KiB, read when th
 - `request` is `null` except for a request round, where it is `{id, state, note}`. `state` is `pending`, `sending`, `sent`, `accepted`, `unknown`, `delivered`, or `superseded`, with a NOTICE's meanings: `delivered` once the worker's own record shows the request, and `superseded` when the round ended before the request was sent, which is then never sent. A request whose round ended after it was sent keeps the state it had then. `note` says why a request still waits or how its send went.
 - `pane` is `{state, closed_at, note}`. `state` is `open` while the pane exists and Rexume has neither closed nor given it up (a `--keep-pane` pane stays `open`), `closing` during a close attempt after the task was released, `closed` once the pane is gone, or `kept` when it was used or restored after the result and is left to whoever uses it. `note` says why a pane was kept or a close put off.
 
-A round's `state` is `running` or `blocked` (the task's conversation has reported from the worker's pane on the current server, for a second without a break, that it is waiting on a dialog or a question; each such episode has one blocked notice) until it finishes as `completed` (its result is saved), `cancelled`, `failed`, `terminated` (a non-interactive run ended by a signal, or cut off when the Rex server stopped), `worker_closed`, or `abandoned` (the owner stopped waiting with `task abandon`).
+A round's `state` is `running` or `blocked` (the task's conversation has reported from the worker's pane on the current server, for a second without a break, that it is waiting on a dialog or a question; each such episode has one blocked notice) until it finishes as `completed` (its result is saved), `cancelled`, `failed`, `terminated` (a non-interactive run ended by a signal, or cut off when the Rex server stopped; or an interactive round cut off in a worker pane that the Rex server restored itself), `worker_closed`, or `abandoned` (the owner stopped waiting with `task abandon`).
 
 `NOTICE` has `id`, `kind` (`finished` when the round finished, `blocked` when it began a blocked episode), `task_id`, `round`, `round_state`, `state`, and `note`. A notice is listed while it may not have reached the owner yet: `sending`, `sent` (handed to Claude Code's socket, or written to Pi's inbox), `accepted` (Codex queued it, or the Pi extension took it), or `unknown` (the send may or may not have happened; Rexume never sends it again). It leaves the list only once the owner's own conversation record shows it (`delivered`). A `pending` notice is listed only when a send failed before anything left: its `note` holds the error, and the daemon tries again on its next pass. One that `task wait` took first, whose round was acknowledged first, or, for a blocked notice, whose episode ended first, is `superseded` and never sent; its `note` says which. Each notice has one claimant, `task wait` or the daemon, and is never sent again once it may have been sent; that is not a receipt, and two waits running at once may both report the same episode.
 

@@ -300,3 +300,26 @@ fn open_upgrades_versions_3_and_4_and_keeps_rounds_notices_and_requests() -> Res
     }
     Ok(())
 }
+
+/// Version 6 adds `epoch.error`. A version 5 database keeps its epochs, the newest of which
+/// `status` reads.
+#[test]
+fn open_upgrades_a_version_5_database_and_keeps_its_epochs() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let conn = Connection::open(dir.path().join("state.db"))?;
+    conn.execute_batch(include_str!("../../../tests/fixtures/schema-v5.sql"))?;
+    conn.execute_batch(
+        "INSERT INTO epoch (id, instance_id, started_at, ended_at, end_reason)
+           VALUES (7, 'i1', 1, 2, 'server_gone');",
+    )?;
+    drop(conn);
+    let store = Store::open(dir.path())?;
+    assert_eq!(definitions(store.conn())?, fresh()?);
+    let kept: (String, Option<String>) = store.conn().query_row(
+        "SELECT end_reason, error FROM epoch WHERE id = 7",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(kept, ("server_gone".into(), None));
+    Ok(())
+}

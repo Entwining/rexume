@@ -132,3 +132,51 @@ fn a_lost_create_reply_ends_as_if_the_reply_had_arrived() -> Result<()> {
     assert_eq!(saved(&store)?, [("s".into(), "i2".into(), planned)]);
     Ok(())
 }
+
+/// A session the server restored itself, under the ID an earlier instance bound to its lineage,
+/// keeps that lineage and gets no restore of its own, and a round an earlier instance left open on
+/// its worker pane ends, since nothing reopens the conversation there.
+#[test]
+fn a_session_the_server_restored_itself_is_bound_not_restored() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt as _;
+
+    let dir = tempfile::tempdir()?;
+    let transcript = crate::task::tests::record(&[crate::task::tests::PROMPT])?;
+    let mut store = crate::task::tests::task_world(dir.path(), transcript.path(), None)?;
+    let view = json!({ "label": "work", "active_window_id": "window:w", "windows": [{
+        "window_id": "window:w", "label": "main", "focused_block_id": "block:b",
+        "layers": [{ "kind": "tiled", "layout": { "block_id": "block:b" },
+                     "blocks": [{ "block_id": "block:b" }] }] }] });
+    let doc = from_view(&view, &mut |live| Ok(live.replace("block:", "")))?;
+    store.conn().execute(
+        "INSERT INTO session (lineage, instance_id, position, doc, updated_at)
+         VALUES ('s', 'i1', 0, ?1, 1)",
+        params![serde_json::to_string(&doc)?],
+    )?;
+    store.conn().execute_batch(
+        "INSERT INTO live (instance_id, live_id, lineage) VALUES ('i1', 'session:new', 's');
+         INSERT INTO epoch (instance_id, started_at) VALUES ('i2', 10);",
+    )?;
+    let bin = dir.path().join("rex");
+    std::fs::write(
+        &bin,
+        "#!/bin/sh\ncat > /dev/null\necho '{\"sessions\": [{\"session_id\": \"session:new\"}]}'\n",
+    )?;
+    std::fs::set_permissions(&bin, std::fs::Permissions::from_mode(0o755))?;
+    let mut rex = Rex::Cli(crate::rex::Cli {
+        bin,
+        endpoint: String::new(),
+    });
+    let spec = Spec {
+        gate: Vec::new(),
+        theme: None,
+    };
+    Restorer::new(spec).start(&mut rex, &mut store, "i2")?;
+    let conn = store.conn();
+    assert_eq!(live_of(conn, "i2", "s")?.as_deref(), Some("session:new"));
+    let ops: i64 = conn.query_row("SELECT COUNT(*) FROM restore_op", [], |row| row.get(0))?;
+    assert_eq!(ops, 0);
+    let round: String = conn.query_row("SELECT state FROM task_round", [], |row| row.get(0))?;
+    assert_eq!(round, "terminated");
+    Ok(())
+}

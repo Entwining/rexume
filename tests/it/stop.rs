@@ -35,5 +35,14 @@ fn a_stopped_daemon_ends_its_rex_do_first() {
             "{}",
             daemon.log()
         );
+        // A stop ends the epoch, and is not an error `status` shows.
+        assert_eq!(
+            query::<bool>(
+                &state,
+                "SELECT ended_at IS NOT NULL AND error IS NULL FROM epoch
+                 WHERE id = (SELECT MAX(id) FROM epoch)"
+            ),
+            Some(true)
+        );
     }
 }

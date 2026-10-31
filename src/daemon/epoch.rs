@@ -9,7 +9,7 @@ use rusqlite::params;
 use serde_json::json;
 
 use super::view::View;
-use super::{ADAPTER, Daemon, FIRST_FILE, PIPE, WAITER_EXIT, WAL};
+use super::{ADAPTER, Daemon, Exit, FIRST_FILE, PIPE, WAITER_EXIT, WAL};
 use crate::restore::{Restorer, Spec};
 use crate::rex::{Pipe, Rex, str_at};
 use crate::store::{self, now_ms};
@@ -43,10 +43,17 @@ impl Daemon<'_> {
                 }
                 _ => "server_gone",
             };
+            // Stopping and replacing the daemon end the epoch through `Err` too, but are not
+            // failures.
+            let error = observed
+                .as_ref()
+                .err()
+                .filter(|e| !e.is::<Exit>())
+                .map(|e| format!("{e:#}"));
             let tx = self.store.write()?;
             tx.execute(
-                "UPDATE epoch SET ended_at = ?1, end_reason = ?2 WHERE id = ?3",
-                params![now_ms(), reason, epoch],
+                "UPDATE epoch SET ended_at = ?1, end_reason = ?2, error = ?3 WHERE id = ?4",
+                params![now_ms(), reason, error, epoch],
             )?;
             tx.commit()?;
             observed.map(|()| reason)

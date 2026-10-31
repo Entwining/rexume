@@ -6,7 +6,7 @@ use std::fmt;
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
-use rusqlite::{OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
 use super::create;
@@ -101,20 +101,7 @@ pub fn plan(
     let Some(saved) = create::saved(conn, session, retired)? else {
         return Ok(None);
     };
-    let ended: Option<String> = conn
-        .query_row(
-            "SELECT end_reason FROM epoch WHERE instance_id = ?1 ORDER BY id DESC LIMIT 1",
-            params![saved.instance],
-            |row| row.get(0),
-        )
-        .optional()?
-        .flatten();
-    let server_gone = ended.as_deref() == Some("server_gone");
-    let candidates = saved
-        .blocks
-        .iter()
-        .map(|block| candidate(conn, instance, block, server_gone))
-        .collect::<Result<Vec<_>>>()?;
+    let candidates = candidates(conn, instance, &saved)?;
     let tx = store.write()?;
     let planned: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM restore_op WHERE instance_id = ?1 AND session_lineage = ?2)",
@@ -168,6 +155,56 @@ pub fn plan(
         log::info!("restore {op}: pane {block}: {}: {reason}", start.as_str());
     }
     Ok(Some(op))
+}
+
+/// Logs a saved session the server restored itself, and each of its panes that a restore of
+/// Rexume's would have started otherwise than with a shell, with the conversation it would have
+/// reopened there: Rex starts a shell in every pane it restores. Returns the session's panes but
+/// `retired`, which a restore would leave out.
+pub fn left_to_server(
+    conn: &Connection,
+    instance: &str,
+    session: &str,
+    retired: &[String],
+) -> Result<Vec<String>> {
+    log::info!("session {session}: the server restored it itself; Rexume leaves it as it is");
+    let Some(saved) = create::saved(conn, session, retired)? else {
+        return Ok(Vec::new());
+    };
+    for (block, candidate) in saved.blocks.iter().zip(candidates(conn, instance, &saved)?) {
+        if candidate.start == Start::Shell {
+            continue;
+        }
+        let conversation = candidate
+            .conversation
+            .map(|(runtime, id)| format!(" ({runtime} conversation {id})"))
+            .unwrap_or_default();
+        log::warn!(
+            "session {session}: pane {block}: the server opened a shell instead of {}{conversation}: {}",
+            candidate.start,
+            candidate.plan.reason
+        );
+    }
+    Ok(saved.blocks)
+}
+
+/// How each of the saved session's panes starts, by what it was last used for on the instance
+/// the layout was saved on.
+fn candidates(conn: &Connection, instance: &str, saved: &create::Saved) -> Result<Vec<Candidate>> {
+    let ended: Option<String> = conn
+        .query_row(
+            "SELECT end_reason FROM epoch WHERE instance_id = ?1 ORDER BY id DESC LIMIT 1",
+            params![saved.instance],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let server_gone = ended.as_deref() == Some("server_gone");
+    saved
+        .blocks
+        .iter()
+        .map(|block| candidate(conn, instance, block, server_gone))
+        .collect()
 }
 
 mod last_use;

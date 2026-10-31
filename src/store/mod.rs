@@ -16,7 +16,7 @@ use rusqlite::{
 
 const SCHEMA: &str = include_str!("schema.sql");
 /// The `user_version` that `schema.sql` sets.
-pub const SCHEMA_VERSION: i64 = 5;
+pub const SCHEMA_VERSION: i64 = 6;
 /// The `application_id` that `schema.sql` sets: 'rexu' in ASCII.
 const APPLICATION_ID: i64 = 0x7265_7875;
 /// A restore that can still create or bind panes: the `restore_op` states before its last.
@@ -217,17 +217,38 @@ pub fn unbind_provisional(
     Ok((removed == 1).then(|| live_id.to_owned()))
 }
 
-/// The lineage of a live resource, giving it its own ID as lineage the first time it is seen.
-/// A restored resource seen before its restore or gate binds it gets that provisional lineage.
+/// The lineage of a live resource, bound the first time it is seen on this instance. A resource
+/// the server brought back under the ID it had on an earlier instance, as Rex's own restore does,
+/// keeps the lineage that ID was last bound to, until the sweep forgets the earlier instances; any
+/// other takes its own ID, which is also the provisional lineage of one a restore created and its
+/// reply or gate has not bound yet. A lineage another resource on this instance holds already, as
+/// a copy that an earlier version restored beside Rex's own may, is not taken twice: the resource
+/// gets a new one.
 pub fn ensure_lineage(tx: &Transaction, instance: &str, live_id: &str) -> Result<String> {
     if let Some(lineage) = lineage_of(tx, instance, live_id)? {
         return Ok(lineage);
     }
-    tx.execute(
-        "INSERT INTO live (instance_id, live_id, lineage) VALUES (?1, ?2, ?2)",
-        params![instance, live_id],
+    let earlier: Option<String> = tx
+        .query_row(
+            "SELECT lineage FROM live WHERE instance_id != ?1 AND live_id = ?2
+             ORDER BY (SELECT MAX(id) FROM epoch WHERE epoch.instance_id = live.instance_id) DESC
+             LIMIT 1",
+            params![instance, live_id],
+            |row| row.get(0),
+        )
+        .optional()?;
+    let wanted = earlier.unwrap_or_else(|| live_id.to_owned());
+    let taken: bool = tx.query_row(
+        "SELECT EXISTS (SELECT 1 FROM live WHERE instance_id = ?1 AND lineage = ?2)",
+        params![instance, wanted],
+        |row| row.get(0),
     )?;
-    Ok(live_id.to_owned())
+    let lineage = if taken { new_id() } else { wanted };
+    tx.execute(
+        "INSERT INTO live (instance_id, live_id, lineage) VALUES (?1, ?2, ?3)",
+        params![instance, live_id, lineage],
+    )?;
+    Ok(lineage)
 }
 
 /// Moves everything recorded about a pane under `from` to `to`, leaving it as it would be had the

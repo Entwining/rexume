@@ -12,13 +12,22 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
     if !(1..SCHEMA_VERSION).contains(&version) {
         bail!("schema {version} has no upgrade");
     }
-    blocked_episodes(tx)?;
+    if version < 5 {
+        blocked_episodes(tx)?;
+    }
+    // Version 6 adds `epoch.error`.
     match version {
         1 => from_v1(tx)?,
         2 => rebuild(tx, &["notice", "request", "task_round", "task"])?,
         // Version 4 adds `occupant.start_position`.
-        3 => return rebuild(tx, &["notice", "request", "task_round", "occupant"]),
-        _ => return rebuild(tx, &["notice", "request", "task_round"]),
+        3 => {
+            return rebuild(
+                tx,
+                &["notice", "request", "task_round", "occupant", "epoch"],
+            );
+        }
+        4 => return rebuild(tx, &["notice", "request", "task_round", "epoch"]),
+        _ => return rebuild(tx, &["epoch"]),
     }
     // Version 3 drops the start that typed the reopen command: such a slot starts a shell.
     tx.execute_batch(
@@ -26,7 +35,7 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
            started = CASE WHEN started IS NOT NULL THEN 'shell' END
          WHERE start = 'typed'",
     )?;
-    rebuild(tx, &["restore_slot", "occupant"])?;
+    rebuild(tx, &["restore_slot", "occupant", "epoch"])?;
     // Version 3 also records the server instance of a task's worker, of a pane's occupant, and of
     // the pane when a round finished. An earlier one's is the instance an epoch was observing at
     // the time, which is the server `task add` or the report reached. Only an epoch whose end is

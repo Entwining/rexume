@@ -71,6 +71,30 @@ fn ensure_lineage_keeps_a_binding_made_by_a_gate() -> Result<()> {
     Ok(())
 }
 
+/// Rex's own restore brings sessions and panes back under their IDs. A pane it restored keeps the
+/// lineage its ID had on the latest earlier instance that bound it, unless another resource of the
+/// instance holds that lineage already, as a copy an earlier version restored beside Rex's holds
+/// the original's.
+#[test]
+fn ensure_lineage_keeps_the_lineage_of_an_id_the_server_brought_back() -> Result<()> {
+    let (_dir, mut store) = store();
+    let tx = store.write()?;
+    tx.execute_batch(
+        "INSERT INTO epoch (instance_id, started_at) VALUES ('i0', 0), ('i1', 1), ('i2', 2);
+         INSERT INTO live (instance_id, live_id, lineage) VALUES ('i0', 'block:kept', 'block:stale'),
+           ('i1', 'block:kept', 'block:first'), ('i1', 'block:twin', 'block:twin'),
+           ('i2', 'block:copy', 'block:twin');",
+    )?;
+    assert_eq!(ensure_lineage(&tx, "i2", "block:kept")?, "block:first");
+    let twin = ensure_lineage(&tx, "i2", "block:twin")?;
+    assert!(
+        !["block:twin", "block:first"].contains(&twin.as_str()),
+        "{twin}"
+    );
+    assert_eq!(ensure_lineage(&tx, "i2", "block:twin")?, twin);
+    Ok(())
+}
+
 #[test]
 fn sweep_keeps_what_a_layout_or_an_open_task_still_names() -> Result<()> {
     let (_dir, mut store) = store();

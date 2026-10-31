@@ -4,7 +4,7 @@
 use std::sync::LazyLock;
 
 use anyhow::Result;
-use rusqlite::{Transaction, params};
+use rusqlite::{Params, Transaction, params};
 
 use super::OPEN;
 use super::outcome::finish;
@@ -34,17 +34,45 @@ pub(super) fn end_cut_off(tx: &Transaction, instance: &str) -> Result<()> {
     finish_each(
         tx,
         &CUT_OFF_ROUNDS,
-        instance,
+        params![instance],
         "terminated",
         "the Rex server stopped while the run was still running",
     )
+}
+
+/// The rounds an earlier server instance left open on a worker pane that `instance` restored
+/// itself. Rex starts a shell in each pane it restores and Rexume does not reopen the conversation
+/// there, so nothing takes these rounds up again. A task registered on `instance`, or a round
+/// started after the daemon began to observe it, is the new instance's: a worker can be started
+/// and registered there before the daemon connects.
+static LEFT_TO_SERVER_ROUNDS: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT t.id, r.round FROM task t JOIN task_round r ON r.task_id = t.id
+         WHERE t.worker_lineage = ?1 AND {OPEN} AND t.worker_instance_id IS NOT ?2
+           AND r.created_at < (SELECT MIN(started_at) FROM epoch WHERE instance_id = ?2)"
+    )
+});
+
+/// Ends the rounds `instance` cannot finish in the worker panes `blocks` that it restored itself.
+pub fn end_left_to_server(tx: &Transaction, instance: &str, blocks: &[String]) -> Result<()> {
+    for block in blocks {
+        finish_each(
+            tx,
+            &LEFT_TO_SERVER_ROUNDS,
+            params![block, instance],
+            "terminated",
+            "the Rex server restored the worker's pane itself, with a shell, so its conversation \
+             did not continue",
+        )?;
+    }
+    Ok(())
 }
 
 fn on_worker_closed(tx: &Transaction, lineage: &str) -> Result<()> {
     finish_each(
         tx,
         &WORKER_ROUNDS,
-        lineage,
+        params![lineage],
         "worker_closed",
         "the worker's pane closed before it finished",
     )?;
@@ -57,10 +85,16 @@ fn on_worker_closed(tx: &Transaction, lineage: &str) -> Result<()> {
     Ok(())
 }
 
-fn finish_each(tx: &Transaction, rounds: &str, param: &str, state: &str, note: &str) -> Result<()> {
+fn finish_each(
+    tx: &Transaction,
+    rounds: &str,
+    params: impl Params,
+    state: &str,
+    note: &str,
+) -> Result<()> {
     let open: Vec<(String, i64)> = tx
         .prepare(rounds)?
-        .query_map(params![param], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map(params, |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     for (id, round) in open {
         finish(tx, &id, round, state, None, Some(note))?;
@@ -76,3 +110,6 @@ pub fn block_gone(tx: &Transaction, lineage: &str) -> Result<()> {
     on_worker_closed(tx, lineage)?;
     store::forget_block(tx, lineage)
 }
+
+#[cfg(test)]
+mod tests;

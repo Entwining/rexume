@@ -3,6 +3,7 @@
 use std::path::Path;
 
 use anyhow::Result;
+use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 
 use crate::store::Store;
@@ -26,5 +27,27 @@ pub fn run(state_dir: &Path) -> Result<Value> {
         })?
         .collect::<rusqlite::Result<_>>()?;
     let notices = task::undelivered(&conn, None)?;
-    Ok(json!({ "version": 1, "restores": restores, "undelivered_notices": notices }))
+    let epoch_error: Option<Value> = conn
+        .query_row(
+            "SELECT error, started_at, ended_at FROM epoch
+             WHERE id = (SELECT MAX(id) FROM epoch) AND error IS NOT NULL",
+            [],
+            |row| {
+                Ok(json!({
+                    "error": row.get::<_, String>(0)?,
+                    "started_at": row.get::<_, i64>(1)?,
+                    "ended_at": row.get::<_, i64>(2)?,
+                }))
+            },
+        )
+        .optional()?;
+    Ok(json!({
+        "version": 1,
+        "restores": restores,
+        "undelivered_notices": notices,
+        "epoch_error": epoch_error,
+    }))
 }
+
+#[cfg(test)]
+mod tests;

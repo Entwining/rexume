@@ -14,11 +14,12 @@ use anyhow::Result;
 use rusqlite::params;
 use serde_json::{Value, json};
 
-use crate::rex::{CallError, Rex};
-use crate::store::{Store, UNFINISHED_RESTORE, live_of};
+use crate::rex::{CallError, Rex, items, str_at};
+use crate::store::{Store, UNFINISHED_RESTORE, ensure_lineage, live_of};
 use crate::task;
 use create::Op;
 use layer::{LayerOutcome, Placement, layer_state};
+use plan::left_to_server;
 pub use plan::{Plan, Start, plan};
 
 /// How long a create or floating layer whose reply was lost waits for a claim from one of its
@@ -69,7 +70,8 @@ impl Restorer {
     }
 
     /// Continues this instance's unfinished restores, then restores every session saved on an
-    /// earlier instance that has none yet.
+    /// earlier instance that has none yet and that the server does not have: one the server
+    /// brought back itself keeps its lineage and is left as the server restored it.
     pub fn start(&mut self, rex: &mut Rex, store: &mut Store, instance: &str) -> Result<()> {
         let unfinished: Vec<(String, String)> = store
             .conn()
@@ -82,6 +84,15 @@ impl Restorer {
         for (op, state) in unfinished {
             self.advance(rex, store, instance, &op, &state);
         }
+        let listed = rex.call("session.list", &json!({}))?;
+        let tx = store.write()?;
+        for live in items(&listed, "/sessions")
+            .iter()
+            .filter_map(|s| str_at(s, "/session_id"))
+        {
+            ensure_lineage(&tx, instance, live)?;
+        }
+        tx.commit()?;
         let saved: Vec<String> = store
             .conn()
             .prepare(
@@ -93,6 +104,18 @@ impl Restorer {
             .collect::<rusqlite::Result<_>>()?;
         let retired = task::retired_workers(store.conn())?;
         for session in saved {
+            if live_of(store.conn(), instance, &session)?.is_some() {
+                let left =
+                    left_to_server(store.conn(), instance, &session, &retired).and_then(|blocks| {
+                        let tx = store.write()?;
+                        task::end_left_to_server(&tx, instance, &blocks)?;
+                        Ok(tx.commit()?)
+                    });
+                if let Err(e) = left {
+                    log::error!("session {session}: {e:#}");
+                }
+                continue;
+            }
             match plan(store, instance, &session, &retired) {
                 Ok(Some(op)) => self.advance(rex, store, instance, &op, "planned"),
                 Ok(None) => {}

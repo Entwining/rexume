@@ -2,7 +2,8 @@
 -- commands; Store::open sets the connection pragmas and applies this file to a new database.
 -- Conventions: every table is STRICT; every closed set of states is a CHECK, and a state the
 -- code adds is added to the CHECK, never loosened; every time is Unix milliseconds; an ID this
--- tool mints is UUIDv7 text; a lineage is the Rex ID a resource had when first seen. A JSON
+-- tool mints is UUIDv7 text; a lineage is the Rex ID a resource had when first seen, or a
+-- minted ID when another resource holds that one already (store::ensure_lineage). A JSON
 -- column is read and written whole by one module, whose serde types are its shape; its validity
 -- CHECK is a column constraint so that the column can still be dropped. Table comments are the
 -- only place a column's meaning lives.
@@ -11,6 +12,9 @@
 -- 'server_gone': the connection ended and the server then no longer answered as the same
 -- instance, so the last observed states are what the server held when it stopped.
 -- 'disconnected': only the connection ended, or a daemon died while observing.
+-- `error`: why the daemon stopped observing before the connection ended, which `status` shows
+-- for the newest epoch; NULL for an epoch that is open, ended with its connection, or ended because
+-- the daemon was stopped or replaced.
 -- AUTOINCREMENT: readers take the newest epoch as MAX(id), so an id is never reused.
 CREATE TABLE IF NOT EXISTS epoch (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -18,17 +22,19 @@ CREATE TABLE IF NOT EXISTS epoch (
   started_at  INTEGER NOT NULL,
   ended_at    INTEGER,
   end_reason  TEXT    CHECK (end_reason IN ('disconnected', 'server_gone')),
-  CHECK ((ended_at IS NULL) = (end_reason IS NULL))
+  error       TEXT,
+  CHECK ((ended_at IS NULL) = (end_reason IS NULL)),
+  CHECK (error IS NULL OR ended_at IS NOT NULL)
 ) STRICT;
 CREATE INDEX IF NOT EXISTS epoch_instance ON epoch (instance_id, id);
 
 -- The layout to restore: one document per session, keyed by the session's lineage, read and
 -- written whole. Only the layout module and restore/create.rs parse `doc`, whose shape is their
 -- serde types; store::sweep finds the pane lineages in it by the key `lineage`. `instance_id` is
--- where the layout was last saved: a session saved on an earlier instance and not yet restored
--- on the current one is what a restore plans from. `position` is the session's place in the
--- server's list, the order restores are planned in; `updated_at` is when the document was last
--- written.
+-- where the layout was last saved: a session saved on an earlier instance, not yet restored on
+-- the current one, and not bound there because the server restored it itself is what a restore
+-- plans from. `position` is the session's place in the server's list, the order restores are
+-- planned in; `updated_at` is when the document was last written.
 CREATE TABLE IF NOT EXISTS session (
   lineage     TEXT    PRIMARY KEY,
   instance_id TEXT    NOT NULL,
@@ -71,7 +77,9 @@ CREATE TABLE IF NOT EXISTS block (
 -- adopting a session whose create reply was lost, or by its gate, which binds its own block and
 -- session when it claims its slot. When a reply is lost, the daemon can see the resource first
 -- and bind it to its own ID; binding it to its old lineage replaces that binding and moves what
--- was recorded under it (layout::bind_restored).
+-- was recorded under it (layout::bind_restored). A resource the server brought back itself
+-- under an ID an earlier instance's row binds keeps that row's lineage, so the earlier
+-- instance's rows stay until the current instance's sessions and blocks are first read.
 -- One lineage per live ID and one live ID per lineage on an instance; a binding that would
 -- break that is an error, not a silent second row.
 CREATE TABLE IF NOT EXISTS live (
@@ -366,4 +374,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS notice_blocked_unsent ON notice (task_id, roun
 
 -- 'rexu' in ASCII, which Store::open checks before it uses a database.
 PRAGMA application_id = 0x72657875;
-PRAGMA user_version = 5;
+PRAGMA user_version = 6;

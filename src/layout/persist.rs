@@ -34,10 +34,15 @@ pub fn forget_session(tx: &Transaction, instance: &str, live: &str) -> Result<()
     Ok(())
 }
 
-/// Drops the saved sessions of this instance that the server no longer has.
+/// Drops the saved sessions of this instance that the server no longer has. A session the server
+/// restored itself is this instance's once it is bound here, though its layout may still be the one
+/// saved on an earlier instance, as when it closed before the daemon read it again.
 pub fn forget_sessions_except(tx: &Transaction, instance: &str, kept: &[String]) -> Result<()> {
     let saved: Vec<String> = tx
-        .prepare("SELECT lineage FROM session WHERE instance_id = ?1")?
+        .prepare(
+            "SELECT lineage FROM session
+             WHERE instance_id = ?1 OR lineage IN (SELECT lineage FROM live WHERE instance_id = ?1)",
+        )?
         .query_map(params![instance], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     for lineage in saved.iter().filter(|l| !kept.contains(l)) {

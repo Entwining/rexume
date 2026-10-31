@@ -31,7 +31,7 @@ pub use blocked::end_blocked_episodes;
 pub use cleanup::retired_workers;
 pub use evidence::is_run;
 pub use follow::{Follow, Interest};
-pub use gone::block_gone;
+pub use gone::{block_gone, end_left_to_server};
 pub use notice::{orphaned_sends, undelivered};
 pub use register::{MESSAGE_LIMIT, NewTask, abandon, add, next, refuse_too_large, release, send};
 pub use wait::{Returned, wait};
