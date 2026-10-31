@@ -1,268 +1,311 @@
-use std::collections::BTreeMap;
-use std::path::Path;
-use std::time::{Duration, Instant};
+//! Rexume reopens conversations in the panes the server restored itself.
 
+use std::path::Path;
+use std::time::Duration;
+
+use rusqlite::params;
 use serde_json::{Value, json};
 
-use crate::common::{Daemon, Server, alive, query, shell_block, wait_until};
+use crate::common::{
+    Daemon, REXUME, SHELL, Server, claude, db, query, shell_block, shell_pids, wait_until,
+};
 
 const WAIT: Duration = Duration::from_secs(20);
+/// Rex saves a change to its sessions about a second later; a server killed sooner restores them
+/// as they were before it.
+const REX_SAVES: Duration = Duration::from_secs(3);
+const PROMPT: &str = r#"{"type":"user","message":{"role":"user","content":"Write a story"}}"#;
 
-/// Saved layouts by session lineage, and the working directory of each pane.
-fn saved(state: &Path) -> (BTreeMap<String, Value>, BTreeMap<String, Option<String>>) {
-    let conn = crate::common::db(state);
-    let docs = conn
-        .prepare("SELECT lineage, doc FROM session")
+/// A session `agents` of two panes, `writer` and `viewer`, each recorded with its shell as the
+/// foreground; returns the session and the panes.
+fn agents(server: &Server, state: &Path, cwd: &Path) -> (String, Vec<String>, Vec<i64>) {
+    let created = server.call(
+        "session.create",
+        &json!({ "label": "agents", "initial_windows": [{ "layout": { "split": { "direction": "horizontal",
+            "ratio": 0.5, "before": shell_block("writer", cwd), "after": shell_block("viewer", cwd) } } }] }),
+    );
+    let session = created["session_id"].as_str().unwrap().to_owned();
+    let blocks: Vec<String> = created["initial_windows"][0]["block_ids"]
+        .as_array()
         .unwrap()
-        .query_map([], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-        })
-        .unwrap()
-        .map(|row| {
-            let (lineage, doc) = row.unwrap();
-            (lineage, serde_json::from_str(&doc).unwrap())
-        })
+        .iter()
+        .map(|b| b.as_str().unwrap().to_owned())
         .collect();
-    let cwds = conn
-        .prepare("SELECT lineage, cwd FROM block")
+    let fg = shell_pids(server, state, &session, &[&blocks[0], &blocks[1]]);
+    (session, blocks, fg)
+}
+
+/// What the hooks would have reported: the writer pane runs the conversation mid-turn, started
+/// with a launch flag and a provider; the viewer pane shows the same conversation, as after
+/// resuming it in a second pane.
+fn report(state: &Path, transcript: &Path, blocks: &[String], fg: &[i64]) {
+    let conn = db(state);
+    conn.execute(
+        "INSERT INTO conversation (runtime, native_id, transcript, resumable, settings, reported_at)
+         VALUES ('claude', 'story', ?1, 1, ?2, 0)",
+        params![
+            transcript.to_string_lossy(),
+            json!({"launch_flags": ["--rc"], "launch_env": ["CLAUDE_CODE_USE_VERTEX=1"]}).to_string()
+        ],
+    )
+    .unwrap();
+    for (block, pid) in blocks.iter().zip(fg) {
+        conn.execute(
+            "INSERT INTO occupant (block_lineage, runtime, native_id, pid, pid_name, keeps_session_env, reported_at)
+             VALUES (?1, 'claude', 'story', ?2, 'claude', 1, 0)",
+            params![block, pid],
+        )
+        .unwrap();
+    }
+    conn.execute(
+        "UPDATE block SET status = 'working', status_pid = fg_pid, status_name = 'claude' WHERE lineage = ?1",
+        params![blocks[0]],
+    )
+    .unwrap();
+}
+
+/// The restores the daemon planned on the server's current instance, by pane, with what each
+/// started.
+fn restores(server: &Server, state: &Path) -> Vec<(String, String, Option<String>)> {
+    db(state)
+        .prepare("SELECT block_lineage, state, started FROM restore WHERE instance_id = ?1")
         .unwrap()
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+        .query_map([server.instance()], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+        })
         .unwrap()
         .map(Result::unwrap)
-        .collect();
-    (docs, cwds)
+        .collect()
 }
 
-fn blocks_of(doc: &Value) -> usize {
-    doc.to_string().matches("\"lineage\":\"block:").count()
+fn screen(server: &Server, session: &str, block: &str) -> String {
+    server.call(
+        "block.method",
+        &json!({ "session_id": session, "block_id": block, "method": "format" }),
+    )["content"]
+        .as_str()
+        .unwrap_or_default()
+        .to_owned()
 }
 
+fn restart(server: &mut Server, state: &Path, bin: &Path, ended: i64, crash: bool) {
+    std::thread::sleep(REX_SAVES);
+    if crash {
+        server.kill();
+    } else {
+        server.stop();
+    }
+    wait_until("the epoch to end", WAIT, || {
+        query::<i64>(
+            state,
+            "SELECT COUNT(*) FROM epoch WHERE end_reason = 'server_gone'",
+        )
+        .filter(|n| *n == ended)
+    });
+    let dir = server.dir.clone();
+    *server = Server::start(&dir, Some(bin));
+}
+
+/// A turn a crash cut off continues once, in the pane it ran in, which the server restored under
+/// the same ID; the other pane that showed the conversation keeps its shell, and a daemon that
+/// starts again types nothing more. After a stop, the conversation reopens there again without
+/// the prompt.
 #[test]
 #[ignore = "needs a Rex server"]
-#[expect(
-    clippy::too_many_lines,
-    reason = "a scenario reads as one fixture, its calls, and its assertions"
-)]
-fn a_crashed_or_stopped_server_comes_back_as_it_was() {
+fn a_turn_the_crash_cut_off_continues_once_in_its_own_pane() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
-    let (a, b) = (dir.path().join("a"), dir.path().join("b"));
-    std::fs::create_dir_all(&a).unwrap();
-    std::fs::create_dir_all(&b).unwrap();
-    let mut server = Server::start(dir.path(), None);
+    let transcript = dir.path().join("story.jsonl");
+    // A stand-in for Claude Code that records how it was started, and the provider it was given,
+    // reports itself as its session-start hook would, and keeps running.
+    let hook = json!({ "session_id": "story", "transcript_path": transcript });
+    let (bin, runs) = claude::stand_in(
+        dir.path(),
+        &(r#"open(my $f, '>', "$run.provider") or die $!; print $f $ENV{CLAUDE_CODE_USE_VERTEX}; close $f; "#.to_owned()
+            + &format!(
+                "open(my $r, '|-', '{REXUME}', 'report', 'claude', '--state-dir', '{}') or die $!; print $r '{hook}'; close $r; sleep 600;",
+                state.display()
+            )),
+    );
+    std::fs::write(&transcript, format!("{PROMPT}\n")).unwrap();
+    // The user's shell wraps `claude` in a function, which the reopened conversation goes through.
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join(format!(".{SHELL}rc")),
+        "claude() { command claude --wrapped \"$@\"; }\n",
+    )
+    .unwrap();
+
+    let mut server = Server::start(dir.path(), Some(&bin));
     let mut daemon = Daemon::start(&server, &state);
     wait_until("the daemon's first epoch", WAIT, || {
         query::<i64>(&state, "SELECT id FROM epoch")
     });
+    let (session, blocks, fg) = agents(&server, &state, dir.path());
+    report(&state, &transcript, &blocks, &fg);
 
-    let work = server.call(
-        "session.create",
-        &json!({ "label": "work", "initial_windows": [
-            { "layout": { "split": { "direction": "horizontal", "ratio": 0.3,
-                "before": shell_block("left", &a), "after": shell_block("right", &b) } } },
-            { "window_label": "logs", "layout": { "split": { "direction": "vertical", "ratio": 0.5,
-                "before": shell_block("logs", &a), "after": shell_block("doomed", &b) } } },
-        ] }),
-    );
-    let session = work["session_id"].as_str().unwrap();
-    let first_window = work["initial_windows"][0]["window_id"].as_str().unwrap();
-    server.call(
-        "session.new_layer",
-        &json!({ "session_id": session, "window_id": first_window, "bounds": [0.2, 0.2, 0.5, 0.5],
-                 "layout": shell_block("float", &b) }),
-    );
-    server.call(
-        "session.create",
-        &json!({ "label": "other", "initial_windows": [{ "layout": shell_block("solo", &b) }] }),
-    );
-    let doomed = work["initial_windows"][1]["block_ids"][1].as_str().unwrap();
-    server.call(
-        "block.close",
-        &json!({ "session_id": session, "block_id": doomed }),
-    );
-
-    // Four panes of `work` and one of `other` saved, each with its directory.
-    let (docs, cwds) = wait_until("the layouts to be saved", WAIT, || {
-        let (docs, cwds) = saved(&state);
-        let panes: usize = docs.values().map(blocks_of).sum();
-        (docs.len() == 2 && panes == 5 && cwds.len() == 5 && cwds.values().all(Option::is_some))
-            .then_some((docs, cwds))
+    restart(&mut server, &state, &bin, 1, true);
+    let claimed = wait_until("the gate to claim the restore", WAIT, || {
+        Some(restores(&server, &state))
+            .filter(|r| !r.is_empty() && r.iter().all(|(_, s, _)| s == "claimed"))
     });
-
-    let adapter = daemon.adapter().expect("the daemon started rex do");
-    server.kill();
-    wait_until(
-        "rex do to exit with its server",
-        Duration::from_secs(5),
-        || (!alive(adapter)).then_some(()),
-    );
-    let reason: String = wait_until("the epoch to end", WAIT, || {
-        query(
-            &state,
-            "SELECT end_reason FROM epoch WHERE end_reason IS NOT NULL ORDER BY id DESC LIMIT 1",
-        )
-    });
-    assert_eq!(reason, "server_gone");
-
-    let started = Instant::now();
-    server = Server::start(dir.path(), None);
-    wait_until("both restores to complete", WAIT, || {
-        (query::<i64>(
-            &state,
-            "SELECT COUNT(*) FROM restore_op WHERE state = 'completed'",
-        ) == Some(2))
-        .then_some(())
-    });
-    eprintln!("restore took {:?} from server start", started.elapsed());
-    let instance = server.instance();
-    let (restored, restored_cwds) = wait_until("the restored layouts to be saved", WAIT, || {
-        let (docs, cwds) = saved(&state);
-        let current: Option<i64> = query(
-            &state,
-            &format!("SELECT COUNT(*) FROM session WHERE instance_id = '{instance}'"),
-        );
-        let shown: Option<i64> = query(
-            &state,
-            &format!(
-                "SELECT COUNT(*) FROM block WHERE instance_id = '{instance}' AND cwd IS NOT NULL"
-            ),
-        );
-        (current == Some(2) && shown == Some(5)).then_some((docs, cwds))
-    });
-    assert_eq!(restored, docs, "the layouts differ after the restore");
     assert_eq!(
-        restored_cwds, cwds,
-        "the working directories differ after the restore"
+        claimed,
+        [(blocks[0].clone(), "claimed".into(), Some("continue".into()))]
     );
-    assert_eq!(server.sessions().len(), 2);
+    let started = claude::runs(&runs, 1);
+    let argv: Vec<&str> = started[0].1.lines().collect();
+    assert_eq!(argv[..4], ["--wrapped", "--rc", "--resume", "story"]);
+    assert!(
+        argv.last().unwrap().starts_with("[rexume "),
+        "no continuation prompt: {argv:?}"
+    );
+    let provider = runs.join(format!("{}.provider", started[0].0));
+    assert_eq!(
+        wait_until("the provider to be recorded", WAIT, || {
+            std::fs::read_to_string(&provider)
+                .ok()
+                .filter(|v| !v.is_empty())
+        }),
+        "1"
+    );
 
-    // A daemon restarted on the same instance restores nothing again.
-    let adapter = daemon.adapter().expect("the daemon started rex do");
+    // A daemon that starts again on the same instance types nothing more, here or in the viewer.
     daemon.stop();
-    wait_until(
-        "rex do to end with its daemon's group",
-        Duration::from_secs(5),
-        || (!alive(adapter)).then_some(()),
-    );
     daemon = Daemon::start(&server, &state);
     wait_until("the second daemon's epoch", WAIT, || {
-        query::<i64>(&state, "SELECT COUNT(*) FROM epoch WHERE ended_at IS NULL")
-            .filter(|n| *n == 1)
-            .and_then(|_| query::<i64>(&state, "SELECT COUNT(*) FROM epoch").filter(|n| *n == 3))
+        query::<i64>(&state, "SELECT COUNT(*) FROM epoch").filter(|n| *n == 3)
     });
-    std::thread::sleep(Duration::from_secs(1));
-    assert_eq!(server.sessions().len(), 2);
+    std::thread::sleep(Duration::from_secs(2));
     assert_eq!(
-        query::<i64>(&state, "SELECT COUNT(*) FROM restore_op"),
-        Some(2)
+        claude::runs(&runs, 1).len(),
+        1,
+        "the conversation reopened twice"
     );
+    assert!(!screen(&server, &session, &blocks[1]).contains("gate"));
 
-    // A normal stop brings the same layout back too.
-    server.stop();
-    wait_until("the epoch to end", WAIT, || {
-        query::<i64>(
-            &state,
-            "SELECT COUNT(*) FROM epoch WHERE end_reason = 'server_gone'",
-        )
-        .filter(|n| *n == 2)
+    restart(&mut server, &state, &bin, 2, false);
+    wait_until("the gate to claim the restore", WAIT, || {
+        Some(restores(&server, &state))
+            .filter(|r| r.len() == 1 && r[0].1 == "claimed")
+            .map(|_| ())
     });
-    server = Server::start(dir.path(), None);
-    wait_until("the second restore", WAIT, || {
-        (query::<i64>(
-            &state,
-            "SELECT COUNT(*) FROM restore_op WHERE state = 'completed'",
-        ) == Some(4))
-        .then_some(())
-    });
-    assert_eq!(server.sessions().len(), 2);
+    assert_eq!(restores(&server, &state)[0].2.as_deref(), Some("agent"));
+    let reopened = claude::runs(&runs, 2);
+    assert!(
+        !reopened[1].1.contains("[rexume "),
+        "a stopped server's turn continued: {}",
+        reopened[1].1
+    );
     drop(daemon);
 }
 
-fn layers(server: &Server) -> usize {
-    let session = &server.sessions()[0];
-    server.call("session.view", &json!({ "session_id": session }))["windows"][0]["layers"]
-        .as_array()
-        .unwrap()
-        .len()
-}
-
+/// Text typed in a restored pane before the daemon reads it is the user's: no line is typed over
+/// it while the pane waits.
 #[test]
 #[ignore = "needs a Rex server"]
-fn a_floating_layer_that_may_exist_is_not_requested_again_and_a_refused_one_leaves_the_restore_partial()
- {
+fn text_typed_in_a_restored_pane_is_left_alone() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
-    let mut server = Server::start(dir.path(), None);
+    let (bin, runs) = claude::stand_in(dir.path(), "sleep 600;");
+    let transcript = dir.path().join("story.jsonl");
+    std::fs::write(&transcript, format!("{PROMPT}\n")).unwrap();
+    let mut server = Server::start(dir.path(), Some(&bin));
     let mut daemon = Daemon::start(&server, &state);
     wait_until("the daemon's first epoch", WAIT, || {
         query::<i64>(&state, "SELECT id FROM epoch")
     });
-    let work = server.call(
+    let (session, blocks, fg) = agents(&server, &state, dir.path());
+    report(&state, &transcript, &blocks[..1], &fg[..1]);
+    daemon.stop();
+    std::thread::sleep(REX_SAVES);
+    server.kill();
+    server = Server::start(dir.path(), Some(&bin));
+    let pane = |method: &str, args: Value| {
+        server.call(
+            "block.method",
+            &json!({ "session_id": session, "block_id": blocks[0], "method": method, "args": args }),
+        )
+    };
+    wait_until("the restored shell's prompt", WAIT, || {
+        (pane("input_mode", json!({}))["canonical"] == false).then_some(())
+    });
+    pane("write", json!({ "data": "echo kept" }));
+    wait_until("the typed text to show", WAIT, || {
+        screen(&server, &session, &blocks[0])
+            .contains("echo kept")
+            .then_some(())
+    });
+    daemon = Daemon::start(&server, &state);
+    let note = wait_until("the restore to wait", WAIT, || {
+        query::<String>(
+            &state,
+            "SELECT note FROM restore WHERE state = 'planned' AND note IS NOT NULL",
+        )
+    });
+    assert_eq!(
+        note,
+        "text is typed in the pane, or its prompt does not end in a space"
+    );
+    std::thread::sleep(Duration::from_secs(2));
+    assert!(!screen(&server, &session, &blocks[0]).contains("gate"));
+    assert!(std::fs::read_dir(&runs).unwrap().next().is_none());
+    drop(daemon);
+}
+
+/// An epoch the daemon ends on an error shows in `status` until the daemon observes the server
+/// again without one. A trigger refuses every new binding, which the restore after the restart
+/// needs.
+#[test]
+#[ignore = "needs a Rex server"]
+fn status_shows_the_error_that_ended_the_latest_epoch() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let bin = dir.path().join("bin");
+    std::fs::create_dir_all(&bin).unwrap();
+    let mut server = Server::start(dir.path(), Some(&bin));
+    let _daemon = Daemon::start(&server, &state);
+    wait_until("the daemon's first epoch", WAIT, || {
+        query::<i64>(&state, "SELECT id FROM epoch")
+    });
+    server.call(
         "session.create",
         &json!({ "label": "work", "initial_windows": [{ "layout": shell_block("main", dir.path()) }] }),
     );
-    server.call(
-        "session.new_layer",
-        &json!({ "session_id": work["session_id"], "window_id": work["initial_windows"][0]["window_id"],
-                 "bounds": [0.2, 0.2, 0.5, 0.5], "layout": shell_block("float", dir.path()) }),
-    );
-    wait_until("both panes to be saved", WAIT, || {
-        let (docs, _) = saved(&state);
-        (docs.values().map(blocks_of).sum::<usize>() == 2).then_some(())
-    });
-    // Saved state changed between the crash and the next server is what that server restores.
-    let crash = |server: &mut Server, ended: i64, edit: &str| {
-        server.kill();
-        wait_until("the epoch to end", WAIT, || {
+    let recorded = |server: &Server| {
+        let instance = server.instance();
+        wait_until("the pane to be recorded", WAIT, || {
             query::<i64>(
                 &state,
-                "SELECT COUNT(*) FROM epoch WHERE end_reason = 'server_gone'",
+                &format!("SELECT 1 FROM block WHERE instance_id = '{instance}'"),
             )
-            .filter(|n| *n == ended)
         });
-        crate::common::db(&state).execute_batch(edit).unwrap();
-        *server = Server::start(dir.path(), None);
     };
-    crash(&mut server, 1, "");
-    wait_until("the restore", WAIT, || {
-        query::<String>(&state, "SELECT state FROM restore_op").filter(|s| s == "completed")
-    });
-    assert_eq!(layers(&server), 2);
-
-    // The layer was requested and its reply lost: the restore has no block of it bound, and its
-    // gate has long since run, so no claim will come.
-    daemon.stop();
-    crate::common::db(&state)
+    recorded(&server);
+    db(&state)
         .execute_batch(
-            "UPDATE restore_op SET state = 'created';
-             DELETE FROM live WHERE (instance_id, lineage) IN
-               (SELECT instance_id, block_lineage FROM restore_slot WHERE layer_sent_at IS NOT NULL);",
+            "CREATE TRIGGER refuse BEFORE INSERT ON live BEGIN SELECT RAISE(ABORT, 'refused'); END;",
         )
         .unwrap();
-    daemon = Daemon::start(&server, &state);
-    let note: String = wait_until("the restore to give up on the layer", WAIT, || {
-        query(
-            &state,
-            "SELECT note FROM restore_op WHERE state = 'partial'",
-        )
+    let epoch_error = || {
+        let output = std::process::Command::new(REXUME)
+            .args(["status", "--state-dir"])
+            .arg(&state)
+            .output()
+            .unwrap();
+        serde_json::from_slice::<Value>(&output.stdout).unwrap()["epoch_error"].clone()
+    };
+    restart(&mut server, &state, &bin, 1, false);
+    let shown = wait_until("the error to show", WAIT, || {
+        Some(epoch_error()).filter(|e| !e.is_null())
     });
-    assert!(note.contains("may or may not exist"), "{note}");
-    assert_eq!(layers(&server), 2, "the layer was requested again");
-
-    // The next server refuses the saved layer: the session comes back without it, and the restore
-    // says so instead of completing.
-    crash(
-        &mut server,
-        2,
-        "UPDATE session SET doc = json_set(doc, '$.windows[0].floating[0].bounds', json('[0.5, 0.5, 0.9, 0.9]'))",
+    assert!(
+        shown["error"].as_str().unwrap().contains("refused"),
+        "{shown}"
     );
-    wait_until("the second restore", WAIT, || {
-        query(
-            &state,
-            "SELECT note FROM restore_op WHERE state = 'partial' ORDER BY created_at DESC LIMIT 1",
-        )
-        .filter(|note: &String| note.contains("refused"))
-    });
-    assert_eq!(layers(&server), 1);
-    drop(daemon);
+
+    db(&state).execute_batch("DROP TRIGGER refuse").unwrap();
+    recorded(&server);
+    assert_eq!(epoch_error(), json!(null));
 }

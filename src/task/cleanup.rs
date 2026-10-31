@@ -9,27 +9,68 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use anyhow::Result;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::json;
 
 use super::{LATEST_ROUND, OPEN, block_gone};
 use crate::rex::{CallError, Rex, items, root_status, str_at, time_at};
 use crate::runtime::{Runtime, Turn, last_turn};
-use crate::store::{Store, UNFINISHED_RESTORE, live_of};
+use crate::store::{Store, live_of};
 
 /// Released disposable workers whose panes, as last recorded, still show the worker as its latest
-/// result left it. A restore leaves these out; any other pane, including one the user took over
-/// after the result or one whose worker's record cannot be read, comes back.
-pub fn retired_workers(conn: &Connection) -> Result<Vec<String>> {
-    let mut retired = Vec::new();
+/// result left it, with the task to close each by. Run before a later instance's records replace
+/// the earlier one's; any other pane, including one the user took over after the result or one
+/// whose worker's record cannot be read, stays.
+pub fn retired_workers(conn: &Connection) -> Result<Vec<(String, String)>> {
+    let mut retired: Vec<(String, String)> = Vec::new();
     for id in due(conn)? {
         match untouched(conn, &id)? {
-            Untouched::Yes(worker) => retired.push(worker),
-            Untouched::No(_) => {}
-            Untouched::Unreadable(e) => log::warn!("task {id}: restoring its worker's pane: {e}"),
+            Untouched::Yes(worker) if !retired.iter().any(|(_, w)| *w == worker) => {
+                retired.push((id, worker));
+            }
+            Untouched::Yes(_) | Untouched::No(_) => {}
+            Untouched::Unreadable(e) => log::warn!("task {id}: keeping its worker's pane: {e}"),
         }
     }
     Ok(retired)
+}
+
+/// Holds a retired worker's pane, which the server restored, for the restore to close: `add`
+/// hands it no new work and the close pass leaves it alone. Returns whether it was held; a pane
+/// working again is not.
+pub fn hold(store: &mut Store, id: &str) -> Result<bool> {
+    let tx = store.write()?;
+    let held = tx.execute(&CLAIM, params![id])? == 1;
+    tx.commit()?;
+    Ok(held)
+}
+
+/// Lets go of every held pane, which the next pass checks again: a restore holds a pane for one
+/// epoch, and a close attempt for one pass.
+pub fn release_held(tx: &Transaction) -> Result<()> {
+    tx.execute(
+        "UPDATE task SET pane_state = 'open' WHERE pane_state = 'closing'",
+        [],
+    )?;
+    Ok(())
+}
+
+/// The tasks whose worker's pane is held, with the pane. Only a restore holds a pane across
+/// passes, and the daemon lets go of every one when it starts and when an epoch starts.
+pub fn held(conn: &Connection) -> Result<Vec<(String, String)>> {
+    Ok(conn
+        .prepare("SELECT id, worker_lineage FROM task WHERE pane_state = 'closing'")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// Gives up a held pane for good: someone uses it.
+pub fn keep(tx: &Transaction, id: &str, reason: &str) -> Result<()> {
+    tx.execute(
+        "UPDATE task SET pane_state = 'kept', pane_note = ?1 WHERE id = ?2 AND pane_state = 'closing'",
+        params![reason, id],
+    )?;
+    Ok(())
 }
 
 /// Released disposable workers whose panes Rexume may still close: no round of any task on the
@@ -186,45 +227,6 @@ fn untouched(conn: &Connection, id: &str) -> Result<Untouched> {
     Ok(Untouched::Yes(taken.worker))
 }
 
-/// Where the worker's pane is on this server instance.
-#[derive(Debug, PartialEq)]
-enum Live {
-    /// The live pane, which the pane's record describes.
-    Block(String),
-    /// A restore on this instance brings the pane back as a new terminal, or may still, and the
-    /// server has not reported it yet, so the pane's record describes the earlier terminal.
-    Restoring,
-    Gone,
-}
-
-/// Whether a restore on this instance can still bind the pane: the restore is unfinished, or
-/// it sent a floating layer with the pane that may exist and whose gate may still claim.
-pub(super) static RESTORING: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "SELECT EXISTS (SELECT 1 FROM restore_op o JOIN restore_slot s ON s.op_id = o.id
-                        WHERE o.instance_id = ?1 AND s.block_lineage = ?2
-                          AND (o.{UNFINISHED_RESTORE} OR s.layer_sent_at IS NOT NULL))"
-    )
-});
-
-fn live(conn: &Connection, instance: &str, worker: &str) -> Result<Live> {
-    let recorded: Option<String> = conn
-        .query_row(
-            "SELECT instance_id FROM block WHERE lineage = ?1",
-            params![worker],
-            |row| row.get(0),
-        )
-        .optional()?;
-    Ok(match live_of(conn, instance, worker)? {
-        Some(block) if recorded.as_deref() == Some(instance) => Live::Block(block),
-        Some(_) => Live::Restoring,
-        None if conn.query_row(&RESTORING, params![instance, worker], |row| row.get(0))? => {
-            Live::Restoring
-        }
-        None => Live::Gone,
-    })
-}
-
 /// How a close attempt ended.
 enum Check {
     /// The pane is no longer on the server, closed by this attempt or before it.
@@ -238,50 +240,31 @@ enum Check {
 /// Closes a released disposable worker's pane only while it still shows the worker as the
 /// result left it, as recorded and, for an interactive worker, as the server reports it now, and
 /// is not the pane the user is looking at. A pane found in use is kept for good; a close put off
-/// goes back to `open` with the reason in `pane_note`. Returns what happened, for the log, or
-/// `None` without claiming anything while a restore on this instance brings the pane back: the
-/// server's report of the restored pane, or the gate's claim, starts the pass that looks again.
-pub(super) fn close(
-    rex: &mut Rex,
-    store: &mut Store,
-    instance: &str,
-    id: &str,
-) -> Result<Option<String>> {
+/// goes back to `open` with the reason in `pane_note`. Returns what happened, for the log.
+pub(super) fn close(rex: &mut Rex, store: &mut Store, instance: &str, id: &str) -> Result<String> {
     let worker: String = store.conn().query_row(
         "SELECT worker_lineage FROM task WHERE id = ?1",
         params![id],
         |row| row.get(0),
     )?;
-    // Read before the pane's record: a gate's claim binds the restored pane and moves its record
-    // in one transaction, so once no restore can bind the pane, the record is the pane's own.
-    let block = match live(store.conn(), instance, &worker)? {
-        Live::Restoring => return Ok(None),
-        Live::Block(block) => Some(block),
-        Live::Gone => None,
-    };
+    let block = live_of(store.conn(), instance, &worker)?;
     let tx = store.write()?;
     let claimed = tx.execute(&CLAIM, params![id])?;
     tx.commit()?;
     if claimed == 0 {
-        return Ok(Some(
-            "not closed: its pane is working again or no longer due".into(),
-        ));
+        return Ok("not closed: its pane is working again or no longer due".into());
     }
     let check =
         attempt(rex, store.conn(), id, block).unwrap_or_else(|e| Check::Later(format!("{e:#}")));
     let tx = store.write()?;
     let outcome = match check {
-        // The saved layout loses the pane now, so a restore that starts before the close event
-        // arrives does not bring it back.
+        // Recorded now: the close event does not arrive when the server stops first.
         Check::Gone(lineage) => {
             block_gone(&tx, &lineage)?;
             "closed".to_owned()
         }
         Check::Keep(reason) => {
-            tx.execute(
-                "UPDATE task SET pane_state = 'kept', pane_note = ?1 WHERE id = ?2 AND pane_state = 'closing'",
-                params![reason, id],
-            )?;
+            keep(&tx, id, &reason)?;
             format!("kept: {reason}")
         }
         Check::Later(reason) => {
@@ -293,7 +276,7 @@ pub(super) fn close(
         }
     };
     tx.commit()?;
-    Ok(Some(outcome))
+    Ok(outcome)
 }
 
 fn attempt(rex: &mut Rex, conn: &Connection, id: &str, block: Option<String>) -> Result<Check> {
@@ -302,7 +285,6 @@ fn attempt(rex: &mut Rex, conn: &Connection, id: &str, block: Option<String>) ->
         Untouched::No(reason) => return Ok(Check::Keep(reason)),
         Untouched::Unreadable(reason) => return Ok(Check::Later(reason)),
     };
-    // A restore leaves an untouched worker out, so on a later server instance it has no pane.
     let Some(block) = block else {
         return Ok(Check::Gone(worker));
     };
@@ -335,29 +317,36 @@ fn attempt(rex: &mut Rex, conn: &Connection, id: &str, block: Option<String>) ->
             ));
         }
     }
+    Ok(match close_unfocused(rex, &session, &block)? {
+        None => Check::Gone(worker),
+        Some(reason) => Check::Later(reason),
+    })
+}
+
+/// Closes a worker's pane unless it is its session's focused pane, which the user may be looking
+/// at. Returns `None` once the pane is gone, or why it is still there.
+pub fn close_unfocused(rex: &mut Rex, session: &str, block: &str) -> Result<Option<String>> {
     let view = rex.call("session.view", &json!({ "session_id": session }))?;
     let active = str_at(&view, "/active_window_id");
     let focused = items(&view, "/windows")
         .iter()
         .find(|w| str_at(w, "/window_id") == active)
         .and_then(|w| str_at(w, "/focused_block_id"));
-    if focused == Some(block.as_str()) {
-        return Ok(Check::Later("the worker's pane has focus".into()));
+    if focused == Some(block) {
+        return Ok(Some("the worker's pane has focus".into()));
     }
     Ok(
         match rex.call(
             "block.close",
             &json!({ "session_id": session, "block_id": block }),
         ) {
-            Ok(_) => Check::Gone(worker),
-            Err(e) if e.not_found() => Check::Gone(worker),
+            Ok(_) => None,
+            Err(e) if e.not_found() => None,
             Err(e @ (CallError::Unsent(_) | CallError::Rejected { .. })) => {
-                Check::Later(format!("the close failed: {e}"))
+                Some(format!("the close failed: {e}"))
             }
             // Whether a close without an answer took effect shows in the next check.
-            Err(e @ CallError::Unknown(_)) => {
-                Check::Later(format!("the close was not answered: {e}"))
-            }
+            Err(e @ CallError::Unknown(_)) => Some(format!("the close was not answered: {e}")),
         },
     )
 }

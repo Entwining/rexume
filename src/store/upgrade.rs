@@ -15,6 +15,9 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
     if version < 5 {
         blocked_episodes(tx)?;
     }
+    // Version 7 drops the saved layouts and the restores of sessions Rexume recreated, which no
+    // longer move once the server restores its own sessions, and the pane columns only they read.
+    tx.execute_batch("DROP TABLE restore_slot; DROP TABLE restore_op; DROP TABLE session;")?;
     // Version 6 adds `epoch.error`.
     match version {
         1 => from_v1(tx)?,
@@ -23,19 +26,21 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
         3 => {
             return rebuild(
                 tx,
-                &["notice", "request", "task_round", "occupant", "epoch"],
+                &[
+                    "notice",
+                    "request",
+                    "task_round",
+                    "occupant",
+                    "epoch",
+                    "block",
+                ],
             );
         }
-        4 => return rebuild(tx, &["notice", "request", "task_round", "epoch"]),
-        _ => return rebuild(tx, &["epoch"]),
+        4 => return rebuild(tx, &["notice", "request", "task_round", "epoch", "block"]),
+        5 => return rebuild(tx, &["epoch", "block"]),
+        _ => return rebuild(tx, &["block"]),
     }
-    // Version 3 drops the start that typed the reopen command: such a slot starts a shell.
-    tx.execute_batch(
-        "UPDATE restore_slot SET start = 'shell', runtime = NULL, native_id = NULL,
-           started = CASE WHEN started IS NOT NULL THEN 'shell' END
-         WHERE start = 'typed'",
-    )?;
-    rebuild(tx, &["restore_slot", "occupant", "epoch"])?;
+    rebuild(tx, &["occupant", "epoch", "block"])?;
     // Version 3 also records the server instance of a task's worker, of a pane's occupant, and of
     // the pane when a round finished. An earlier one's is the instance an epoch was observing at
     // the time, which is the server `task add` or the report reached. Only an epoch whose end is
@@ -73,7 +78,8 @@ fn rebuild(tx: &Transaction, tables: &[&str]) -> Result<()> {
     for table in tables.iter().rev() {
         let columns: Vec<String> = tx
             .prepare(&format!(
-                "SELECT name FROM pragma_table_info('old_{table}', 'temp')"
+                "SELECT name FROM pragma_table_info('old_{table}', 'temp')
+                 WHERE name IN (SELECT name FROM pragma_table_info('{table}', 'main'))"
             ))?
             .query_map([], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;

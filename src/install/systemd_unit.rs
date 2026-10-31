@@ -92,7 +92,7 @@ pub(super) fn remove(home: &Path) -> Result<Outcome> {
 }
 
 pub(super) fn unit(install: &Install) -> String {
-    let mut args = vec![
+    let args = [
         install.exe.to_string_lossy().into_owned(),
         "daemon".to_owned(),
         "--rex".to_owned(),
@@ -100,14 +100,6 @@ pub(super) fn unit(install: &Install) -> String {
         "--server".to_owned(),
         install.server.clone(),
     ];
-    if let Some((foreground, background)) = &install.theme {
-        args.extend([
-            "--theme-foreground".to_owned(),
-            foreground.clone(),
-            "--theme-background".to_owned(),
-            background.clone(),
-        ]);
-    }
     // systemd substitutes variables in a command's arguments but not in its executable path.
     let command: Vec<String> = args
         .iter()
@@ -121,7 +113,7 @@ pub(super) fn unit(install: &Install) -> String {
     // once the executable is gone.
     format!(
         "[Unit]
-Description=rexume, which restores Rex sessions
+Description=rexume, which reopens agent conversations in restored Rex panes
 StartLimitIntervalSec=30
 StartLimitBurst=5
 

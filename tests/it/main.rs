@@ -9,12 +9,9 @@
 mod bench;
 mod cli;
 mod common;
-mod exited;
-mod gate;
 mod install;
 mod relay;
 mod restore;
-mod rex_restore;
 mod schema;
 mod stop;
 mod structure;

@@ -96,29 +96,26 @@ fn ensure_lineage_keeps_the_lineage_of_an_id_the_server_brought_back() -> Result
 }
 
 #[test]
-fn sweep_keeps_what_a_layout_or_an_open_task_still_names() -> Result<()> {
+fn sweep_keeps_what_an_open_task_or_a_recent_restore_still_names() -> Result<()> {
     let (_dir, mut store) = store();
     let old = now_ms() - i64::try_from(RETENTION.as_millis())? - 1;
     let tx = store.write()?;
     tx.execute_batch(&format!(
         "INSERT INTO epoch (instance_id, started_at, ended_at, end_reason)
            VALUES ('i1', 0, {old}, 'server_gone'), ('i0', 0, {old}, 'server_gone');
-         INSERT INTO session (lineage, instance_id, position, doc, updated_at)
-           VALUES ('s', 'i1', 0, '{{\"windows\":[{{\"tiled\":{{\"block\":{{\"lineage\":\"b-saved\"}}}}}}]}}', 0);
-         INSERT INTO block (lineage, instance_id) VALUES ('b-saved', 'i1'), ('b-task', 'i1'),
-           ('b-gone', 'i1'), ('b-now', 'i2'), ('b-layer', 'i1');
+         INSERT INTO block (lineage, instance_id) VALUES ('b-task', 'i1'), ('b-gone', 'i1'),
+           ('b-now', 'i2');
          INSERT INTO live (instance_id, live_id, lineage) VALUES ('i1', 'x', 'x'), ('i2', 'y', 'y');
          INSERT INTO conversation (runtime, native_id, resumable, reported_at)
-           VALUES ('claude', 'owner', 1, 0), ('claude', 'unused', 1, 0);
+           VALUES ('claude', 'owner', 1, 0), ('claude', 'unused', 1, 0), ('claude', 'restored', 1, 0),
+             ('claude', 'expired', 1, 0);
          INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
            created_at) VALUES ('t', 'x', 'claude', 'owner', 'b-task', 0, 0);
-         INSERT INTO restore_op (id, instance_id, session_lineage, state, doc, created_at)
-           VALUES ('op-stuck', 'i1', 's', 'created', '{{}}', {old}),
-             ('op-recent', 'i1', 's2', 'unknown', '{{}}', {now}),
-             ('op-current', 'i2', 's', 'unknown', '{{}}', {old});
-         -- A floating layer the current instance's restore has not created yet.
-         INSERT INTO restore_slot (op_id, slot, instance_id, block_lineage, start, plan)
-           VALUES ('op-current', 0, 'i2', 'b-layer', 'shell', '{{}}');",
+         INSERT INTO restore (id, instance_id, block_lineage, start, runtime, native_id, plan, state,
+           created_at)
+           VALUES ('r-old', 'i1', 'b-gone', 'agent', 'claude', 'expired', '{{}}', 'skipped', {old}),
+             ('r-recent', 'i1', 'b-other', 'agent', 'claude', 'restored', '{{}}', 'skipped', {now}),
+             ('r-current', 'i2', 'b-now', 'agent', 'claude', 'expired', '{{}}', 'planned', {old});",
         now = now_ms()
     ))?;
     sweep(&tx, "i2", now_ms())?;
@@ -129,15 +126,48 @@ fn sweep_keeps_what_a_layout_or_an_open_task_still_names() -> Result<()> {
     };
     assert_eq!(
         names("SELECT lineage FROM block ORDER BY lineage"),
-        ["b-layer", "b-now", "b-saved", "b-task"]
+        ["b-now", "b-task"]
     );
     assert_eq!(names("SELECT live_id FROM live"), ["y"]);
     assert_eq!(names("SELECT instance_id FROM epoch"), ["i1"]);
-    assert_eq!(names("SELECT native_id FROM conversation"), ["owner"]);
     assert_eq!(
-        names("SELECT id FROM restore_op ORDER BY id"),
-        ["op-current", "op-recent"]
+        names("SELECT native_id FROM conversation ORDER BY native_id"),
+        ["expired", "owner", "restored"]
     );
+    assert_eq!(
+        names("SELECT id FROM restore ORDER BY id"),
+        ["r-current", "r-recent"]
+    );
+    Ok(())
+}
+
+/// A pane the sweep forgets takes its occupant along, so the conversation's row can expire; an
+/// occupant reported on the current instance before the daemon has seen its pane stays.
+#[test]
+fn sweep_forgets_the_occupant_of_a_pane_it_forgets() -> Result<()> {
+    let (_dir, mut store) = store();
+    let old = now_ms() - i64::try_from(RETENTION.as_millis())? - 1;
+    let tx = store.write()?;
+    tx.execute_batch(&format!(
+        "INSERT INTO block (lineage, instance_id) VALUES ('b-closed', 'i1');
+         INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+           VALUES ('claude', 'c-closed', 1, {old}), ('claude', 'c-new', 1, {old});
+         INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid,
+           keeps_session_env, reported_at)
+           VALUES ('b-closed', 'claude', 'c-closed', 'i1', 1, 0, {old}),
+             ('b-unseen', 'claude', 'c-new', 'i2', 2, 0, {old});"
+    ))?;
+    sweep(&tx, "i2", now_ms())?;
+    let occupants: Vec<String> = tx
+        .prepare("SELECT block_lineage FROM occupant")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    assert_eq!(occupants, ["b-unseen"]);
+    let conversations: Vec<String> = tx
+        .prepare("SELECT native_id FROM conversation")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    assert_eq!(conversations, ["c-new"]);
     Ok(())
 }
 

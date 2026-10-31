@@ -1,5 +1,5 @@
-//! The daemon: one long-running process that observes a Rex server, keeps the saved layout and
-//! pane states, restores the saved sessions on a new server instance, and moves tasks along. It
+//! The daemon: one long-running process that observes a Rex server, keeps the panes' states,
+//! reopens conversations in the panes a new server instance restored, and moves tasks along. It
 //! waits on one event queue and wakes only for an event, a deadline, a signal, a process exit, or
 //! a file it follows.
 
@@ -19,7 +19,6 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use nix::sys::signal::{SigSet, Signal};
 use rusqlite::params;
-use serde_json::Value;
 
 use crate::event::{Queue, Token};
 use crate::install;
@@ -30,11 +29,8 @@ use crate::task;
 pub struct Options {
     pub state_dir: PathBuf,
     pub cli: Cli,
-    /// This executable, which restored blocks run as their gate and the adapter runs as its relay.
+    /// This executable, which restored panes run as their gate and the adapter runs as its relay.
     pub exe: PathBuf,
-    /// The colors restored terminals start with, so programs that ask for the background color
-    /// before the app shows them get an answer.
-    pub theme: Option<Value>,
     /// The home directory whose Pi extension the daemon refreshes when it starts.
     pub home: PathBuf,
 }
@@ -94,10 +90,7 @@ pub fn run(options: &Options) -> Result<()> {
             "UPDATE epoch SET ended_at = ?1, end_reason = 'disconnected' WHERE ended_at IS NULL",
             params![now_ms()],
         )?;
-        tx.execute(
-            "UPDATE task SET pane_state = 'open' WHERE pane_state = 'closing'",
-            [],
-        )?;
+        task::release_held(&tx)?;
         tx.commit()?;
     }
     for (kind, id) in task::orphaned_sends(&mut store)? {

@@ -4,24 +4,14 @@
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
+use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-use crate::common::{Daemon, Server, query, shell_block, wait_until};
+use crate::common::{Daemon, Server, claude, db, query, shell_block, shell_pids, wait_until};
 
 const SESSIONS: usize = 20;
 const WAIT: Duration = Duration::from_secs(60);
-
-fn now_ms() -> i64 {
-    i64::try_from(
-        SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .unwrap()
-            .as_millis(),
-    )
-    .unwrap()
-}
 
 /// A process's children, by pid and command name.
 fn children(pid: u32) -> Vec<(u32, String)> {
@@ -157,7 +147,8 @@ fn calls(daemon: &Daemon, method: &str) -> usize {
 fn bench() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
-    let mut server = Server::start(dir.path(), None);
+    let (bin, _) = claude::stand_in(dir.path(), "sleep 600;");
+    let mut server = Server::start(dir.path(), Some(&bin));
     let gogc = std::env::var("REXUME_BENCH_GOGC").ok();
     let mut vars = vec![("RUST_LOG", "rexume=debug")];
     if let Some(gogc) = &gogc {
@@ -177,12 +168,28 @@ fn bench() {
                 "ratio": 0.5, "before": shell_block("a", &cwd), "after": { "split": { "direction": "vertical",
                 "ratio": 0.5, "before": shell_block("b", &cwd), "after": shell_block("c", &cwd) } } } } }] }),
         );
-        sessions.push(created["session_id"].as_str().unwrap().to_owned());
+        let session = created["session_id"].as_str().unwrap().to_owned();
+        // Each session's first pane runs a conversation, as its hook would have reported.
+        let first = created["initial_windows"][0]["block_ids"][0]
+            .as_str()
+            .unwrap()
+            .to_owned();
+        let pid = shell_pids(&server, &state, &session, &[&first])[0];
+        db(&state)
+            .execute_batch(&format!(
+                "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+                   VALUES ('claude', 'c{i}', 1, 0);
+                 INSERT INTO occupant (block_lineage, runtime, native_id, pid, pid_name,
+                   keeps_session_env, reported_at) VALUES ('{first}', 'claude', 'c{i}', {pid}, 'claude', 0, 0);"
+            ))
+            .unwrap();
+        sessions.push(session);
     }
-    wait_until("every pane to be saved", WAIT, || {
-        (query::<i64>(&state, "SELECT COUNT(*) FROM block WHERE cwd IS NOT NULL")
-            == Some(3 * SESSIONS as i64)
-            && query::<i64>(&state, "SELECT COUNT(*) FROM session") == Some(SESSIONS as i64))
+    wait_until("every pane to be recorded", WAIT, || {
+        (query::<i64>(
+            &state,
+            "SELECT COUNT(*) FROM block WHERE fg_pid IS NOT NULL",
+        ) == Some(3 * SESSIONS as i64))
         .then_some(())
     });
     std::thread::sleep(Duration::from_secs(2));
@@ -200,20 +207,7 @@ fn bench() {
     let idle_cpu = usage(daemon_pid).1 - before;
     let memory = memory(&[daemon_pid, adapter, relay]);
 
-    // Title changes in a pane cost the daemon no call.
-    let views_before = calls(&daemon, "");
-    server
-        .cli()
-        .args(["send", "-s", &sessions[0], "-b"])
-        .arg(server.call("session.view", &json!({ "session_id": sessions[0] }))["windows"][0]["layers"][0]["blocks"][0]["block_id"].as_str().unwrap())
-        .arg("for i in $(seq 50); do printf '\\033]0;t%s\\007' $i; sleep 0.02; done\n")
-        .status()
-        .unwrap();
-    std::thread::sleep(Duration::from_secs(3));
-    let title_calls = calls(&daemon, "") - views_before;
-
-    // Renames: from the command until the saved layout holds the new name, and the daemon's children
-    // meanwhile.
+    // The daemon's children from here on, through title changes and the restore.
     let seen = Arc::new(Mutex::new(std::collections::BTreeSet::new()));
     let stop = Arc::new(AtomicBool::new(false));
     let sampler = {
@@ -225,33 +219,21 @@ fn bench() {
             }
         })
     };
-    let views = calls(&daemon, "session.view");
-    let mut latencies = Vec::new();
-    for i in 0..20 {
-        let started = now_ms();
-        server
-            .cli()
-            .args(["session", "rename", &sessions[1], &format!("renamed{i}")])
-            .status()
-            .unwrap();
-        // The saved document itself, not only its time: a read that ran before the server applied
-        // the rename would save the old name.
-        let renamed = format!(
-            "SELECT updated_at FROM session WHERE json_extract(doc, '$.label') = 'renamed{i}'"
-        );
-        let saved = wait_until("the rename to be saved", WAIT, || {
-            query::<i64>(&state, &renamed)
-        });
-        latencies.push(saved - started);
-        std::thread::sleep(Duration::from_millis(400));
-    }
-    stop.store(true, Ordering::Relaxed);
-    sampler.join().unwrap();
-    let rename_views = calls(&daemon, "session.view") - views;
-    latencies.sort_unstable();
 
-    // Restore: from the new server's start until every session is complete and every pane's
-    // directory is known again.
+    // Title changes in a pane cost the daemon no call.
+    let views_before = calls(&daemon, "");
+    server
+        .cli()
+        .args(["send", "-s", &sessions[0], "-b"])
+        .arg(server.call("session.view", &json!({ "session_id": sessions[0] }))["windows"][0]["layers"][0]["blocks"][1]["block_id"].as_str().unwrap())
+        .arg("for i in $(seq 50); do printf '\\033]0;t%s\\007' $i; sleep 0.02; done\n")
+        .status()
+        .unwrap();
+    std::thread::sleep(Duration::from_secs(3));
+    let title_calls = calls(&daemon, "") - views_before;
+
+    // Restore: from the new server's start, which restores the sessions itself, until every
+    // conversation's gate has claimed its pane.
     server.kill();
     wait_until("the epoch to end", WAIT, || {
         query::<String>(
@@ -260,15 +242,16 @@ fn bench() {
         )
     });
     let started = Instant::now();
-    server = Server::start(dir.path(), None);
+    server = Server::start(dir.path(), Some(&bin));
     let instance = server.instance();
     wait_until("the restore", WAIT, || {
-        (query::<i64>(&state, "SELECT COUNT(*) FROM restore_op WHERE state = 'completed'") == Some(SESSIONS as i64)
-            && query::<i64>(&state, &format!("SELECT COUNT(*) FROM block WHERE instance_id = '{instance}' AND cwd IS NOT NULL"))
-                == Some(3 * SESSIONS as i64))
+        (query::<i64>(&state, &format!("SELECT COUNT(*) FROM restore WHERE instance_id = '{instance}' AND state = 'claimed'"))
+            == Some(SESSIONS as i64))
         .then_some(())
     });
     let restore = started.elapsed();
+    stop.store(true, Ordering::Relaxed);
+    sampler.join().unwrap();
 
     let totals = |measure: fn(&(u64, u64)) -> u64| {
         let [daemon, rex_do, relay] = [0, 1, 2].map(|i| measure(&memory[i]));
@@ -279,10 +262,8 @@ fn bench() {
         "idle_30s": { "daemon_cpu_seconds": idle_cpu, "daemon_idle_wakeups": wakeups },
         "memory_kib": { "rss": totals(|m| m.0), "phys_footprint": totals(|m| m.1) },
         "title_changes_50_calls": title_calls,
-        "rename_to_disk_ms": { "p50": latencies[latencies.len() / 2], "max": latencies.last(), "all": latencies },
-        "rename_views_for_20": rename_views,
-        "daemon_children_during_renames": seen.lock().unwrap().iter().map(|(pid, name)| format!("{pid} {name}")).collect::<Vec<_>>(),
-        "restore_20_sessions_60_panes_ms": restore.as_millis(),
+        "daemon_children": seen.lock().unwrap().iter().map(|(pid, name)| format!("{pid} {name}")).collect::<Vec<_>>(),
+        "resume_20_conversations_ms": restore.as_millis(),
     });
     println!("{}", serde_json::to_string_pretty(&report).unwrap());
 }

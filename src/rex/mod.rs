@@ -82,9 +82,19 @@ impl Rex {
         block: &str,
         method: &str,
     ) -> Result<Value, CallError> {
+        self.block_method_with(session, block, method, &json!({}))
+    }
+
+    pub fn block_method_with(
+        &mut self,
+        session: &str,
+        block: &str,
+        method: &str,
+        args: &Value,
+    ) -> Result<Value, CallError> {
         self.call(
             "block.method",
-            &json!({ "session_id": session, "block_id": block, "method": method }),
+            &json!({ "session_id": session, "block_id": block, "method": method, "args": args }),
         )
     }
 
@@ -192,6 +202,16 @@ pub fn items<'a>(value: &'a Value, pointer: &str) -> &'a [Value] {
         .pointer(pointer)
         .and_then(Value::as_array)
         .map_or(&[], Vec::as_slice)
+}
+
+/// The live IDs of the blocks a `session.view` reply shows.
+pub fn view_blocks(view: &Value) -> Vec<String> {
+    items(view, "/windows")
+        .iter()
+        .flat_map(|window| items(window, "/layers"))
+        .flat_map(|layer| items(layer, "/blocks"))
+        .filter_map(|block| str_at(block, "/block_id").map(str::to_owned))
+        .collect()
 }
 
 /// The record a `program_status` reply holds for the pane's program itself, which has no ID.

@@ -3,109 +3,86 @@ use super::*;
 const PROMPT: &str = r#"{"type":"user","message":{"role":"user","content":"Write a story"}}"#;
 const ANSWER: &str = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}"#;
 
-/// A store with one restore of session `s` on instance `i2` whose slot 0 continues pane `b`, from
-/// a shell unless the conversation was the terminal's own program.
-fn planned(dir: &Path, transcript: &Path, own_program: bool) -> Result<Store> {
+/// A store with restore `r` on instance `i2`, typed into pane `b`, which Rex restored under its
+/// own ID, to continue conversation `c`.
+fn typed(dir: &Path, transcript: &Path) -> Result<Store> {
     let mut store = Store::open(dir)?;
     let plan = Plan {
         argv: vec!["claude".into(), "--resume".into(), "c".into()],
         prompt: Some("go on".into()),
         transcript: Some(transcript.to_string_lossy().into_owned()),
-        own_program,
         ..Plan::default()
     };
     let tx = store.write()?;
     tx.execute_batch(
         "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
            VALUES ('claude', 'c', 1, 0);
-         INSERT INTO restore_op (id, instance_id, session_lineage, state, doc, created_at)
-           VALUES ('op', 'i2', 's', 'sent', '{}', 100);",
+         INSERT INTO live (instance_id, live_id, lineage) VALUES ('i2', 'b', 'b');
+         INSERT INTO block (lineage, instance_id, fg_pid) VALUES ('b', 'i2', 7);",
     )?;
     tx.execute(
-        "INSERT INTO restore_slot (op_id, slot, instance_id, block_lineage, start, runtime,
-           native_id, plan) VALUES ('op', 0, 'i2', 'b', 'continue', 'claude', 'c', ?1)",
+        "INSERT INTO restore (id, instance_id, block_lineage, start, runtime, native_id, plan,
+           state, created_at, typed_at)
+         VALUES ('r', 'i2', 'b', 'continue', 'claude', 'c', ?1, 'typed', 100, 101)",
         params![serde_json::to_string(&plan)?],
     )?;
     tx.commit()?;
     Ok(store)
 }
 
-fn started(store: &Store) -> Result<(Option<String>, bool)> {
+fn started(store: &Store) -> Result<(String, Option<String>)> {
     Ok(store.conn().query_row(
-        "SELECT started, claimed_at IS NOT NULL FROM restore_slot WHERE op_id = 'op'",
+        "SELECT state, started FROM restore WHERE id = 'r'",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?)
 }
 
+/// The claim runs once, from a typed line or one whose gate was late, keeps the gate's process,
+/// and leaves the pane's record as it was: Rex restored the pane under the ID its lineage is.
 #[test]
-fn a_claim_continues_only_a_turn_still_open_and_binds_the_pane_and_session() -> Result<()> {
+fn a_claim_continues_a_turn_still_open_once() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = dir.path().join("t.jsonl");
     std::fs::write(&transcript, format!("{PROMPT}\n"))?;
-    let mut store = planned(dir.path(), &transcript, false)?;
-    let (start, _) = claim(&mut store, "op", 0, "block:new", "session:new")?;
-    assert_eq!(start, Start::Continue);
-    assert_eq!(started(&store)?, (Some("continue".into()), true));
-    let tx = store.write()?;
-    assert_eq!(crate::store::ensure_lineage(&tx, "i2", "block:new")?, "b");
-    assert_eq!(crate::store::ensure_lineage(&tx, "i2", "session:new")?, "s");
-    drop(tx);
-    let again = claim(&mut store, "op", 0, "block:new", "session:new");
-    assert!(again.unwrap_err().to_string().contains("already claimed"));
-    Ok(())
-}
+    let mut store = typed(dir.path(), &transcript)?;
+    store
+        .conn()
+        .execute("UPDATE restore SET state = 'unknown'", [])?;
+    let (start, plan) = claim(&mut store, "r", "b", 42)?;
+    assert_eq!(
+        (start, plan.prompt.as_deref()),
+        (Start::Continue, Some("go on"))
+    );
+    assert_eq!(
+        started(&store)?,
+        ("claimed".into(), Some("continue".into()))
+    );
+    let pid: Option<i64> =
+        store
+            .conn()
+            .query_row("SELECT pid FROM restore WHERE id = 'r'", [], |row| {
+                row.get(0)
+            })?;
+    assert_eq!(pid, Some(42));
+    let fg: Option<i64> =
+        store
+            .conn()
+            .query_row("SELECT fg_pid FROM block WHERE lineage = 'b'", [], |row| {
+                row.get(0)
+            })?;
+    assert_eq!(fg, Some(7));
+    let again = claim(&mut store, "r", "b", 43);
+    assert!(again.unwrap_err().to_string().contains("has run already"));
 
-#[test]
-fn a_claim_takes_over_a_pane_and_session_the_daemon_recorded_first() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let transcript = dir.path().join("t.jsonl");
-    std::fs::write(&transcript, format!("{PROMPT}\n"))?;
-    let mut store = planned(dir.path(), &transcript, false)?;
-    let doc = |block: &str| {
-        format!(
-            r#"{{"label":"s","active":0,"windows":[{{"lineage":"w","label":null,"focused":"{block}",
-                "zoomed":null,"tiled":{{"block":{{"lineage":"{block}","label":null}}}},"floating":[]}}]}}"#
-        )
-    };
-    // A create whose reply was lost: the daemon saw the new session and pane before the gate.
-    store.conn().execute_batch(&format!(
-        "INSERT INTO block (lineage, instance_id, cwd) VALUES ('b', 'i1', '/old');
-         INSERT INTO session (lineage, instance_id, position, doc, updated_at)
-           VALUES ('s', 'i1', 0, '{}', 1);
-         INSERT INTO live (instance_id, live_id, lineage) VALUES ('i2', 'block:new', 'block:new'),
-           ('i2', 'session:new', 'session:new');
-         INSERT INTO block (lineage, instance_id, fg_pid) VALUES ('block:new', 'i2', 7);
-         INSERT INTO session (lineage, instance_id, position, doc, updated_at)
-           VALUES ('session:new', 'i2', 0, '{}', 2);",
-        doc("b"),
-        doc("block:new")
-    ))?;
-    let (start, _) = claim(&mut store, "op", 0, "block:new", "session:new")?;
-    assert_eq!(start, Start::Continue);
-    let conn = store.conn();
-    let lineages: Vec<String> = conn
-        .prepare("SELECT lineage FROM live ORDER BY live_id")?
-        .query_map([], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    assert_eq!(lineages, ["b", "s"]);
-    let block: (String, Option<i64>) = conn.query_row(
-        "SELECT instance_id, fg_pid FROM block WHERE lineage = 'b'",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    assert_eq!(block, ("i2".into(), Some(7)));
-    let sessions: Vec<(String, String, String)> = conn
-        .prepare("SELECT lineage, instance_id, doc FROM session")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    let [(lineage, instance, saved)] = sessions.as_slice() else {
-        panic!("one saved layout expected, found {sessions:?}");
-    };
-    assert_eq!((lineage.as_str(), instance.as_str()), ("s", "i2"));
-    let saved: crate::layout::SessionDoc = serde_json::from_str(saved)?;
-    assert_eq!(saved.blocks(), ["b"]);
-    assert_eq!(saved.windows[0].focused.as_deref(), Some("b"));
+    // A line run before the daemon typed it, as from another pane's history, claims nothing.
+    let other = tempfile::tempdir()?;
+    let mut store = typed(other.path(), &transcript)?;
+    store
+        .conn()
+        .execute("UPDATE restore SET state = 'planned', typed_at = NULL", [])?;
+    assert!(claim(&mut store, "r", "b", 42).is_err());
+    assert_eq!(started(&store)?, ("planned".into(), None));
     Ok(())
 }
 
@@ -114,71 +91,55 @@ fn a_turn_that_ended_after_the_plan_reopens_without_the_prompt() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = dir.path().join("t.jsonl");
     std::fs::write(&transcript, format!("{PROMPT}\n{ANSWER}\n"))?;
-    let mut store = planned(dir.path(), &transcript, false)?;
-    let (start, _) = claim(&mut store, "op", 0, "block:new", "session:new")?;
+    let mut store = typed(dir.path(), &transcript)?;
+    let (start, _) = claim(&mut store, "r", "b", 42)?;
     assert_eq!(start, Start::Agent);
-    assert_eq!(started(&store)?, (Some("agent".into()), true));
+    assert_eq!(started(&store)?, ("claimed".into(), Some("agent".into())));
     Ok(())
 }
 
 #[test]
-fn a_conversation_reported_elsewhere_since_the_plan_starts_a_shell() -> Result<()> {
+fn a_conversation_reported_elsewhere_since_the_plan_starts_nothing() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = dir.path().join("t.jsonl");
     std::fs::write(&transcript, format!("{PROMPT}\n"))?;
-    let mut store = planned(dir.path(), &transcript, false)?;
+    let mut store = typed(dir.path(), &transcript)?;
     // Reported in the same millisecond as the plan: counted as later.
     store.conn().execute(
         "INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env,
            reported_at) VALUES ('other', 'claude', 'c', 1, 0, 100)",
         [],
     )?;
-    let claimed = claim(&mut store, "op", 0, "block:new", "session:new");
-    assert!(claimed.unwrap_err().to_string().contains("another pane"));
-    assert_eq!(started(&store)?, (Some("shell".into()), true));
-    Ok(())
-}
-
-#[test]
-fn a_claim_keeps_a_pane_record_it_has_nothing_to_replace_with() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let transcript = dir.path().join("t.jsonl");
-    std::fs::write(&transcript, format!("{PROMPT}\n"))?;
-    let mut store = planned(dir.path(), &transcript, false)?;
-    // The daemon saved the new session's layout, binding the pane, before any of its events.
-    store.conn().execute_batch(
-        "INSERT INTO block (lineage, instance_id, cwd) VALUES ('b', 'i1', '/old');
-         INSERT INTO live (instance_id, live_id, lineage) VALUES ('i2', 'block:new', 'block:new');",
+    let (start, _) = claim(&mut store, "r", "b", 42)?;
+    assert_eq!(start, Start::Shell);
+    assert_eq!(started(&store)?, ("claimed".into(), Some("shell".into())));
+    let occupants: i64 = store.conn().query_row(
+        "SELECT COUNT(*) FROM occupant WHERE block_lineage = 'b'",
+        [],
+        |row| row.get(0),
     )?;
-    claim(&mut store, "op", 0, "block:new", "session:new")?;
-    let cwd: String =
-        store
-            .conn()
-            .query_row("SELECT cwd FROM block WHERE lineage = 'b'", [], |row| {
-                row.get(0)
-            })?;
-    assert_eq!(cwd, "/old");
+    assert_eq!(occupants, 0);
     Ok(())
 }
 
 #[test]
-fn a_claim_refuses_a_pane_bound_to_another_restored_lineage() -> Result<()> {
+fn a_claim_refuses_a_pane_bound_to_another_lineage() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = dir.path().join("t.jsonl");
     std::fs::write(&transcript, format!("{PROMPT}\n"))?;
-    let mut store = planned(dir.path(), &transcript, false)?;
+    let mut store = typed(dir.path(), &transcript)?;
     store.conn().execute(
-        "INSERT INTO live (instance_id, live_id, lineage) VALUES ('i2', 'block:new', 'other')",
+        "INSERT INTO live (instance_id, live_id, lineage) VALUES ('i2', 'block:other', 'other')",
         [],
     )?;
-    let claimed = claim(&mut store, "op", 0, "block:new", "session:new");
+    let claimed = claim(&mut store, "r", "block:other", 42);
     assert!(claimed.unwrap_err().to_string().contains("bound to other"));
-    assert_eq!(started(&store)?, (None, false));
+    assert_eq!(started(&store)?, ("typed".into(), None));
     Ok(())
 }
 
 #[test]
-fn a_reopen_command_takes_its_variables_as_assignments_before_exec() -> Result<()> {
+fn a_reopen_command_takes_its_variables_as_assignments() -> Result<()> {
     let plan = Plan {
         argv: vec!["claude".into(), "--resume".into(), "c".into()],
         env: vec![("CLOUD_ML_REGION".into(), "us east".into())],
@@ -187,14 +148,6 @@ fn a_reopen_command_takes_its_variables_as_assignments_before_exec() -> Result<(
     assert_eq!(
         command_line(&plan, Some("go on"))?,
         "CLOUD_ML_REGION='us east' claude --resume c 'go on'"
-    );
-    let own = Plan {
-        own_program: true,
-        ..plan
-    };
-    assert_eq!(
-        command_line(&own, None)?,
-        "CLOUD_ML_REGION='us east' exec claude --resume c"
     );
     Ok(())
 }

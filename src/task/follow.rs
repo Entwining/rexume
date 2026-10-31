@@ -91,10 +91,9 @@ impl Follow {
                 if self.tried.contains(&id) {
                     continue;
                 }
-                if let Some(outcome) = cleanup::close(rex, store, instance, &id)? {
-                    log::info!("task {id}: worker pane {outcome}");
-                    self.tried.insert(id);
-                }
+                let outcome = cleanup::close(rex, store, instance, &id)?;
+                log::info!("task {id}: worker pane {outcome}");
+                self.tried.insert(id);
             }
         }
         Ok(interest)

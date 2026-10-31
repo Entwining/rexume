@@ -40,7 +40,7 @@ pub struct Server {
     child: Option<Child>,
 }
 
-/// Whether the Rex CLI's server can restore its own sessions, which an older one cannot.
+/// Whether the Rex CLI's server restores its own sessions, which an older one does not.
 fn restores_itself() -> bool {
     static RESTORES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *RESTORES.get_or_init(|| {
@@ -53,24 +53,15 @@ fn restores_itself() -> bool {
 }
 
 impl Server {
-    /// Starts a server whose panes run with `path` first on PATH, which leaves restoring its
-    /// sessions to Rexume.
+    /// Starts a server whose panes run with `path` first on PATH, and which brings back the
+    /// sessions it saved, with their IDs, as Rex's own restore does. Fails on a Rex CLI too old to
+    /// have it.
     pub fn start(dir: &Path, path: Option<&Path>) -> Self {
-        Self::launch(dir, path, false)
-    }
-
-    /// Starts a server that brings back the sessions it saved, with their IDs, as Rex's own
-    /// restore does. Fails on a Rex CLI too old to have it.
-    pub fn start_restoring(dir: &Path) -> Self {
         assert!(
             restores_itself(),
             "{} has no session restore of its own",
             rex_bin().display()
         );
-        Self::launch(dir, None, true)
-    }
-
-    fn launch(dir: &Path, path: Option<&Path>, restoring: bool) -> Self {
         let home = dir.join("home");
         std::fs::create_dir_all(&home).unwrap();
         std::fs::create_dir_all(dir.join("rex-state")).unwrap();
@@ -78,6 +69,14 @@ impl Server {
         if !config.exists() {
             std::fs::write(&config, "").unwrap();
         }
+        // A pane the server restores runs its shell through `login`, which sets HOME to the user's
+        // own on macOS. zsh reads its startup files from ZDOTDIR instead, and the first one sets
+        // the test's HOME again.
+        std::fs::write(
+            home.join(".zshenv"),
+            format!("export HOME='{}'\n", home.display()),
+        )
+        .unwrap();
         let system = "/usr/bin:/bin:/usr/sbin:/sbin";
         if let Some(first) = path {
             // A Linux login shell sets PATH again from `/etc/profile`, so the panes get the test's
@@ -92,13 +91,13 @@ impl Server {
         let endpoint = format!("unix://{}", dir.join("s.sock").display());
         let child = Command::new(rex_bin())
             .args(["--autostart=false", "server", "run", "--listen", &endpoint])
-            .args((!restoring && restores_itself()).then_some("--restore=false"))
             .arg("--state-dir")
             .arg(dir.join("rex-state"))
             .arg("--config")
             .arg(&config)
             .env_clear()
             .env("HOME", &home)
+            .env("ZDOTDIR", &home)
             .env("USER", std::env::var("USER").unwrap_or_default())
             .env("SHELL", format!("/bin/{SHELL}"))
             .env("LANG", "en_US.UTF-8")
@@ -168,15 +167,6 @@ impl Server {
         if let Some(mut child) = self.child.take() {
             child.wait().unwrap();
         }
-    }
-
-    pub fn sessions(&self) -> Vec<String> {
-        self.call("session.list", &json!({}))["sessions"]
-            .as_array()
-            .unwrap()
-            .iter()
-            .map(|s| s["session_id"].as_str().unwrap().to_owned())
-            .collect()
     }
 }
 

@@ -10,7 +10,7 @@ use serde_json::json;
 
 use super::view::View;
 use super::{ADAPTER, Daemon, Exit, FIRST_FILE, PIPE, WAITER_EXIT, WAL};
-use crate::restore::{Restorer, Spec};
+use crate::restore::Restorer;
 use crate::rex::{Pipe, Rex, str_at};
 use crate::store::{self, now_ms};
 use crate::task::{Follow, Interest};
@@ -65,18 +65,15 @@ impl Daemon<'_> {
     }
 
     fn observe_epoch(&mut self, rex: &mut Rex, instance: &str) -> Result<()> {
-        let spec = Spec {
-            gate: vec![
-                self.options.exe.to_string_lossy().into_owned(),
-                "gate".to_owned(),
-                "--state-dir".to_owned(),
-                self.options.state_dir.to_string_lossy().into_owned(),
-            ],
-            theme: self.options.theme.clone(),
-        };
+        let gate = vec![
+            self.options.exe.to_string_lossy().into_owned(),
+            "gate".to_owned(),
+            "--state-dir".to_owned(),
+            self.options.state_dir.to_string_lossy().into_owned(),
+        ];
         let mut follow = Follow::default();
         follow.instance_started(&mut self.store, instance)?;
-        let mut restorer = Restorer::new(spec);
+        let mut restorer = Restorer::new(gate);
         restorer.start(rex, &mut self.store, instance)?;
         let mut view = View::new(instance);
         view.baseline(rex, &mut self.store)?;
@@ -85,16 +82,20 @@ impl Daemon<'_> {
             store::sweep(&tx, instance, now_ms())?;
             tx.commit()?;
         }
+        restorer.reconcile(rex, &mut self.store, instance);
         let mut version = self.store.data_version()?;
         let mut follow_due = true;
         loop {
             let (events, ended) = pipe_of(rex).events();
+            // The daemon's own writes leave `data_version` as it was, so a pane change it records
+            // from an event wakes the restores itself.
+            let mut recorded = false;
             for event in &events {
                 if str_at(event, "/event") == Some("session_view_changed") {
                     follow.view_changed();
                 }
-                match view.handle(rex, &mut self.store, event) {
-                    Ok(changed) => follow_due |= changed,
+                match view.handle(&mut self.store, event) {
+                    Ok(changed) => recorded |= changed,
                     Err(e) => log::error!(
                         "event {}: {e:#}",
                         str_at(event, "/event").unwrap_or("an unnamed event")
@@ -104,9 +105,10 @@ impl Daemon<'_> {
             if ended {
                 return Ok(());
             }
+            follow_due |= recorded;
             let now = Instant::now();
             let changed = self.store.data_version()?;
-            if changed != version || restorer.deadline().is_some_and(|at| at <= now) {
+            if recorded || changed != version || restorer.deadline().is_some_and(|at| at <= now) {
                 version = changed;
                 restorer.reconcile(rex, &mut self.store, instance);
                 follow_due = true;

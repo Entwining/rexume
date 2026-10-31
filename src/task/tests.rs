@@ -10,6 +10,7 @@ use super::gone::{WORKER_ROUNDS, block_gone};
 use super::outcome;
 use super::register::{Kind, refuse_stopped, start_round};
 use super::{blocked, cleanup, evidence, notice, request, shown, unread};
+use crate::restore;
 use crate::store::Store;
 
 pub(crate) const PROMPT: &str = r#"{"type":"user","timestamp":"2026-10-24T15:29:45.738Z","message":{"role":"user","content":"Count"}}"#;
@@ -235,7 +236,7 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
         Some("notice_finished"),
         Some("notice_blocked_unsent"),
     );
-    let statements: [(&str, &str, Option<&str>); 21] = [
+    let statements: [(&str, &str, Option<&str>); 23] = [
         ("OPEN_ROUNDS", &OPEN_ROUNDS, open),
         ("outcome::ROUND", &outcome::ROUND, None),
         ("evidence::PANE", evidence::PANE, None),
@@ -245,7 +246,6 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
         ("blocked::ON_PANE", &blocked::ON_PANE, open),
         ("cleanup::CLAIM", &cleanup::CLAIM, open),
         ("cleanup::DUE", &cleanup::DUE, open),
-        ("cleanup::RESTORING", &cleanup::RESTORING, None),
         ("notice::PENDING", notice::PENDING, None),
         ("notice::receipt::SENT", notice::receipt::SENT, None),
         ("notice::READY_OWNER", notice::READY_OWNER, None),
@@ -265,6 +265,9 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
         ("request::WORKER", request::WORKER, None),
         ("request::CLAIM", &request::CLAIM, None),
         ("request::SENT_TO_PI", &request::SENT_TO_PI, open),
+        ("restore::OPEN_RESTORES", restore::OPEN_RESTORES, None),
+        ("restore::OPENED_ELSEWHERE", restore::OPENED_ELSEWHERE, None),
+        ("restore::FOREGROUND", restore::FOREGROUND, None),
     ];
     for (name, sql, partial) in statements {
         let mut plan = store.conn().prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;

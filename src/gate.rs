@@ -1,85 +1,59 @@
-//! The first program of every restored block. It claims its slot, then becomes the shell or the
-//! reopened conversation, or exits as the pane's program had. It exits only in a pane created to
-//! stay open: a block whose program exits otherwise closes, and a close on a live server counts as
-//! the user's.
+//! The line the daemon types into the shell of a pane the server restored. It claims the pane's
+//! restore, then becomes the reopened conversation, which runs as a child of the pane's shell and
+//! leaves that shell at its prompt when it exits. A restore claimed already, or one whose
+//! conversation runs elsewhere, starts nothing, and the shell's prompt comes back.
 
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
 
 use anyhow::{Context, Result, bail};
-use nix::sys::signal::{Signal, raise};
 use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::Map;
 
-use crate::layout;
 use crate::report::{self, Process, Report, Role};
-use crate::restore::{Plan, Start};
+use crate::restore::{self, Plan, Start};
 use crate::runtime::{self, Runtime, Turn};
-use crate::store::{Store, now_ms};
+use crate::store::{Store, bind_live, now_ms};
 
-/// The shell started when `SHELL` is unset or fails; Linux systems often have no zsh.
+/// The shell started when `SHELL` is unset; Linux systems often have no zsh.
 #[cfg(target_os = "macos")]
 const FALLBACK_SHELL: &str = "/bin/zsh";
 #[cfg(target_os = "linux")]
 const FALLBACK_SHELL: &str = "/bin/sh";
 
-#[expect(
-    clippy::disallowed_methods,
-    reason = "the gate exits as the pane's program had, or after both shells failed; no caller remains"
-)]
-pub fn run(state_dir: &Path, op: &str, slot: i64) -> ! {
-    let claimed = match claim_here(state_dir, op, slot) {
-        Ok(claimed) => Some(claimed),
+/// Claims the restore and starts its conversation. Returns, as the gate's exit status, only when
+/// it started nothing: 0 when the conversation runs in another pane, 1 when the claim failed or
+/// the conversation could not start.
+pub fn run(state_dir: &Path, id: &str) -> u8 {
+    let (started, plan) = match claim_here(state_dir, id) {
+        Ok(claimed) => claimed,
         Err(e) => {
-            eprintln!("rexume: {e:#}; starting a shell instead");
-            None
+            eprintln!("rexume: {e:#}");
+            return 1;
         }
     };
-    let shell = std::env::var_os("SHELL").map_or_else(
-        || FALLBACK_SHELL.to_owned(),
-        |shell| shell.to_string_lossy().into_owned(),
-    );
-    let error = match claimed {
-        Some((Start::Exited, plan)) => {
-            // Rex reports -1 for a program a signal ended.
-            if plan.exit_code == Some(-1) {
-                let _ = raise(Signal::SIGTERM);
-            }
-            std::process::exit(
-                plan.exit_code
-                    .and_then(|c| i32::try_from(c).ok())
-                    .unwrap_or(1),
-            )
-        }
-        Some((started, plan)) if started.runs_conversation() => {
-            if started == Start::Continue {
-                eprintln!(
-                    "rexume: {}; reopening the conversation with one prompt to continue",
-                    plan.reason
-                );
-            }
-            agent(&shell, &plan, started)
-        }
-        _ => login_shell(&shell),
-    };
+    if !started.runs_conversation() {
+        eprintln!("rexume: the conversation was opened in another pane; it stays there");
+        return 0;
+    }
+    if started == Start::Continue {
+        eprintln!(
+            "rexume: {}; reopening the conversation with one prompt to continue",
+            plan.reason
+        );
+    }
+    let shell = std::env::var("SHELL").unwrap_or_else(|_| FALLBACK_SHELL.to_owned());
+    let error = agent(&shell, &plan, started);
     eprintln!("rexume: failed to start `{shell}`: {error}");
-    let error = login_shell(FALLBACK_SHELL);
-    eprintln!("rexume: failed to start `{FALLBACK_SHELL}`: {error}");
-    std::process::exit(1)
+    1
 }
 
-fn login_shell(shell: &str) -> std::io::Error {
-    let name = Path::new(shell)
-        .file_name()
-        .map_or("zsh".into(), |n| n.to_string_lossy().into_owned());
-    Command::new(shell).arg0(format!("-{name}")).exec()
-}
-
-/// Runs the conversation from an interactive shell, as when the user starts it. A conversation
-/// that was the terminal's own program replaces the shell, so the pane shows its exit; otherwise
-/// a login shell follows it in the pane. Without the trap, Ctrl+C ending the program would also
-/// end the shell's command list, and the pane would close.
+/// Runs the conversation from an interactive shell, as when the user starts it, so that a shell
+/// alias or function of the program's name applies; `exec` would skip both. The shell replaces
+/// this process, and the shell runs a lone command as itself rather than as a child, so the
+/// conversation runs as the process the claim recorded; a function that wraps it runs it as that
+/// process's child, which the daemon records once the pane shows it in the foreground.
 fn agent(shell: &str, plan: &Plan, started: Start) -> std::io::Error {
     let prompt = plan
         .prompt
@@ -89,15 +63,8 @@ fn agent(shell: &str, plan: &Plan, started: Start) -> std::io::Error {
         Ok(command) => command,
         Err(e) => return std::io::Error::other(e.to_string()),
     };
-    let script = if plan.own_program {
-        command
-    } else {
-        let quoted_shell =
-            shlex::try_quote(shell).map_or_else(|_| FALLBACK_SHELL.into(), |s| s.into_owned());
-        format!("trap : INT; {command}; exec {quoted_shell} -l")
-    };
     let mut process = Command::new(shell);
-    process.args(["-i", "-c", &script]);
+    process.args(["-i", "-c", &command]);
     if !plan.keeps_session_env {
         process.env_remove("REX_SESSION");
     }
@@ -112,138 +79,97 @@ fn command_line(plan: &Plan, prompt: Option<&str>) -> Result<String, shlex::Quot
     for (name, value) in &plan.env {
         line += &format!("{name}={} ", shlex::try_quote(value)?);
     }
-    if plan.own_program {
-        line += "exec ";
-    }
     line += &shlex::try_join(plan.argv.iter().map(String::as_str).chain(prompt))?;
     Ok(line)
 }
 
-/// Claims the slot for the pane this process runs in.
-fn claim_here(state_dir: &Path, op: &str, slot: i64) -> Result<(Start, Plan)> {
-    let block = std::env::var_os("REX_BLOCK").context("REX_BLOCK is not set")?;
-    let session = std::env::var_os("REX_SESSION").context("REX_SESSION is not set")?;
+/// Claims the restore for the pane this process runs in.
+fn claim_here(state_dir: &Path, id: &str) -> Result<(Start, Plan)> {
+    let block = std::env::var("REX_BLOCK").context("REX_BLOCK is not set")?;
     let mut store = Store::open(state_dir)?;
-    claim(
-        &mut store,
-        op,
-        slot,
-        &block.to_string_lossy(),
-        &session.to_string_lossy(),
-    )
+    claim(&mut store, id, &block, std::process::id())
 }
 
-/// Claims the slot for `block` and returns what it starts. A slot is claimed once; a
+/// Claims the restore for `block` and returns what it starts. A restore is claimed once; a
 /// conversation that reported itself from another pane since the restore was planned is already
 /// running there and is not started, and a turn its record shows ended since is not continued.
-/// The claim binds this block and its session to their lineages, and makes a conversation it
-/// starts as the terminal's own program the pane's occupant.
-fn claim(
-    store: &mut Store,
-    op: &str,
-    slot: i64,
-    block: &str,
-    session: &str,
-) -> Result<(Start, Plan)> {
-    let (start, runtime, plan): (String, Option<String>, String) = store
+/// The claim makes a conversation it starts the pane's occupant, as process `pid`.
+fn claim(store: &mut Store, id: &str, block: &str, pid: u32) -> Result<(Start, Plan)> {
+    type Row = (String, String, String, String, String, String);
+    let (start, runtime, plan, instance, lineage, native_id): Row = store
         .conn()
         .query_row(
-            "SELECT start, runtime, plan FROM restore_slot WHERE op_id = ?1 AND slot = ?2",
-            params![op, slot],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            "SELECT start, runtime, plan, instance_id, block_lineage, native_id FROM restore
+             WHERE id = ?1",
+            params![id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                ))
+            },
         )
         .optional()
-        .with_context(|| format!("failed to read restore {op}"))?
-        .with_context(|| format!("no slot {slot} in restore {op}"))?;
+        .with_context(|| format!("failed to read restore {id}"))?
+        .with_context(|| format!("no restore {id}"))?;
+    let runtime: Runtime = runtime.parse()?;
     let start: Start = start.parse()?;
     let plan: Plan = serde_json::from_str(&plan)?;
     let mut started = start;
     // Read before the transaction: no record is read while holding the write lock.
-    if start == Start::Continue && !turn_still_open(runtime.as_deref(), plan.transcript.as_deref())
-    {
+    if start == Start::Continue && !turn_still_open(runtime, plan.transcript.as_deref()) {
         started = Start::Agent;
     }
     let start_position = match plan.transcript.as_deref() {
-        Some(path) if plan.own_program => report::record_length(path)?,
-        _ => 0,
+        Some(path) => report::record_length(path)?,
+        None => 0,
     };
     let tx = store.write()?;
-    let (instance, lineage, session_lineage, native_id, planned_at): (
-        String,
-        String,
-        String,
-        Option<String>,
-        i64,
-    ) = tx.query_row(
-        "SELECT s.instance_id, s.block_lineage, o.session_lineage, s.native_id, o.created_at
-         FROM restore_slot s JOIN restore_op o ON o.id = s.op_id WHERE s.op_id = ?1 AND s.slot = ?2",
-        params![op, slot],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
-    )?;
-    // A report in the same millisecond as the plan counts as later: starting a shell is the
-    // safe side.
-    let elsewhere = started.runs_conversation()
-        && tx.query_row(
-            "SELECT EXISTS (SELECT 1 FROM occupant WHERE runtime = ?1 AND native_id = ?2
-               AND reported_at >= ?3 AND block_lineage != ?4)",
-            params![runtime, native_id, planned_at, lineage],
-            |row| row.get(0),
-        )?;
-    if elsewhere {
+    if restore::opened_elsewhere(&tx, id)? {
         started = Start::Shell;
     }
     let claimed = tx.execute(
-        "UPDATE restore_slot SET claimed_at = ?1, started = ?2
-         WHERE op_id = ?3 AND slot = ?4 AND claimed_at IS NULL",
-        params![now_ms(), started.as_str(), op, slot],
+        "UPDATE restore SET state = 'claimed', claimed_at = ?1, started = ?2, pid = ?3, note = NULL
+         WHERE id = ?4 AND state IN ('typed', 'unknown')",
+        params![now_ms(), started.as_str(), pid, id],
     )?;
     if claimed == 0 {
-        bail!("slot {slot} of restore {op} was already claimed");
+        bail!("this pane's restore has run already; nothing more to start");
     }
-    layout::bind_restored(&tx, &instance, block, &lineage)?;
-    layout::bind_restored(&tx, &instance, session, &session_lineage)?;
-    if plan.own_program
-        && started.runs_conversation()
-        && let (Some(runtime), Some(native_id)) = (runtime, native_id)
-    {
+    bind_live(&tx, &instance, block, &lineage)?;
+    if started.runs_conversation() {
         occupy(
             &tx,
             &lineage,
             &instance,
-            runtime.parse()?,
-            native_id,
+            (runtime, native_id),
             &plan,
+            pid,
             start_position,
         )?;
     }
-    // A floating layer whose reply was lost reports here only after the restore gave up waiting.
-    tx.execute(
-        "UPDATE restore_op SET state = 'completed', note = NULL WHERE id = ?1 AND state = 'partial'
-           AND NOT EXISTS (SELECT 1 FROM restore_slot s WHERE s.op_id = ?1
-             AND NOT EXISTS (SELECT 1 FROM live l
-                             WHERE l.instance_id = s.instance_id AND l.lineage = s.block_lineage))",
-        params![op],
-    )?;
     tx.commit()?;
-    if elsewhere {
-        bail!("the conversation was opened in another pane after the restore was planned");
-    }
     Ok((started, plan))
 }
 
-/// Records a conversation that was the terminal's own program as the pane's occupant: `agent`
-/// replaces this process with the shell and the shell with the conversation, which therefore
-/// runs as this process. Its own report may come much later, since Codex runs a resumed
-/// conversation's session-start hook only when its first turn starts, and until then requests and
-/// notices would wait for input nobody gives. The name of the process is not known before it
-/// runs; its own report adds it and keeps the start measured here.
+/// Records the conversation the claim starts as the pane's occupant: `agent` replaces this process
+/// with the shell and the shell with the conversation, which therefore runs as this process, or as
+/// a child of it when a shell function wraps it, which the daemon then records instead. Its own report
+/// may come much later, since Codex runs a resumed conversation's session-start hook only when its
+/// first turn starts, and until then requests and notices would wait for input nobody gives. The
+/// name of the process is not known before it runs; its own report adds it and keeps the start
+/// measured here.
 fn occupy(
     tx: &Transaction,
     lineage: &str,
     instance: &str,
-    runtime: Runtime,
-    native_id: String,
+    (runtime, native_id): (Runtime, String),
     plan: &Plan,
+    pid: u32,
     start_position: u64,
 ) -> Result<()> {
     let report = Report {
@@ -258,20 +184,17 @@ fn occupy(
         transport: Map::new(),
         keeps_session_env: plan.keeps_session_env,
         instance: instance.to_owned(),
-        pid: i64::from(std::process::id()),
+        pid: i64::from(pid),
         name: None,
-        own_program: true,
+        own_program: false,
         start_position,
     };
     report::record(tx, lineage, runtime, &report, &process)
 }
 
 /// Whether the conversation's record still ends with the turn the plan would continue.
-fn turn_still_open(runtime: Option<&str>, transcript: Option<&str>) -> bool {
-    let (Some(runtime), Some(transcript)) = (runtime, transcript) else {
-        return false;
-    };
-    runtime.parse::<Runtime>().is_ok_and(|runtime| {
+fn turn_still_open(runtime: Runtime, transcript: Option<&str>) -> bool {
+    transcript.is_some_and(|transcript| {
         matches!(
             runtime::last_turn(runtime, Path::new(transcript), 0),
             Ok(Some(Turn::Open { .. }))

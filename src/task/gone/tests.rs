@@ -23,7 +23,7 @@ fn a_round_an_earlier_instance_left_open_in_a_pane_the_server_restored_ends() ->
            VALUES ('later', 1, 'running', 20), ('new', 1, 'running', 5), ('other', 1, 'running', 0);",
     )?;
     let tx = store.write()?;
-    end_left_to_server(&tx, "i2", &["b".to_owned()])?;
+    end_left_to_server(&tx, "i2", "b")?;
     tx.commit()?;
     let rounds: Vec<(String, String, Option<String>)> = store
         .conn()
@@ -35,7 +35,7 @@ fn a_round_an_earlier_instance_left_open_in_a_pane_the_server_restored_ends() ->
     assert!(
         note.as_deref()
             .unwrap()
-            .contains("restored the worker's pane itself")
+            .contains("its conversation was not reopened there")
     );
     assert_eq!(
         rounds[..3]
@@ -54,5 +54,28 @@ fn a_round_an_earlier_instance_left_open_in_a_pane_the_server_restored_ends() ->
         |row| row.get(0),
     )?;
     assert_eq!(notices, 1);
+    Ok(())
+}
+
+/// A worker's conversation someone reopened in its own pane on the new instance, before the daemon
+/// planned the pane, takes its round up from its record there.
+#[test]
+fn a_round_whose_conversation_reopened_in_its_pane_goes_on() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = record(&[PROMPT])?;
+    let mut store = task_world(dir.path(), transcript.path(), None)?;
+    store.conn().execute_batch(
+        "INSERT INTO epoch (instance_id, started_at) VALUES ('i2', 10);
+         UPDATE occupant SET instance_id = 'i2', pid = 300 WHERE block_lineage = 'b';",
+    )?;
+    let tx = store.write()?;
+    end_left_to_server(&tx, "i2", "b")?;
+    tx.commit()?;
+    let state: String = store.conn().query_row(
+        "SELECT state FROM task_round WHERE task_id = 't'",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(state, "running");
     Ok(())
 }

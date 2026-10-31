@@ -10,14 +10,14 @@ use super::{Plan, Start};
 use crate::runtime::{self, Conversation, Runtime, Turn};
 use crate::task;
 
-/// One slot as planned before its insert.
+/// How one pane starts, as planned before its insert: a conversation exactly when it reopens one.
 pub(super) struct Candidate {
     pub start: Start,
     pub conversation: Option<(Runtime, String)>,
     pub plan: Plan,
 }
 
-pub(super) fn shell(reason: &str) -> Candidate {
+fn shell(reason: &str) -> Candidate {
     Candidate {
         start: Start::Shell,
         conversation: None,
@@ -82,16 +82,11 @@ struct LastSeen {
     status_name: Option<String>,
 }
 
-/// Plans a pane by its last use as recorded: an exited terminal stays exited unless its own
-/// program was, or may have been, the conversation, which reopens; a conversation still the
-/// foreground program reopens; anything else gets a shell. The occupant counts only from the
+/// Plans a pane by its last use as recorded on an earlier instance: a conversation that was the
+/// terminal's own program, or may have been, reopens after it exited; a conversation still the
+/// foreground program reopens; anything else keeps the shell. The occupant counts only from the
 /// instance the pane's record describes, where its PID names a process.
-pub(super) fn candidate(
-    conn: &Connection,
-    instance: &str,
-    block: &str,
-    server_gone: bool,
-) -> Result<Candidate> {
+pub(super) fn candidate(conn: &Connection, instance: &str, block: &str) -> Result<Candidate> {
     let seen: Option<LastSeen> = conn
         .query_row(
             "SELECT instance_id, fg_pid, last_exit, status, status_pid, status_name FROM block
@@ -112,30 +107,22 @@ pub(super) fn candidate(
     let Some(seen) = seen else {
         return Ok(shell("the pane was never recorded"));
     };
+    if seen.instance_id == instance {
+        return Ok(shell("the pane was recorded on this server instance"));
+    }
     let occupant = occupant(conn, block)?.filter(|o| {
         o.instance_id
             .as_deref()
             .is_none_or(|i| i == seen.instance_id)
     });
     // Rex starts nothing in a terminal after its own program exits. A conversation reported
-    // before version 3 may have been that program; it reopens from a shell.
-    if let Some(code) = seen.last_exit {
-        let occupant = match occupant.filter(|o| o.own_program != Some(false)) {
-            Some(o) if !ran_elsewhere(conn, block, &o)? => Some(o),
-            _ => None,
-        };
-        return match occupant {
-            Some(mut occupant) => reopen(conn, instance, block, &mut occupant, None),
-            None => Ok(Candidate {
-                start: Start::Exited,
-                conversation: None,
-                plan: Plan {
-                    own_program: true,
-                    exit_code: Some(code),
-                    reason: "the pane's program had exited".into(),
-                    ..Plan::default()
-                },
-            }),
+    // before version 3 may have been that program.
+    if seen.last_exit.is_some() {
+        return match occupant.filter(|o| o.own_program != Some(false)) {
+            Some(mut o) if !ran_elsewhere(conn, block, &o)? => {
+                reopen(conn, instance, block, &mut o, None)
+            }
+            _ => Ok(shell("the pane's program had exited")),
         };
     }
     let Some(mut occupant) = occupant else {
@@ -144,6 +131,16 @@ pub(super) fn candidate(
     if seen.fg_pid != Some(occupant.pid) {
         return Ok(shell("the conversation had already left the pane"));
     }
+    // Only a server whose end was observed left its last records as its final state.
+    let ended: Option<String> = conn
+        .query_row(
+            "SELECT end_reason FROM epoch WHERE instance_id = ?1 ORDER BY id DESC LIMIT 1",
+            params![seen.instance_id],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    let server_gone = ended.as_deref() == Some("server_gone");
     reopen(
         conn,
         instance,
@@ -217,8 +214,6 @@ fn reopen(
             prompt,
             transcript: occupant.conversation.transcript.clone(),
             keeps_session_env: occupant.keeps_session_env,
-            own_program: occupant.own_program == Some(true),
-            exit_code: None,
             reason,
         },
     })

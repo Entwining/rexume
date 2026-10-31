@@ -16,11 +16,9 @@ use rusqlite::{
 
 const SCHEMA: &str = include_str!("schema.sql");
 /// The `user_version` that `schema.sql` sets.
-pub const SCHEMA_VERSION: i64 = 6;
+pub const SCHEMA_VERSION: i64 = 7;
 /// The `application_id` that `schema.sql` sets: 'rexu' in ASCII.
 const APPLICATION_ID: i64 = 0x7265_7875;
-/// A restore that can still create or bind panes: the `restore_op` states before its last.
-pub const UNFINISHED_RESTORE: &str = "state IN ('planned', 'sent', 'unknown', 'created')";
 /// How long finished restores, tasks, and unused conversations are kept.
 const RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
@@ -203,27 +201,12 @@ pub fn bind_live(tx: &Transaction, instance: &str, live_id: &str, lineage: &str)
     }
 }
 
-/// Unbinds a live ID the daemon recorded under its own ID before the reply or claim that names
-/// its lineage, and returns that provisional lineage; any other binding stays for `bind_live`.
-pub fn unbind_provisional(
-    tx: &Transaction,
-    instance: &str,
-    live_id: &str,
-) -> Result<Option<String>> {
-    let removed = tx.execute(
-        "DELETE FROM live WHERE instance_id = ?1 AND live_id = ?2 AND lineage = ?2",
-        params![instance, live_id],
-    )?;
-    Ok((removed == 1).then(|| live_id.to_owned()))
-}
-
 /// The lineage of a live resource, bound the first time it is seen on this instance. A resource
 /// the server brought back under the ID it had on an earlier instance, as Rex's own restore does,
 /// keeps the lineage that ID was last bound to, until the sweep forgets the earlier instances; any
-/// other takes its own ID, which is also the provisional lineage of one a restore created and its
-/// reply or gate has not bound yet. A lineage another resource on this instance holds already, as
-/// a copy that an earlier version restored beside Rex's own may, is not taken twice: the resource
-/// gets a new one.
+/// other takes its own ID. A lineage another resource on this instance holds already, as a copy
+/// that an earlier version restored beside Rex's own may, is not taken twice: the resource gets a
+/// new one.
 pub fn ensure_lineage(tx: &Transaction, instance: &str, live_id: &str) -> Result<String> {
     if let Some(lineage) = lineage_of(tx, instance, live_id)? {
         return Ok(lineage);
@@ -251,45 +234,6 @@ pub fn ensure_lineage(tx: &Transaction, instance: &str, live_id: &str) -> Result
     Ok(lineage)
 }
 
-/// Moves everything recorded about a pane under `from` to `to`, leaving it as it would be had the
-/// pane been bound to `to` when it was recorded: what the server said merges as the daemon's
-/// writers would have left it, with the processes, statuses, and exit of the new instance and the
-/// directory and size `to` kept until the new instance reports them; a conversation reported in
-/// the pane replaces the one `to` ran on the earlier instance; and tasks follow the pane.
-pub fn move_block(tx: &Transaction, from: &str, to: &str) -> Result<()> {
-    let merged = tx.execute(
-        "UPDATE block AS t SET instance_id = f.instance_id, fg_pid = f.fg_pid,
-           fg_generation = f.fg_generation, last_exit = f.last_exit, status = f.status,
-           status_pid = f.status_pid, status_name = f.status_name, status_at = f.status_at,
-           cwd = COALESCE(f.cwd, t.cwd), columns = COALESCE(f.columns, t.columns),
-           rows = COALESCE(f.rows, t.rows)
-         FROM block AS f WHERE t.lineage = ?2 AND f.lineage = ?1",
-        params![from, to],
-    )?;
-    if merged == 0 {
-        tx.execute(
-            "UPDATE block SET lineage = ?2 WHERE lineage = ?1",
-            params![from, to],
-        )?;
-    } else {
-        tx.execute("DELETE FROM block WHERE lineage = ?1", params![from])?;
-    }
-    tx.execute(
-        "DELETE FROM occupant WHERE block_lineage = ?2
-           AND EXISTS (SELECT 1 FROM occupant WHERE block_lineage = ?1)",
-        params![from, to],
-    )?;
-    tx.execute(
-        "UPDATE occupant SET block_lineage = ?2 WHERE block_lineage = ?1",
-        params![from, to],
-    )?;
-    tx.execute(
-        "UPDATE task SET worker_lineage = ?2 WHERE worker_lineage = ?1",
-        params![from, to],
-    )?;
-    Ok(())
-}
-
 /// Forgets what the server said about a pane and the conversation that ran in it.
 pub fn forget_block(tx: &Transaction, lineage: &str) -> Result<()> {
     tx.execute("DELETE FROM block WHERE lineage = ?1", params![lineage])?;
@@ -309,22 +253,21 @@ pub fn sweep(tx: &Transaction, instance: &str, now: i64) -> Result<()> {
         "DELETE FROM live WHERE instance_id != ?1",
         params![instance],
     )?;
+    // The baseline has moved every pane this instance shows to it, so an earlier instance's pane
+    // was closed, or not saved, while the daemon was not observing. A task's worker pane stays, and
+    // so does an occupant reported on this instance before its pane's row.
     tx.execute(
-        &format!(
-            "DELETE FROM block
-              WHERE instance_id != ?1
-                AND lineage NOT IN (SELECT j.value FROM session, json_tree(session.doc) AS j
-                                    WHERE j.key = 'lineage')
-                AND lineage NOT IN (SELECT s.block_lineage FROM restore_slot s
-                                    JOIN restore_op o ON o.id = s.op_id
-                                    WHERE o.instance_id = ?1 AND o.{UNFINISHED_RESTORE})
-                AND lineage NOT IN (SELECT worker_lineage FROM task WHERE pane_state != 'closed')"
-        ),
+        "DELETE FROM block WHERE instance_id != ?1
+           AND lineage NOT IN (SELECT worker_lineage FROM task WHERE pane_state != 'closed')",
         params![instance],
     )?;
-    // An earlier instance's restore can no longer move, whatever state it stopped in.
     tx.execute(
-        "DELETE FROM restore_op WHERE instance_id != ?1 AND created_at < ?2",
+        "DELETE FROM occupant WHERE (instance_id IS NULL OR instance_id != ?1)
+           AND NOT EXISTS (SELECT 1 FROM block WHERE block.lineage = occupant.block_lineage)",
+        params![instance],
+    )?;
+    tx.execute(
+        "DELETE FROM restore WHERE instance_id != ?1 AND created_at < ?2",
         params![instance, cutoff],
     )?;
     tx.execute(
@@ -338,7 +281,7 @@ pub fn sweep(tx: &Transaction, instance: &str, now: i64) -> Result<()> {
     )?;
     tx.execute(
         "DELETE FROM epoch
-          WHERE ended_at < ?1 AND instance_id NOT IN (SELECT instance_id FROM session)",
+          WHERE ended_at < ?1 AND instance_id NOT IN (SELECT instance_id FROM block)",
         params![cutoff],
     )?;
     tx.execute(
@@ -350,9 +293,9 @@ pub fn sweep(tx: &Transaction, instance: &str, now: i64) -> Result<()> {
             AND NOT EXISTS (SELECT 1 FROM task t
                             WHERE t.owner_runtime = conversation.runtime
                               AND t.owner_native_id = conversation.native_id)
-            AND NOT EXISTS (SELECT 1 FROM restore_slot s
-                            WHERE s.runtime = conversation.runtime
-                              AND s.native_id = conversation.native_id)
+            AND NOT EXISTS (SELECT 1 FROM restore r
+                            WHERE r.runtime = conversation.runtime
+                              AND r.native_id = conversation.native_id)
             AND NOT EXISTS (SELECT 1 FROM task t
                             WHERE t.worker_runtime = conversation.runtime
                               AND t.worker_native_id = conversation.native_id)",

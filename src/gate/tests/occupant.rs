@@ -32,32 +32,28 @@ fn occupant(store: &Store) -> Result<Option<Occupant>> {
         .optional()?)
 }
 
+/// The conversation the gate starts runs as the gate's process, under the user's shell rather
+/// than as the terminal's own program, and its record counts from where it stood at the claim.
 #[test]
-fn a_claim_records_a_conversation_it_starts_as_the_terminals_own_program() -> Result<()> {
+fn a_claim_records_the_conversation_it_starts_as_the_gates_process() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = dir.path().join("t.jsonl");
     std::fs::write(&transcript, format!("{PROMPT}\n"))?;
     let length = i64::try_from(std::fs::metadata(&transcript)?.len())?;
-    let shell_started = tempfile::tempdir()?;
-    let mut store = planned(shell_started.path(), &transcript, false)?;
-    claim(&mut store, "op", 0, "block:new", "session:new")?;
-    assert_eq!(occupant(&store)?, None);
-
-    let mut store = planned(dir.path(), &transcript, true)?;
-    claim(&mut store, "op", 0, "block:new", "session:new")?;
-    let pid = i64::from(std::process::id());
+    let mut store = typed(dir.path(), &transcript)?;
+    claim(&mut store, "r", "b", 42)?;
     assert_eq!(
         occupant(&store)?,
-        Some(("c".into(), Some("i2".into()), pid, None, Some(true), length))
+        Some(("c".into(), Some("i2".into()), 42, None, Some(false), length))
     );
     // The conversation's own reports come from the same process, under the name Rex gives it.
     let process = |start_position| Process {
         transport: Map::new(),
         keeps_session_env: false,
         instance: "i2".into(),
-        pid,
+        pid: 42,
         name: Some("claude".into()),
-        own_program: true,
+        own_program: false,
         start_position,
     };
     let report = |native_id: &str, role| Report {
@@ -89,9 +85,9 @@ fn a_claim_records_a_conversation_it_starts_as_the_terminals_own_program() -> Re
         Some((
             "c".into(),
             Some("i2".into()),
-            pid,
+            42,
             Some("claude".into()),
-            Some(true),
+            Some(false),
             length
         ))
     );
@@ -105,17 +101,16 @@ fn a_request_reaches_a_restored_worker_that_has_not_reported() -> Result<()> {
     let mut store = task_world(dir.path(), transcript.path(), None)?;
     let plan = Plan {
         transcript: Some(transcript.path().to_string_lossy().into_owned()),
-        own_program: true,
         ..Plan::default()
     };
     // Pi worker `w` reported from pane `b` on instance `i1`; the server restarted as `i2`, which
-    // the daemon observes, and runs this process as the pane's foreground program.
+    // the daemon observes, and restored the pane, into which the daemon typed the gate.
     store.conn().execute(
         "INSERT INTO conversation (runtime, native_id, transcript, resumable, reported_at)
          VALUES ('pi', 'w', ?1, 1, 50)",
         params![transcript.path().to_string_lossy()],
     )?;
-    store.conn().execute_batch(&format!(
+    store.conn().execute_batch(
         "UPDATE occupant SET runtime = 'pi', native_id = 'w', instance_id = 'i1'
            WHERE block_lineage = 'b';
          UPDATE task SET worker_runtime = 'pi', worker_native_id = 'w';
@@ -125,15 +120,12 @@ fn a_request_reaches_a_restored_worker_that_has_not_reported() -> Result<()> {
          INSERT INTO request (id, task_id, round, text) VALUES ('q', 't', 2, 'go');
          UPDATE epoch SET ended_at = 3, end_reason = 'server_gone';
          INSERT INTO epoch (id, instance_id, started_at) VALUES (2, 'i2', 4);
-         UPDATE block SET instance_id = 'i2', fg_pid = {}, status = NULL, status_pid = NULL
-           WHERE lineage = 'b';
-         INSERT INTO restore_op (id, instance_id, session_lineage, state, doc, created_at)
-           VALUES ('op', 'i2', 's', 'sent', '{{}}', 5);",
-        std::process::id()
-    ))?;
+         UPDATE block SET instance_id = 'i2', fg_pid = 42, status = NULL, status_pid = NULL
+           WHERE lineage = 'b';",
+    )?;
     store.conn().execute(
-        "INSERT INTO restore_slot (op_id, slot, instance_id, block_lineage, start, runtime,
-           native_id, plan) VALUES ('op', 0, 'i2', 'b', 'agent', 'pi', 'w', ?1)",
+        "INSERT INTO restore (id, instance_id, block_lineage, start, runtime, native_id, plan,
+           state, created_at, typed_at) VALUES ('r', 'i2', 'b', 'agent', 'pi', 'w', ?1, 'typed', 5, 6)",
         params![serde_json::to_string(&plan)?],
     )?;
     let request = |store: &Store| -> Result<(String, Option<String>)> {
@@ -149,7 +141,7 @@ fn a_request_reaches_a_restored_worker_that_has_not_reported() -> Result<()> {
         request(&store)?.1.as_deref(),
         Some("waiting for the worker's conversation to run in its pane")
     );
-    claim(&mut store, "op", 0, "block:new", "session:new")?;
+    claim(&mut store, "r", "b", 42)?;
     follow.pass(&mut store, None)?;
     assert_eq!(request(&store)?, ("sent".into(), None));
     Ok(())

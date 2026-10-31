@@ -6,7 +6,7 @@ use std::process::ExitCode;
 
 use anyhow::{Context, Result};
 use clap::{Parser, Subcommand};
-use serde_json::{Value, json};
+use serde_json::Value;
 
 use crate::runtime::Runtime;
 use crate::{daemon, gate, install, report, rex, status, store};
@@ -53,12 +53,23 @@ struct Server {
     /// `$XDG_RUNTIME_DIR/rex/server.sock` on Linux.
     #[arg(long, value_name = "ADDRESS")]
     server: Option<String>,
-    /// The foreground color restored terminals start with, as `#rrggbb`
-    #[arg(long, value_name = "COLOR", requires = "theme_background", value_parser = color)]
+    /// Ignored, accepted because a job that an earlier install wrote still passes it
+    #[arg(long, hide = true, value_name = "COLOR")]
     theme_foreground: Option<String>,
-    /// The background color restored terminals start with, as `#rrggbb`
-    #[arg(long, value_name = "COLOR", requires = "theme_foreground", value_parser = color)]
+    /// Ignored, as `--theme-foreground`
+    #[arg(long, hide = true, value_name = "COLOR")]
     theme_background: Option<String>,
+}
+
+impl Server {
+    fn warn_ignored(&self) {
+        if self.theme_foreground.is_some() || self.theme_background.is_some() {
+            log::warn!(
+                "--theme-foreground and --theme-background are ignored: Rexume no longer creates \
+                 terminals; run `rexume install` again to drop them from the job"
+            );
+        }
+    }
 }
 
 #[derive(Subcommand)]
@@ -74,10 +85,10 @@ enum Command {
     /// Remove what install wrote, keeping the state directory and this executable
     ///
     /// Removes the hooks, the Pi extension when install wrote it, and the job, which stops the
-    /// daemon. `~/.local/state/rexume` keeps the saved layouts, conversations, and task results;
+    /// daemon. `~/.local/state/rexume` keeps the recorded panes, conversations, and task results;
     /// delete it to remove them too.
     Uninstall,
-    /// Follow the Rex server, saving its sessions and restoring them after it restarts
+    /// Follow the Rex server and reopen the conversations of the panes it restores
     ///
     /// The job install writes runs this. It runs until stopped, logs to stderr, and exits at once
     /// when another daemon holds the same state directory. Set `RUST_LOG=rexume=debug` to log
@@ -115,15 +126,12 @@ enum Command {
         #[command(flatten)]
         state: StateDir,
     },
-    /// Run as the first program of a restored pane: claim its slot, then start its program
+    /// Run in the shell of a restored pane: claim its restore, then start its conversation
     #[command(hide = true)]
     Gate {
-        /// The restore operation
-        #[arg(value_name = "OP")]
-        op: String,
-        /// The pane's slot in it
-        #[arg(value_name = "SLOT")]
-        slot: i64,
+        /// The restore
+        #[arg(value_name = "ID")]
+        id: String,
         #[command(flatten)]
         state: StateDir,
     },
@@ -137,15 +145,6 @@ enum Command {
         #[arg(value_name = "TOKEN")]
         token: String,
     },
-}
-
-fn color(text: &str) -> Result<String, &'static str> {
-    match text.as_bytes() {
-        [b'#', hex @ ..] if hex.len() == 6 && hex.iter().all(u8::is_ascii_hexdigit) => {
-            Ok(text.to_owned())
-        }
-        _ => Err("not a color written as #rrggbb"),
-    }
 }
 
 pub fn main() -> ExitCode {
@@ -168,8 +167,8 @@ pub fn main() -> ExitCode {
             }
             return ExitCode::SUCCESS;
         }
-        Command::Gate { op, slot, state } => match state.resolve() {
-            Ok(dir) => gate::run(&dir, &op, slot),
+        Command::Gate { id, state } => match state.resolve() {
+            Ok(dir) => return ExitCode::from(gate::run(&dir, &id)),
             Err(e) => Err(e),
         },
         command => run(command),
@@ -191,17 +190,18 @@ pub fn main() -> ExitCode {
 fn run(command: Command) -> Result<Option<(Value, u8)>> {
     match command {
         Command::Install(server) => {
+            server.warn_ignored();
             let options = install::Install {
                 exe: exe()?,
                 rex: rex_path(server.rex)?,
                 server: server_address(server.server)?,
-                theme: server.theme_foreground.zip(server.theme_background),
                 path: std::env::var("PATH").context("PATH is not set")?,
             };
             install::install(&home()?, &options).map(|value| Some((value, 0)))
         }
         Command::Uninstall => install::uninstall(&home()?).map(|value| Some((value, 0))),
         Command::Daemon { server, state } => {
+            server.warn_ignored();
             let options = daemon::Options {
                 state_dir: state.resolve()?,
                 cli: rex::Cli {
@@ -209,10 +209,6 @@ fn run(command: Command) -> Result<Option<(Value, u8)>> {
                     endpoint: server_address(server.server)?,
                 },
                 exe: exe()?,
-                theme: server
-                    .theme_foreground
-                    .zip(server.theme_background)
-                    .map(|(fg, bg)| json!({ "foreground": fg, "background": bg })),
                 home: home()?,
             };
             daemon::run(&options).map(|()| None)

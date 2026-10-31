@@ -27,7 +27,6 @@ pub struct Install {
     pub exe: PathBuf,
     pub rex: PathBuf,
     pub server: String,
-    pub theme: Option<(String, String)>,
     /// The daemon's `PATH`, install's own, so that it starts the same `codex` the user does.
     pub path: String,
 }

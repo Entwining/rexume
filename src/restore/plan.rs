@@ -1,24 +1,22 @@
-//! Deciding how each pane of a saved session starts, by what the pane was last used for: a shell,
-//! the exit its program had shown, the conversation reopened, or reopened with the one prompt to
-//! continue a turn the server's end cut off.
+//! Deciding whether a pane the server restored reopens its conversation, by what the pane was last
+//! used for on the earlier instance: the conversation reopened, or reopened with the one prompt to
+//! continue a turn the server's end cut off; any other pane keeps the shell the server started.
 
 use std::fmt;
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
-use super::create;
 use crate::store::{Store, new_id, now_ms};
-use last_use::{Candidate, candidate, shell};
+use crate::task;
+use last_use::candidate;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Start {
-    /// A login shell, as a new pane gets.
+    /// The shell the server started, left as it is.
     Shell,
-    /// The pane's program exits again with the status it had exited with.
-    Exited,
     /// The conversation reopened.
     Agent,
     /// The conversation reopened with the one continuation prompt.
@@ -29,7 +27,6 @@ impl Start {
     pub fn as_str(self) -> &'static str {
         match self {
             Self::Shell => "shell",
-            Self::Exited => "exited",
             Self::Agent => "agent",
             Self::Continue => "continue",
         }
@@ -46,7 +43,6 @@ impl FromStr for Start {
     fn from_str(text: &str) -> Result<Self> {
         Ok(match text {
             "shell" => Self::Shell,
-            "exited" => Self::Exited,
             "agent" => Self::Agent,
             "continue" => Self::Continue,
             _ => bail!("unknown start {text}"),
@@ -60,7 +56,7 @@ impl fmt::Display for Start {
     }
 }
 
-/// What the gate needs to start a slot, stored whole in `restore_slot.plan`.
+/// What the gate needs to start a pane's conversation, stored whole in `restore.plan`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Plan {
     /// The reopen command, without the continuation prompt.
@@ -75,136 +71,85 @@ pub struct Plan {
     /// Whether the conversation ran with `REX_SESSION`. Workers start without it, so Rex does not
     /// ask them to label the session, and reopen without it too.
     pub keeps_session_env: bool,
-    /// Whether the program was the terminal's own rather than one started from its shell. It is
-    /// again, in a pane that stays open after it exits, so that the pane shows the exit and the
-    /// next restore finds what this one did.
-    #[serde(default)]
-    pub own_program: bool,
-    /// The status an `exited` slot exits with, as Rex reports it: -1 for a signal.
-    pub exit_code: Option<i64>,
-    /// Why the slot starts the way it does, logged with the plan.
+    /// Why the pane starts the way it does, logged with the plan.
     pub reason: String,
 }
 
-/// Plans one session's restore and returns the operation, or `None` when nothing is left to show.
-/// `retired` are the worker panes left out. The conversations' records are read before the
-/// transaction, which only decides and writes.
+/// Plans the restore of a pane the server restored, as recorded on an earlier instance, and returns
+/// it, or `None` when the pane keeps its shell or has a plan on this instance already. A pane that
+/// keeps its shell ends the rounds the earlier instance left open there, since nothing takes them
+/// up again, unless another pane reopens its conversation, whose record finishes them there. The
+/// conversation's record is read before the transaction, which only decides and writes.
 pub fn plan(
     store: &mut Store,
     instance: &str,
-    session: &str,
-    retired: &[String],
+    block: &str,
+    session_label: Option<&str>,
 ) -> Result<Option<String>> {
-    // Taken before the records are read: a report that arrives meanwhile is later than the plan.
+    // Taken before the record is read: a report that arrives meanwhile is later than the plan.
     let planned_at = now_ms();
-    let conn = store.conn();
-    let Some(saved) = create::saved(conn, session, retired)? else {
-        return Ok(None);
-    };
-    let candidates = candidates(conn, instance, &saved)?;
+    let candidate = candidate(store.conn(), instance, block)?;
     let tx = store.write()?;
     let planned: bool = tx.query_row(
-        "SELECT EXISTS (SELECT 1 FROM restore_op WHERE instance_id = ?1 AND session_lineage = ?2)",
-        params![instance, session],
+        "SELECT EXISTS (SELECT 1 FROM restore WHERE instance_id = ?1 AND block_lineage = ?2)",
+        params![instance, block],
         |row| row.get(0),
     )?;
     if planned {
         return Ok(None);
     }
-    let op = new_id();
-    tx.execute(
-        "INSERT INTO restore_op (id, instance_id, session_lineage, state, doc, created_at)
-         VALUES (?1, ?2, ?3, 'planned', ?4, ?5)",
-        params![op, instance, session, saved.doc, planned_at],
-    )?;
-    let mut starts = Vec::new();
-    for (slot, (block, mut candidate)) in saved.blocks.iter().zip(candidates).enumerate() {
-        let slot = i64::try_from(slot)?;
-        let insert = |candidate: &Candidate| -> Result<usize> {
-            let (runtime, native_id) = candidate
-                .conversation
-                .as_ref()
-                .map(|(r, id)| (r.as_str(), id.as_str()))
-                .unzip();
-            Ok(tx.execute(
-                "INSERT INTO restore_slot (op_id, slot, instance_id, block_lineage, start, runtime,
-                   native_id, plan) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
-                 ON CONFLICT (instance_id, runtime, native_id) WHERE start IN ('agent', 'continue')
-                 DO NOTHING",
+    let mut reason = candidate.plan.reason.clone();
+    let mut id = None;
+    if let Some((runtime, native_id)) = &candidate.conversation {
+        let new = new_id();
+        // A pane that shows the turn the server's end cut off takes over the plan of one planned
+        // first without it, so that the turn continues wherever it ran.
+        let planned: Option<String> = tx
+            .query_row(
+                "INSERT INTO restore (id, instance_id, block_lineage, session_label, start, runtime,
+                   native_id, plan, state, created_at)
+                   VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'planned', ?9)
+                 ON CONFLICT (instance_id, runtime, native_id) DO UPDATE SET
+                   block_lineage = excluded.block_lineage, session_label = excluded.session_label,
+                   start = excluded.start, plan = excluded.plan, created_at = excluded.created_at
+                 WHERE restore.state = 'planned' AND restore.start = 'agent'
+                   AND excluded.start = 'continue'
+                 RETURNING id",
                 params![
-                    op,
-                    slot,
+                    new,
                     instance,
                     block,
+                    session_label,
                     candidate.start.as_str(),
-                    runtime,
+                    runtime.as_str(),
                     native_id,
-                    serde_json::to_string(&candidate.plan)?
+                    serde_json::to_string(&candidate.plan)?,
+                    planned_at
                 ],
-            )?)
-        };
-        // Another slot on this instance already reopens the conversation: one process runs it.
-        if insert(&candidate)? == 0 {
-            candidate = shell("another pane reopens this conversation");
-            insert(&candidate)?;
+                |row| row.get(0),
+            )
+            .optional()?;
+        match planned {
+            Some(planned) => {
+                if planned != new {
+                    reason += "; the plan moves here from a pane that showed the conversation idle";
+                }
+                id = Some(planned);
+            }
+            None => reason = "another pane reopens this conversation".into(),
         }
-        starts.push((block, candidate.start, candidate.plan.reason));
     }
-    tx.commit()?;
-    for (block, start, reason) in starts {
-        log::info!("restore {op}: pane {block}: {}: {reason}", start.as_str());
+    if candidate.conversation.is_none() {
+        task::end_left_to_server(&tx, instance, block)?;
     }
-    Ok(Some(op))
-}
-
-/// Logs a saved session the server restored itself, and each of its panes that a restore of
-/// Rexume's would have started otherwise than with a shell, with the conversation it would have
-/// reopened there: Rex starts a shell in every pane it restores. Returns the session's panes but
-/// `retired`, which a restore would leave out.
-pub fn left_to_server(
-    conn: &Connection,
-    instance: &str,
-    session: &str,
-    retired: &[String],
-) -> Result<Vec<String>> {
-    log::info!("session {session}: the server restored it itself; Rexume leaves it as it is");
-    let Some(saved) = create::saved(conn, session, retired)? else {
-        return Ok(Vec::new());
+    let start = if id.is_some() {
+        candidate.start
+    } else {
+        Start::Shell
     };
-    for (block, candidate) in saved.blocks.iter().zip(candidates(conn, instance, &saved)?) {
-        if candidate.start == Start::Shell {
-            continue;
-        }
-        let conversation = candidate
-            .conversation
-            .map(|(runtime, id)| format!(" ({runtime} conversation {id})"))
-            .unwrap_or_default();
-        log::warn!(
-            "session {session}: pane {block}: the server opened a shell instead of {}{conversation}: {}",
-            candidate.start,
-            candidate.plan.reason
-        );
-    }
-    Ok(saved.blocks)
-}
-
-/// How each of the saved session's panes starts, by what it was last used for on the instance
-/// the layout was saved on.
-fn candidates(conn: &Connection, instance: &str, saved: &create::Saved) -> Result<Vec<Candidate>> {
-    let ended: Option<String> = conn
-        .query_row(
-            "SELECT end_reason FROM epoch WHERE instance_id = ?1 ORDER BY id DESC LIMIT 1",
-            params![saved.instance],
-            |row| row.get(0),
-        )
-        .optional()?
-        .flatten();
-    let server_gone = ended.as_deref() == Some("server_gone");
-    saved
-        .blocks
-        .iter()
-        .map(|block| candidate(conn, instance, block, server_gone))
-        .collect()
+    tx.commit()?;
+    log::info!("pane {block}: {start}: {reason}");
+    Ok(id)
 }
 
 mod last_use;

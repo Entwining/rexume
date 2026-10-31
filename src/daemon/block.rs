@@ -38,12 +38,14 @@ pub(super) fn touch_block(tx: &Transaction, instance: &str, block: &str) -> Resu
     Ok(lineage)
 }
 
-/// Records the foreground process, ignoring a report older than one already recorded.
+/// Records the foreground process, whose parent was `parent` when read, ignoring a report older
+/// than one already recorded.
 pub(super) fn set_foreground(
     tx: &Transaction,
     lineage: &str,
     foreground: Option<&Value>,
     generation: Option<i64>,
+    parent: Option<i64>,
 ) -> Result<()> {
     if let Some(generation) = generation {
         let stored: Option<i64> = tx.query_row(
@@ -55,33 +57,38 @@ pub(super) fn set_foreground(
             return Ok(());
         }
     }
+    let pid = foreground_pid(foreground);
     tx.execute(
-        "UPDATE block SET fg_pid = ?1, cwd = COALESCE(?2, cwd),
-           fg_generation = COALESCE(?3, fg_generation) WHERE lineage = ?4",
-        params![
-            foreground
-                .and_then(|f| f.get("pid"))
-                .and_then(Value::as_i64),
-            foreground.and_then(|f| str_at(f, "/cwd")),
-            generation,
-            lineage
-        ],
+        "UPDATE block SET fg_pid = ?1, fg_generation = COALESCE(?2, fg_generation)
+         WHERE lineage = ?3",
+        params![pid, generation, lineage],
     )?;
+    // The gate records the conversation it starts as its own process, which the shell it becomes
+    // replaces with the conversation unless a shell function wraps the command: the conversation
+    // is then that shell's child, maybe after other children the function or the shell's startup
+    // files run first, so each foreground child of the gate's process on the pane's instance, and
+    // that process itself once it shows again, becomes the occupant. Codex
+    // reports itself only when its first turn starts, and until then requests and notices would
+    // wait for the process the gate recorded.
+    if let (Some(pid), Some(parent)) = (pid, parent) {
+        tx.execute(
+            "UPDATE occupant SET pid = ?1
+             WHERE block_lineage = ?2 AND pid_name IS NULL
+               AND EXISTS (SELECT 1 FROM restore r JOIN block b
+                             ON b.lineage = r.block_lineage AND b.instance_id = r.instance_id
+                           WHERE r.instance_id = occupant.instance_id AND r.block_lineage = ?2
+                             AND r.pid IN (?1, ?3))",
+            params![pid, lineage, parent],
+        )?;
+    }
     Ok(())
 }
 
-pub(super) fn set_size(tx: &Transaction, lineage: &str, size: &Value) -> Result<()> {
-    let (Some(columns), Some(rows)) = (
-        size.get("columns").and_then(Value::as_i64),
-        size.get("rows").and_then(Value::as_i64),
-    ) else {
-        return Ok(());
-    };
-    tx.execute(
-        "UPDATE block SET columns = ?1, rows = ?2 WHERE lineage = ?3",
-        params![columns, rows, lineage],
-    )?;
-    Ok(())
+/// The foreground's process ID, as a report gives it.
+pub(super) fn foreground_pid(foreground: Option<&Value>) -> Option<i64> {
+    foreground
+        .and_then(|f| f.get("pid"))
+        .and_then(Value::as_i64)
 }
 
 pub(super) fn set_status(tx: &Transaction, lineage: &str, record: Option<&Value>) -> Result<()> {

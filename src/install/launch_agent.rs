@@ -103,7 +103,7 @@ fn stop(job: &Loaded) -> Result<()> {
 }
 
 pub(super) fn plist(install: &Install, log: &Path) -> plist::Value {
-    let mut args = vec![
+    let args = vec![
         install.exe.to_string_lossy().into_owned(),
         "daemon".to_owned(),
         "--rex".to_owned(),
@@ -111,14 +111,6 @@ pub(super) fn plist(install: &Install, log: &Path) -> plist::Value {
         "--server".to_owned(),
         install.server.clone(),
     ];
-    if let Some((foreground, background)) = &install.theme {
-        args.extend([
-            "--theme-foreground".to_owned(),
-            foreground.clone(),
-            "--theme-background".to_owned(),
-            background.clone(),
-        ]);
-    }
     let log = log.to_string_lossy().into_owned();
     let exe = install.exe.to_string_lossy().into_owned();
     let dict =

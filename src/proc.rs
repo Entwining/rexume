@@ -143,6 +143,11 @@ fn info(pid: u32) -> Option<(u32, String)> {
     Some((info.pbi_ppid, name.to_string_lossy().into_owned()))
 }
 
+/// A process's parent, or `None` when no such process is visible.
+pub fn parent(pid: i64) -> Option<i64> {
+    info(u32::try_from(pid).ok()?).map(|(parent, _)| i64::from(parent))
+}
+
 pub fn alive(pid: i64) -> bool {
     u32::try_from(pid).is_ok_and(|pid| info(pid).is_some())
 }

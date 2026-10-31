@@ -5,7 +5,6 @@ use rusqlite::params;
 use serde_json::json;
 
 use super::super::view::View;
-use crate::layout::bind_restored;
 use crate::store::{Store, now_ms};
 use crate::task::Follow;
 use crate::task::tests::{PROMPT, record, task_world};
@@ -117,30 +116,4 @@ fn a_restored_worker_stopping_on_a_dialog_before_a_pass_begins_a_new_episode() -
         &mut follow,
         superseded("the block ended before it was sent"),
     )
-}
-
-/// The same, with the restored pane seen under its own ID before the gate bound it, so that the
-/// binding merges that record over the worker's pane already on the new instance.
-#[test]
-fn a_worker_pane_bound_after_it_was_seen_ends_the_earlier_episode() -> Result<()> {
-    for taken in [false, true] {
-        let dir = tempfile::tempdir()?;
-        let transcript = record(&[PROMPT])?;
-        let (mut store, mut follow) = blocked_world(dir.path(), transcript.path(), taken)?;
-        store.conn().execute_batch(
-            "INSERT INTO epoch (id, instance_id, started_at) VALUES (2, 'i2', 2);",
-        )?;
-        let size = json!({ "columns": 80, "rows": 24 });
-        let event = json!({ "event": "size_changed", "block_id": "block:new", "payload": size });
-        View::new("i2").block_event(&mut store, "size_changed", &event, &size)?;
-        let tx = store.write()?;
-        bind_restored(&tx, "i2", "block:new", "b")?;
-        tx.commit()?;
-        store.conn().execute_batch(
-            "UPDATE occupant SET pid = 200, reported_at = 2 WHERE block_lineage = 'b';",
-        )?;
-        report(&mut store, "i2", "block:new", "blocked", 200)?;
-        second_episode(&mut store, &mut follow, first(taken))?;
-    }
-    Ok(())
 }

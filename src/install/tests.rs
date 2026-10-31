@@ -38,7 +38,6 @@ fn the_plist_round_trips_through_its_parsed_form() -> Result<()> {
         exe: "/opt/homebrew/bin/rexume".into(),
         rex: "/Applications/Rex.app/Contents/MacOS/rex".into(),
         server: "unix:///tmp/a%20b/server.sock".into(),
-        theme: Some(("#ffffff".into(), "#000000".into())),
         path: "/usr/bin:/bin".into(),
     };
     let wanted = launch_agent::plist(&install, Path::new("/tmp/rexume & co.log"));
@@ -57,7 +56,6 @@ fn the_unit_quotes_what_systemd_would_expand() {
         exe: "/opt/my $apps/rexume".into(),
         rex: r#"/opt/"rex"\bin/rex"#.into(),
         server: "unix:///tmp/a%20b/$HOME.sock".into(),
-        theme: None,
         path: "/opt/100%/bin:$PATH".into(),
     };
     let unit = systemd_unit::unit(&install);

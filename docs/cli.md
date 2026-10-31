@@ -9,10 +9,10 @@ A command's JSON object carries `version` at its top level, which changes only w
 ## install
 
 ```sh
-rexume install [--rex PATH] [--server ADDRESS] [--theme-foreground COLOR --theme-background COLOR]
+rexume install [--rex PATH] [--server ADDRESS]
 ```
 
-Installs the session hooks, the Pi extension, and the job that runs the daemon, a LaunchAgent on macOS and a systemd user service on Linux, as the README describes. `--rex` defaults to the first `rex` on `PATH` and fails when there is none; `--server` defaults to `REX_SERVER`, then `unix://$HOME/Library/Application%20Support/rex/server.sock` on macOS or `unix://$XDG_RUNTIME_DIR/rex/server.sock` on Linux, where install fails without `XDG_RUNTIME_DIR`. The job runs this executable by the path install was started with (`rexume` found on `PATH` is used as that path, not resolved further), so a package manager that replaces the file keeps the job working. The theme colors are the ones restored terminals start with, each written as `#rrggbb` with hex digits in either case; any other value is a usage error, here and for `daemon`. The job runs with install's own `PATH`, through which the daemon finds `codex` to send notices; run `install` again if `codex` moves.
+Installs the session hooks, the Pi extension, and the job that runs the daemon, a LaunchAgent on macOS and a systemd user service on Linux, as the README describes. `--rex` defaults to the first `rex` on `PATH` and fails when there is none; `--server` defaults to `REX_SERVER`, then `unix://$HOME/Library/Application%20Support/rex/server.sock` on macOS or `unix://$XDG_RUNTIME_DIR/rex/server.sock` on Linux, where install fails without `XDG_RUNTIME_DIR`. The job runs this executable by the path install was started with (`rexume` found on `PATH` is used as that path, not resolved further), so a package manager that replaces the file keeps the job working. `install` and `daemon` still accept `--theme-foreground` and `--theme-background`, which a job an earlier install wrote passes, and ignore them with a warning; install writes the job without them. The job runs with install's own `PATH`, through which the daemon finds `codex` to send notices; run `install` again if `codex` moves.
 
 ```json
 { "version": 1, "claude_hook": "created", "claude_hook_note": null, "codex_hook": "unchanged", "codex_hook_note": null,
@@ -58,7 +58,7 @@ Each field is `removed` or `absent`; `pi_extension` can also be `kept`. On Linux
 ## daemon
 
 ```sh
-rexume daemon [--rex PATH] [--server ADDRESS] [--theme-foreground COLOR --theme-background COLOR]
+rexume daemon [--rex PATH] [--server ADDRESS]
 ```
 
 The process the job runs. It runs until stopped, logs to stderr (set `RUST_LOG=rexume=debug` for every call it makes through its adapter), and exits 1 at once when another daemon holds the same state directory. It starts `rex do` with its adapter script as a child process and reconnects with a growing delay, from 1 to 30 seconds, when the server goes away; a new server socket wakes it early. On `SIGTERM` or `SIGINT` it ends `rex do` and exits 0; it also exits 0 when its executable is replaced, so that its job starts the new one. When it starts, it replaces the Pi extension install wrote, as install does, when that differs from this version's; it never creates a missing one, leaves a file install did not write as it is, and logs a failure without stopping.
@@ -69,15 +69,15 @@ The process the job runs. It runs until stopped, logs to stderr (set `RUST_LOG=r
 rexume status
 ```
 
-What to check after a restart, read without changing anything: restores that did not complete, notices not yet confirmed as delivered, and the error that ended the daemon's latest epoch.
+What to check after a restart, read without changing anything: restored panes whose conversation has not reopened, notices not yet confirmed as delivered, and the error that ended the daemon's latest epoch.
 
 ```json
-{ "version": 1, "restores": [{ "id": "…", "session": "work", "state": "partial", "note": "…", "created_at": 1792855785738 }],
+{ "version": 2, "restores": [{ "id": "…", "session": "work", "pane": "block:…", "state": "skipped", "note": "…", "created_at": 1792855785738 }],
   "undelivered_notices": [NOTICE],
   "epoch_error": { "error": "…", "started_at": 1792855785738, "ended_at": 1792855785790 } }
 ```
 
-`session` is the session's label. [docs/design.md](design.md#restore) explains each restore state. `epoch_error` is `null` unless the daemon's latest observation of the server ended on an error rather than with its connection or with the daemon's own stop or replacement; the daemon then connects again, and records nothing until it observes the server without one.
+Each restore is one pane the server restored where Rexume set out to reopen a conversation, listed unless its gate claimed it, so a restore that reopened nothing, `skipped` or `failed`, stays listed. `session` is the session's label, `pane` the pane's ID when Rexume first saw it, and `note` why the restore waits or ended. `state` is `planned` (waiting for the pane to show its shell with nothing typed), `typed` (the line was typed and its gate has not started yet), `unknown` (the gate did not start within 5 seconds of the line; a gate that starts later still claims it, and nothing is typed again), `skipped` (the pane closed, the conversation was opened in another pane, or the pane did not show an empty shell prompt within 30 seconds), or `failed` (the server refused the line). [docs/design.md](design.md#restore) explains them. `epoch_error` is `null` unless the daemon's latest observation of the server ended on an error rather than with its connection or with the daemon's own stop or replacement; the daemon then connects again, and records nothing until it observes the server without one.
 
 ## report
 
@@ -124,9 +124,9 @@ A message is the text itself or a file's contents, at most 256 KiB, read when th
 - `note` says why the round ended without a result.
 - `unread` is the number of finished turns in an interactive worker's record, from where the task started reading it, that no round has taken, which `task next` takes in order, counting an answer a closed pane's record leaves open as finished. It is `null` for a non-interactive or released task, before the worker's conversation is known, and when its record cannot be read or was replaced.
 - `request` is `null` except for a request round, where it is `{id, state, note}`. `state` is `pending`, `sending`, `sent`, `accepted`, `unknown`, `delivered`, or `superseded`, with a NOTICE's meanings: `delivered` once the worker's own record shows the request, and `superseded` when the round ended before the request was sent, which is then never sent. A request whose round ended after it was sent keeps the state it had then. `note` says why a request still waits or how its send went.
-- `pane` is `{state, closed_at, note}`. `state` is `open` while the pane exists and Rexume has neither closed nor given it up (a `--keep-pane` pane stays `open`), `closing` during a close attempt after the task was released, `closed` once the pane is gone, or `kept` when it was used or restored after the result and is left to whoever uses it. `note` says why a pane was kept or a close put off.
+- `pane` is `{state, closed_at, note}`. `state` is `open` while the pane exists and Rexume has neither closed nor given it up (a `--keep-pane` pane stays `open`), `closing` during a close attempt after the task was released, `closed` once the pane is gone, or `kept` when it was used after the result, or restored by the server and not left showing its shell, and is left to whoever uses it. `note` says why a pane was kept or a close put off.
 
-A round's `state` is `running` or `blocked` (the task's conversation has reported from the worker's pane on the current server, for a second without a break, that it is waiting on a dialog or a question; each such episode has one blocked notice) until it finishes as `completed` (its result is saved), `cancelled`, `failed`, `terminated` (a non-interactive run ended by a signal, or cut off when the Rex server stopped; or an interactive round cut off in a worker pane that the Rex server restored itself), `worker_closed`, or `abandoned` (the owner stopped waiting with `task abandon`).
+A round's `state` is `running` or `blocked` (the task's conversation has reported from the worker's pane on the current server, for a second without a break, that it is waiting on a dialog or a question; each such episode has one blocked notice) until it finishes as `completed` (its result is saved), `cancelled`, `failed`, `terminated` (a non-interactive run ended by a signal, or cut off when the Rex server stopped; or an interactive round in a worker pane whose conversation is not reopened after a restart, there or in another pane), `worker_closed`, or `abandoned` (the owner stopped waiting with `task abandon`).
 
 `NOTICE` has `id`, `kind` (`finished` when the round finished, `blocked` when it began a blocked episode), `task_id`, `round`, `round_state`, `state`, and `note`. A notice is listed while it may not have reached the owner yet: `sending`, `sent` (handed to Claude Code's socket, or written to Pi's inbox), `accepted` (Codex queued it, or the Pi extension took it), or `unknown` (the send may or may not have happened; Rexume never sends it again). It leaves the list only once the owner's own conversation record shows it (`delivered`). A `pending` notice is listed only when a send failed before anything left: its `note` holds the error, and the daemon tries again on its next pass. One that `task wait` took first, whose round was acknowledged first, or, for a blocked notice, whose episode ended first, is `superseded` and never sent; its `note` says which. Each notice has one claimant, `task wait` or the daemon, and is never sent again once it may have been sent; that is not a receipt, and two waits running at once may both report the same episode.
 
@@ -142,7 +142,7 @@ A notice's text starts with `[rexume NOTICE_ID]` and names the task, its title, 
 | `XDG_RUNTIME_DIR` | `install`, `daemon` (Linux) | the default server address when neither `--server` nor `REX_SERVER` is given |
 | `XDG_CONFIG_HOME` | `install`, `uninstall` (Linux) | where the systemd unit goes, when absolute |
 | `REX_BLOCK` | `report`, `task`, `gate` | the calling pane |
-| `REX_SESSION` | `report`, `gate` | the calling pane's session |
+| `REX_SESSION` | `report`, `gate` | the calling pane's session, which `gate` leaves out of a reopened conversation that ran without it |
 | `CLAUDE_CODE_MESSAGING_SOCKET` | `report claude` | where notices to that conversation go |
-| `SHELL` | `gate` | the shell a restored pane starts |
+| `SHELL` | `gate` | the interactive shell that runs a reopened conversation |
 | `RUST_LOG` | every command | log filter; `daemon` logs at `info` by default, the others at `warn` |

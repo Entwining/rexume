@@ -3,7 +3,7 @@ name = "rexume"
 version = "0.1.11"
 edition = "2024"
 rust-version = "1.99.1"
-description = "Restores Rex sessions and their agent conversations after the server restarts, and carries worker-task results back to the orchestrator"
+description = "Reopens agent conversations in the Rex panes the server restores after it restarts, and carries worker-task results back to the orchestrator"
 publish = false
 license = "MIT"
 repository = "https://github.com/Entwining/rexume"
@@ -36,6 +36,7 @@ serde_json = { version = "=1.0.154", features = ["preserve_order"] }
 shlex = "=2.0.1"
 tempfile = "=3.27.0"
 thiserror = "=2.0.21"
+unicode-width = { version = "=0.2.2", default-features = false }
 uuid = { version = "=1.29.0", default-features = false, features = ["std", "v7"] }
 which = "=8.0.6"
 

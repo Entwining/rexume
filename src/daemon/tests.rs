@@ -4,16 +4,15 @@ use std::os::unix::net::{UnixListener, UnixStream};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use rusqlite::types::Value as SqlValue;
 use serde_json::{Value, json};
 
 use super::block::{set_foreground, touch_block};
 use super::view::{View, next_read};
 use super::{Daemon, FIRST_FILE, Options};
 use crate::event::Queue;
-use crate::layout::bind_restored;
 use crate::rex::{Cli, Pipe, Rex};
 use crate::store::Store;
+use crate::task::tests::{PROMPT, record, task_world};
 
 #[test]
 fn a_restored_pane_takes_new_foreground_reports_and_ignores_older_ones() -> Result<()> {
@@ -29,9 +28,9 @@ fn a_restored_pane_takes_new_foreground_reports_and_ignores_older_ones() -> Resu
     let lineage = touch_block(&tx, "i2", "nb")?;
     let zsh = json!({ "pid": 200, "name": "zsh" });
     let claude = json!({ "pid": 300, "name": "claude" });
-    set_foreground(&tx, &lineage, Some(&zsh), Some(1))?;
-    set_foreground(&tx, &lineage, Some(&claude), Some(2))?;
-    set_foreground(&tx, &lineage, Some(&zsh), Some(1))?;
+    set_foreground(&tx, &lineage, Some(&zsh), Some(1), None)?;
+    set_foreground(&tx, &lineage, Some(&claude), Some(2), None)?;
+    set_foreground(&tx, &lineage, Some(&zsh), Some(1), None)?;
     let row: (Option<i64>, Option<i64>, Option<i64>) = tx.query_row(
         "SELECT fg_pid, fg_generation, last_exit FROM block WHERE lineage = 'b'",
         [],
@@ -41,72 +40,75 @@ fn a_restored_pane_takes_new_foreground_reports_and_ignores_older_ones() -> Resu
     Ok(())
 }
 
-/// The record a restored pane's events leave under its lineage, either bound to it before the
-/// events or recorded under its own ID and moved by the binding after them.
-fn pane_record(bound_first: bool, events: &[(&str, Value)]) -> Result<Vec<SqlValue>> {
+/// A conversation the gate started through a shell function runs as a child of the process the
+/// gate claimed its restore with, maybe after another command the function runs first, and the
+/// pane's occupant becomes each such child in turn; one the shell runs in place, after a command
+/// its startup files ran, is that process again. An occupant that reported itself, or one
+/// recorded on an earlier instance, stays as it is.
+#[test]
+fn a_gate_recorded_occupant_becomes_the_foreground_its_process_started() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let mut store = Store::open(dir.path())?;
-    store.conn().execute_batch(
-        "INSERT INTO block (lineage, instance_id, cwd, columns, rows, fg_pid, fg_generation, status,
-           status_pid, status_name, status_at, last_exit)
-           VALUES ('b', 'i1', '/old', 80, 24, 100, 5, 'working', 100, 'claude', 50, 1);",
+    let tx = store.write()?;
+    tx.execute_batch(
+        "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+           VALUES ('codex', 'c', 1, 0), ('codex', 'n', 1, 0), ('codex', 'o', 1, 0),
+                  ('codex', 'p', 1, 0);
+         INSERT INTO block (lineage, instance_id)
+           VALUES ('gate', 'i2'), ('named', 'i2'), ('old', 'i2'), ('in-place', 'i2');
+         INSERT INTO restore (id, instance_id, block_lineage, start, runtime, native_id, plan, state,
+           created_at, typed_at, claimed_at, started, pid)
+           VALUES ('r1', 'i2', 'gate', 'agent', 'codex', 'c', '{}', 'claimed', 0, 0, 0, 'agent', 200),
+                  ('r2', 'i2', 'named', 'agent', 'codex', 'n', '{}', 'claimed', 0, 0, 0, 'agent', 200),
+                  ('r3', 'i1', 'old', 'agent', 'codex', 'o', '{}', 'claimed', 0, 0, 0, 'agent', 200),
+                  ('r4', 'i2', 'in-place', 'agent', 'codex', 'p', '{}', 'claimed', 0, 0, 0, 'agent', 600);
+         INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid, pid_name,
+           keeps_session_env, reported_at)
+           VALUES ('gate', 'codex', 'c', 'i2', 200, NULL, 0, 0),
+                  ('named', 'codex', 'n', 'i2', 200, 'codex', 0, 0),
+                  ('old', 'codex', 'o', 'i1', 200, NULL, 0, 0),
+                  ('in-place', 'codex', 'p', 'i2', 600, NULL, 0, 0);",
     )?;
-    if bound_first {
-        store.conn().execute(
-            "INSERT INTO live (instance_id, live_id, lineage) VALUES ('i2', 'block:new', 'b')",
-            [],
-        )?;
+    let first = json!({ "pid": 300, "name": "sleep" });
+    for lineage in ["gate", "named", "old"] {
+        set_foreground(&tx, lineage, Some(&first), Some(1), Some(200))?;
     }
-    let view = View::new("i2");
-    for (name, payload) in events {
-        let event = json!({ "event": name, "block_id": "block:new", "payload": payload });
-        view.block_event(&mut store, name, &event, payload)?;
-    }
-    if !bound_first {
-        let tx = store.write()?;
-        bind_restored(&tx, "i2", "block:new", "b")?;
-        tx.commit()?;
-    }
-    Ok(store
-        .conn()
-        .query_row("SELECT * FROM block WHERE lineage = 'b'", [], |row| {
-            (0..row.as_ref().column_count())
-                .map(|i| row.get(i))
-                .collect()
-        })?)
-}
-
-#[test]
-fn a_pane_moved_after_its_events_ends_as_if_it_had_been_bound_first() -> Result<()> {
-    let working = json!({ "state": "working", "owner": { "pid": 300, "name": "claude" },
-                          "updated_at": "2026-10-25T00:00:01Z" });
-    let scenarios: [&[(&str, Value)]; 5] = [
-        &[],
-        &[(
-            "process_changed",
-            json!({ "foreground": { "pid": 300, "cwd": "/new" }, "generation": 1 }),
-        )],
-        &[
-            ("size_changed", json!({ "columns": 100, "rows": 30 })),
-            ("program_status_changed", json!({ "record": working })),
-        ],
-        // A status the new instance cleared is not the earlier instance's status.
-        &[
-            ("program_status_changed", json!({ "record": working })),
-            (
-                "program_status_removed",
-                json!({ "ids": [""], "reason": "exit" }),
-            ),
-        ],
-        &[("child_exited", json!({ "exit_code": 2 }))],
-    ];
-    for events in scenarios {
-        assert_eq!(
-            pane_record(false, events)?,
-            pane_record(true, events)?,
-            "{events:?}"
-        );
-    }
+    set_foreground(
+        &tx,
+        "gate",
+        Some(&json!({ "pid": 400, "name": "codex" })),
+        Some(2),
+        Some(200),
+    )?;
+    set_foreground(
+        &tx,
+        "in-place",
+        Some(&json!({ "pid": 700 })),
+        Some(1),
+        Some(600),
+    )?;
+    set_foreground(
+        &tx,
+        "in-place",
+        Some(&json!({ "pid": 600 })),
+        Some(2),
+        Some(1),
+    )?;
+    // A foreground some other process started leaves the occupant alone.
+    set_foreground(&tx, "gate", Some(&json!({ "pid": 500 })), Some(3), Some(1))?;
+    let pids: Vec<(String, i64)> = tx
+        .prepare("SELECT block_lineage, pid FROM occupant ORDER BY block_lineage")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    assert_eq!(
+        pids,
+        [
+            ("gate".to_owned(), 400),
+            ("in-place".to_owned(), 600),
+            ("named".to_owned(), 200),
+            ("old".to_owned(), 200)
+        ]
+    );
     Ok(())
 }
 
@@ -120,9 +122,9 @@ fn an_event_the_daemon_does_not_record_writes_nothing() -> Result<()> {
     let before = observer.data_version()?;
     assert!(!view.block_event(&mut daemon, "title_changed", &event, &event["payload"])?);
     assert_eq!(observer.data_version()?, before);
-    let event = json!({ "event": "size_changed", "block_id": "block:1",
-                        "payload": { "columns": 80, "rows": 24 } });
-    view.block_event(&mut daemon, "size_changed", &event, &event["payload"])?;
+    let event = json!({ "event": "child_exited", "block_id": "block:1",
+                        "payload": { "exit_code": 2 } });
+    view.block_event(&mut daemon, "child_exited", &event, &event["payload"])?;
     assert_ne!(
         observer.data_version()?,
         before,
@@ -168,7 +170,7 @@ fn reading_a_view_reads_only_its_unrecorded_panes() -> Result<()> {
                     "blocks": [{ "block_id": "block:new" }, { "block_id": "block:known" }] }] }] }),
                 _ => {
                     asked.push(format!("{} {}", params["block_id"], params["method"]));
-                    json!({ "foreground": { "pid": 7, "name": "bash", "cwd": "/work" } })
+                    json!({ "foreground": { "pid": 7, "name": "bash" } })
                 }
             };
             writeln!(out, "{}", json!({ "id": request["id"], "result": result }))?;
@@ -179,7 +181,7 @@ fn reading_a_view_reads_only_its_unrecorded_panes() -> Result<()> {
     let mut view = View::new("i1");
     let created = json!({ "event": "session_created",
                           "payload": { "session": { "session_id": "session:1" } } });
-    view.handle(&mut rex, &mut store, &created)?;
+    view.handle(&mut store, &created)?;
     view.flush(&mut rex, &mut store)?;
     drop(rex);
     let asked = server.join().expect("the fake server ran")?;
@@ -187,12 +189,69 @@ fn reading_a_view_reads_only_its_unrecorded_panes() -> Result<()> {
         !asked.is_empty() && asked.iter().all(|a| a.starts_with(r#""block:new""#)),
         "{asked:?}"
     );
-    let cwd: Option<String> = store.conn().query_row(
-        "SELECT cwd FROM block WHERE lineage = 'block:new'",
+    let fg_pid: Option<i64> = store.conn().query_row(
+        "SELECT fg_pid FROM block WHERE lineage = 'block:new'",
         [],
         |row| row.get(0),
     )?;
-    assert_eq!(cwd.as_deref(), Some("/work"));
+    assert_eq!(fg_pid, Some(7));
+    Ok(())
+}
+
+/// The server restores every pane it saved, so a worker's pane a new instance does not show was
+/// closed before the earlier instance ended: the task records the close, as its close event would
+/// have, also for a worker registered while no daemon ran, which has no row in `block`. A worker
+/// registered after the server listed its sessions is not judged by that list.
+#[test]
+fn a_worker_pane_a_new_instance_does_not_show_is_closed() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = record(&[PROMPT])?;
+    let mut store = task_world(dir.path(), transcript.path(), None)?;
+    store.conn().execute(
+        "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
+           worker_instance_id, created_at)
+           VALUES ('unrecorded', 'x', 'claude', 'owner', 'w', 0, 'i1', 0),
+                  ('later', 'x', 'claude', 'owner', 'x', 0, 'i2', ?1)",
+        [crate::store::now_ms() + 60_000],
+    )?;
+    let (ours, theirs) = UnixStream::pair()?;
+    let server = std::thread::spawn(move || -> Result<()> {
+        let mut out = &theirs;
+        for line in BufReader::new(theirs.try_clone()?).lines() {
+            let request: Value = serde_json::from_str(&line?)?;
+            let result = match request["method"].as_str() {
+                Some("session.list") => json!({ "sessions": [{ "session_id": "session:1" }] }),
+                Some("session.view") => json!({ "windows": [{ "window_id": "window:1",
+                    "layers": [{ "blocks": [{ "block_id": "a" }] }] }] }),
+                _ => json!({}),
+            };
+            writeln!(out, "{}", json!({ "id": request["id"], "result": result }))?;
+        }
+        Ok(())
+    });
+    let mut rex = Rex::Pipe(Pipe::new(ours)?);
+    View::new("i2").baseline(&mut rex, &mut store)?;
+    drop(rex);
+    server.join().expect("the fake server ran")?;
+    let panes: Vec<(String, String)> = store
+        .conn()
+        .prepare("SELECT id, pane_state FROM task ORDER BY id")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    assert_eq!(
+        panes,
+        [
+            ("later".to_owned(), "open".to_owned()),
+            ("t".to_owned(), "closed".to_owned()),
+            ("unrecorded".to_owned(), "closed".to_owned())
+        ]
+    );
+    let blocks: Vec<(String, String)> = store
+        .conn()
+        .prepare("SELECT lineage, instance_id FROM block")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    assert_eq!(blocks, [("a".to_owned(), "i2".to_owned())]);
     Ok(())
 }
 
@@ -207,7 +266,6 @@ fn any_wait_drops_the_watch_of_a_replaced_file() -> Result<()> {
             endpoint: String::new(),
         },
         exe: dir.path().join("rexume"),
-        theme: None,
         home: dir.path().to_owned(),
     };
     let socket = dir.path().join("daemon.sock");

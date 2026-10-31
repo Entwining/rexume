@@ -6,6 +6,10 @@ use serde_json::{Value, json};
 
 use crate::common::REXUME;
 
+const SERVER: &str = "unix:///tmp/rex.sock";
+/// Another server, which changes the job's definition.
+const OTHER_SERVER: &str = "unix:///tmp/other-rex.sock";
+
 mod manager;
 
 /// A home directory with Claude Code, Codex, and Pi set up, and a fake of the service manager on
@@ -91,20 +95,13 @@ while :; do sleep 60 & sleeper=$!; wait $sleeper; done
         serde_json::from_slice(&output.stdout).unwrap()
     }
 
-    fn install_args<'a>(theme: &[&'a str]) -> Vec<&'a str> {
-        let mut args = vec![
-            "install",
-            "--rex",
-            "/opt/rex/bin/rex",
-            "--server",
-            "unix:///tmp/rex.sock",
-        ];
-        args.extend(theme);
-        args
+    /// Install's arguments, with the job's server given.
+    fn install_args(server: &str) -> [&str; 5] {
+        ["install", "--rex", "/opt/rex/bin/rex", "--server", server]
     }
 
-    fn install(&self, theme: &[&str]) -> Value {
-        self.run(&Self::install_args(theme))
+    fn install(&self, server: &str) -> Value {
+        self.run(&Self::install_args(server))
     }
 
     fn targets(&self) -> Vec<(PathBuf, Option<Vec<u8>>)> {
@@ -170,7 +167,7 @@ fn outcomes(out: &Value) -> [(&str, Option<&str>); 4] {
 #[test]
 fn install_converges_and_uninstall_removes_only_its_own_entries() {
     let home = Home::new();
-    let first = home.install(&[]);
+    let first = home.install(SERVER);
     assert!(outcomes(&first).iter().all(|o| *o == ("created", None)));
     assert_eq!(first[manager::NAME_KEY], manager::NAME);
     let installed = home.targets();
@@ -185,7 +182,7 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
     assert!(job.contains(&path), "the daemon runs with install's PATH");
 
     // Running it again changes nothing and loads the job no second time.
-    let again = home.install(&[]);
+    let again = home.install(SERVER);
     assert!(outcomes(&again).iter().all(|o| *o == ("unchanged", None)));
     assert_eq!(home.targets(), installed);
     assert_eq!(home.starts_and_stops(), (1, 0));
@@ -197,7 +194,7 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
         json!({ "hooks": {} }).to_string(),
     )
     .unwrap();
-    let repaired = home.install(&[]);
+    let repaired = home.install(SERVER);
     let repaired = outcomes(&repaired);
     assert_eq!(
         repaired[..3],
@@ -207,13 +204,8 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
     assert_eq!(home.starts_and_stops(), (1, 0));
 
     // A changed job definition is loaded again.
-    let themed = home.install(&[
-        "--theme-foreground",
-        "#eeeeee",
-        "--theme-background",
-        "#222222",
-    ]);
-    assert_eq!(themed[manager::KEY], "updated");
+    let moved = home.install(OTHER_SERVER);
+    assert_eq!(moved[manager::KEY], "updated");
     assert_eq!(home.starts_and_stops(), (2, 1));
 
     let removed = home.run(&["uninstall"]);
@@ -237,7 +229,7 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
 fn a_runtime_that_is_not_set_up_is_skipped_with_a_note() {
     let home = Home::new();
     std::fs::remove_dir_all(home.home().join(".pi")).unwrap();
-    let out = home.install(&[]);
+    let out = home.install(SERVER);
     let out = outcomes(&out);
     assert_eq!(out[2], ("skipped", Some("`~/.pi/agent` does not exist")));
 }
@@ -247,17 +239,11 @@ fn a_runtime_that_is_not_set_up_is_skipped_with_a_note() {
 #[test]
 fn the_next_install_finishes_a_reload_that_failed() {
     let home = Home::new();
-    home.install(&[]);
-    let theme = [
-        "--theme-foreground",
-        "#eeeeee",
-        "--theme-background",
-        "#222222",
-    ];
+    home.install(SERVER);
     std::fs::write(home.dir.path().join("fail-stop"), "").unwrap();
-    let failed = home.output(&Home::install_args(&theme));
+    let failed = home.output(&Home::install_args(OTHER_SERVER));
     assert!(!failed.status.success());
-    assert_eq!(home.install(&theme)[manager::KEY], "updated");
+    assert_eq!(home.install(OTHER_SERVER)[manager::KEY], "updated");
     assert_eq!(home.starts_and_stops(), (2, 2));
 }
 
@@ -268,14 +254,14 @@ fn the_next_install_finishes_a_reload_that_failed() {
 fn install_starts_a_service_that_is_not_running() {
     for state in ["start-limit", "restarting"] {
         let home = Home::new();
-        home.install(&[]);
+        home.install(SERVER);
         let stopped = Command::new(home.home().join("bin").join(manager::TOOL))
             .args(["--user", "stop", manager::NAME])
             .status()
             .unwrap();
         assert!(stopped.success());
         std::fs::write(home.dir.path().join(state), "").unwrap();
-        assert_eq!(home.install(&[])[manager::KEY], "updated", "{state}");
+        assert_eq!(home.install(SERVER)[manager::KEY], "updated", "{state}");
         assert!(home.job().is_some(), "{state}");
     }
 }
@@ -286,7 +272,7 @@ fn install_starts_a_service_that_is_not_running() {
 fn uninstall_removes_what_an_install_without_a_user_manager_wrote() {
     let home = Home::new();
     std::fs::write(home.dir.path().join("no-manager"), "").unwrap();
-    let failed = home.output(&Home::install_args(&[]));
+    let failed = home.output(&Home::install_args(SERVER));
     assert!(!failed.status.success());
     let settings = home.home().join(".claude/settings.json");
     assert!(session_start(&settings).contains(&"rexume report claude".to_owned()));

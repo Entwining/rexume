@@ -44,28 +44,30 @@ pub(super) fn end_cut_off(tx: &Transaction, instance: &str) -> Result<()> {
 /// itself. Rex starts a shell in each pane it restores and Rexume does not reopen the conversation
 /// there, so nothing takes these rounds up again. A task registered on `instance`, or a round
 /// started after the daemon began to observe it, is the new instance's: a worker can be started
-/// and registered there before the daemon connects.
+/// and registered there before the daemon connects. So is one whose conversation someone reopened
+/// in the pane on `instance`, whose record takes the round up.
 static LEFT_TO_SERVER_ROUNDS: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT t.id, r.round FROM task t JOIN task_round r ON r.task_id = t.id
          WHERE t.worker_lineage = ?1 AND {OPEN} AND t.worker_instance_id IS NOT ?2
-           AND r.created_at < (SELECT MIN(started_at) FROM epoch WHERE instance_id = ?2)"
+           AND r.created_at < (SELECT MIN(started_at) FROM epoch WHERE instance_id = ?2)
+           AND NOT EXISTS (SELECT 1 FROM occupant o
+                           WHERE o.block_lineage = ?1 AND o.instance_id = ?2
+                             AND o.runtime = t.worker_runtime AND o.native_id = t.worker_native_id)"
     )
 });
 
-/// Ends the rounds `instance` cannot finish in the worker panes `blocks` that it restored itself.
-pub fn end_left_to_server(tx: &Transaction, instance: &str, blocks: &[String]) -> Result<()> {
-    for block in blocks {
-        finish_each(
-            tx,
-            &LEFT_TO_SERVER_ROUNDS,
-            params![block, instance],
-            "terminated",
-            "the Rex server restored the worker's pane itself, with a shell, so its conversation \
-             did not continue",
-        )?;
-    }
-    Ok(())
+/// Ends the rounds `instance` cannot finish in worker pane `block`, which it restored with a shell
+/// and whose conversation does not reopen there.
+pub fn end_left_to_server(tx: &Transaction, instance: &str, block: &str) -> Result<()> {
+    finish_each(
+        tx,
+        &LEFT_TO_SERVER_ROUNDS,
+        params![block, instance],
+        "terminated",
+        "the Rex server restored the worker's pane with a shell, and its conversation was not \
+         reopened there",
+    )
 }
 
 fn on_worker_closed(tx: &Transaction, lineage: &str) -> Result<()> {
@@ -102,11 +104,9 @@ fn finish_each(
     Ok(())
 }
 
-/// Records that a pane is closed for good: it leaves the saved layout, its worker tasks end, and
-/// what was recorded about it goes. The close event and the daemon's own close both record it,
-/// whichever comes first.
+/// Records that a pane is closed for good: its worker tasks end, and what was recorded about it
+/// goes. The close event and the daemon's own close both record it, whichever comes first.
 pub fn block_gone(tx: &Transaction, lineage: &str) -> Result<()> {
-    crate::layout::forget_block(tx, lineage)?;
     on_worker_closed(tx, lineage)?;
     store::forget_block(tx, lineage)
 }

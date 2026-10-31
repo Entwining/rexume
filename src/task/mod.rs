@@ -28,7 +28,7 @@ use crate::runtime::{Runtime, Tracker};
 use crate::store::{Store, lineage_of};
 
 pub use blocked::end_blocked_episodes;
-pub use cleanup::retired_workers;
+pub use cleanup::{close_unfocused, held, hold, keep, release_held, retired_workers};
 pub use evidence::is_run;
 pub use follow::{Follow, Interest};
 pub use gone::{block_gone, end_left_to_server};
