@@ -5,11 +5,11 @@ use anyhow::Result;
 use rusqlite::params;
 
 use super::*;
-use crate::task::tests::{ANSWER, ANSWER_2, DURATION, PROMPT, PROMPT_2, record, round, task_world};
+use crate::runtime::claude;
+use crate::task::tests::{
+    ANSWER, ANSWER_2, PROMPT, PROMPT_2, record, round, task_world, turn_record,
+};
 use crate::task::unread;
-
-/// When `PROMPT` was recorded, in Unix milliseconds.
-const PROMPTED_AT: i64 = 1_792_855_785_738;
 
 fn bound(store: &Store) -> Result<Option<String>> {
     Ok(store.conn().query_row(
@@ -19,81 +19,34 @@ fn bound(store: &Store) -> Result<Option<String>> {
     )?)
 }
 
+/// A turn the user interrupted records no end, so its round waits, the worker idle meanwhile,
+/// until the worker takes other input: the round then ends as cancelled, and the turn that input
+/// starts is unread once it finishes.
 #[test]
-fn a_turn_end_written_after_its_status_is_still_read() -> Result<()> {
+fn a_round_whose_turn_was_interrupted_ends_cancelled_at_the_next_prompt() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let mut transcript = record(&[PROMPT])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
-    // The worker's idle status arrives while the record holds only the prompt.
     store.conn().execute(
-        "UPDATE block SET status = 'idle', status_pid = 100, status_at = ?1 WHERE lineage = 'b'",
-        params![now_ms()],
+        "UPDATE block SET status = 'idle', status_pid = 100, status_at = 2 WHERE lineage = 'b'",
+        [],
     )?;
     let mut follow = Follow::default();
     let interest = follow.pass(&mut store, None)?;
-    assert!(interest.files.contains(transcript.path()));
+    assert!(
+        interest
+            .files
+            .contains(&claude::record(dir.path(), "worker"))
+    );
     assert_eq!(round(&store)?.0, "running");
-    assert!(follow.deadline().is_some());
-    writeln!(transcript, "{ANSWER}\n{DURATION}")?;
+    writeln!(transcript, "{PROMPT_2}")?;
     transcript.flush()?;
     follow.pass(&mut store, None)?;
-    assert_eq!(
-        round(&store)?,
-        ("completed".into(), Some("Done.".into()), None)
-    );
-    let notices: i64 = store.conn().query_row(
-        "SELECT COUNT(*) FROM notice WHERE state = 'pending'",
-        [],
-        |row| row.get(0),
-    )?;
-    assert_eq!(notices, 1);
-    Ok(())
-}
-
-#[test]
-fn a_prompt_left_open_ends_when_the_worker_goes_idle_after_it() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let transcript = record(&[PROMPT])?;
-    let mut store = task_world(dir.path(), transcript.path(), None)?;
-    let mut follow = Follow::default();
+    assert_eq!(round(&store)?.0, "cancelled");
+    writeln!(transcript, "{ANSWER_2}")?;
+    transcript.flush()?;
     follow.pass(&mut store, None)?;
-    assert_eq!(round(&store)?.0, "running");
-    // A process reopening the conversation after a restart reports idle on its own start.
-    store.conn().execute_batch(&format!(
-        "UPDATE occupant SET pid = 200, reported_at = {} WHERE block_lineage = 'b';
-         UPDATE block SET status = 'idle', status_pid = 200, status_at = {} WHERE lineage = 'b';",
-        PROMPTED_AT + 4000,
-        PROMPTED_AT + 4500,
-    ))?;
-    follow.pass(&mut store, None)?;
-    assert_eq!(round(&store)?.0, "running");
-    // A process idle with the occupant's PID, but on another server instance, is another process.
-    store.conn().execute_batch(&format!(
-        "UPDATE occupant SET pid = 100, reported_at = 50, instance_id = 'i0' WHERE block_lineage = 'b';
-         UPDATE block SET status_pid = 100, status_at = {} WHERE lineage = 'b';",
-        PROMPTED_AT + 3500,
-    ))?;
-    follow.pass(&mut store, None)?;
-    assert_eq!(round(&store)?.0, "running");
-    // The process that accepted the prompt, on this instance, went idle without answering.
-    store
-        .conn()
-        .execute_batch("UPDATE occupant SET instance_id = 'i1' WHERE block_lineage = 'b'")?;
-    follow.pass(&mut store, None)?;
-    let (state, _, note) = round(&store)?;
-    assert_eq!(state, "cancelled");
-    assert_eq!(
-        note.as_deref(),
-        Some("the worker went idle without answering")
-    );
-    // The position passes the turn taken while open, so it is no later turn of the worker's.
-    let position: i64 = store
-        .conn()
-        .query_row("SELECT position FROM task", [], |row| row.get(0))?;
-    assert_eq!(
-        u64::try_from(position)?,
-        std::fs::metadata(transcript.path())?.len()
-    );
+    assert_eq!(unread(store.conn(), store.dir(), "t")?, Some(1));
     Ok(())
 }
 
@@ -103,9 +56,10 @@ fn a_bound_task_keeps_its_conversation_when_another_takes_over_the_pane() -> Res
     let mut transcript = record(&[PROMPT])?;
     let other = record(&[
         PROMPT,
-        r#"{"type":"assistant","message":{"id":"m2","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Other."}]}}"#,
+        r#"{"event":"stop","prompt_id":"p1","id":"m2","answer":"Other."}"#,
     ])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
+    turn_record(dir.path(), "other", other.path())?;
     let mut follow = Follow::default();
     follow.pass(&mut store, None)?;
     store.conn().execute(
@@ -120,7 +74,7 @@ fn a_bound_task_keeps_its_conversation_when_another_takes_over_the_pane() -> Res
     follow.pass(&mut store, None)?;
     assert_eq!(round(&store)?.0, "running");
     // The worker's own answer still counts, though its process no longer runs in the pane.
-    writeln!(transcript, "{ANSWER}\n{DURATION}")?;
+    writeln!(transcript, "{ANSWER}")?;
     transcript.flush()?;
     follow.pass(&mut store, None)?;
     assert_eq!(
@@ -167,8 +121,8 @@ fn the_daemon_binds_a_task_registered_before_its_worker_reported_once() -> Resul
 #[test]
 fn a_resumed_workers_first_round_starts_where_its_report_found_the_record() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let earlier = format!("{PROMPT}\n{ANSWER}\n{DURATION}\n");
-    let mut transcript = record(&[PROMPT, ANSWER, DURATION, PROMPT_2])?;
+    let earlier = format!("{PROMPT}\n{ANSWER}\n");
+    let mut transcript = record(&[PROMPT, ANSWER, PROMPT_2])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
     store.conn().execute(
         "UPDATE task SET worker_runtime = NULL, worker_native_id = NULL, created_at = 100",
@@ -180,14 +134,14 @@ fn a_resumed_workers_first_round_starts_where_its_report_found_the_record() -> R
     )?;
     Follow::default().pass(&mut store, None)?;
     assert_eq!(bound(&store)?.as_deref(), Some("worker"));
-    writeln!(transcript, "{ANSWER_2}\n{DURATION}")?;
+    writeln!(transcript, "{ANSWER_2}")?;
     transcript.flush()?;
     Follow::default().pass(&mut store, None)?;
     assert_eq!(
         round(&store)?,
         ("completed".into(), Some("Again.".into()), None)
     );
-    assert_eq!(unread(store.conn(), "t")?, Some(0));
+    assert_eq!(unread(store.conn(), store.dir(), "t")?, Some(0));
     Ok(())
 }
 
@@ -298,13 +252,15 @@ fn a_new_instance_ends_the_runs_the_earlier_one_left_open() -> Result<()> {
 #[test]
 fn a_new_instance_settles_each_interactive_round_on_its_own_record() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let transcript = record(&[PROMPT, ANSWER, DURATION])?;
+    let transcript = record(&[PROMPT, ANSWER])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
     store.conn().execute(
         "INSERT INTO conversation (runtime, native_id, transcript, resumable, reported_at)
          VALUES ('claude', 'lost', ?1, 1, 0)",
         params![dir.path().to_string_lossy()],
     )?;
+    // A record that cannot be read: a directory.
+    turn_record(dir.path(), "lost", dir.path())?;
     store.conn().execute_batch(
         "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
            worker_runtime, worker_native_id, created_at)

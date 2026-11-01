@@ -1,6 +1,7 @@
 //! Records which conversation a pane runs, from the runtime's session-start hook. The report is
 //! accepted only from the pane's own foreground program, so a conversation the agent starts in a
-//! subprocess, such as a non-interactive run from a tool call, does not replace it.
+//! subprocess, such as a non-interactive run from a tool call, does not replace it. Claude Code's
+//! turn hooks run the same command, which adds their line to the conversation's turn record.
 
 use std::io::Read;
 use std::path::Path;
@@ -11,7 +12,7 @@ use serde_json::{Map, Value, json};
 
 use crate::proc;
 use crate::rex::{Cli, Rex, require_str, str_at};
-use crate::runtime::Runtime;
+use crate::runtime::{Runtime, claude};
 use crate::store::{Store, ensure_lineage, now_ms};
 
 /// What a session start says about the session's place in the agent process that reports it.
@@ -110,10 +111,17 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
     };
     let block = block.to_string_lossy();
     let input: Value = serde_json::from_str(&input).context("failed to parse the hook input")?;
+    if runtime == Runtime::Claude
+        && let Some(event) = claude::turn_event(&input)
+    {
+        let native_id = require_str(&input, "/session_id")?;
+        return claude::append(state_dir, &native_id, &event);
+    }
     let mut report = parse(runtime, &input)?;
-    let start_position = match (report.record_length, &report.transcript) {
+    let turns = runtime.record(state_dir, &report.native_id, report.transcript.as_deref());
+    let start_position = match (report.record_length, turns) {
         (Some(length), _) => length,
-        (None, Some(path)) => record_length(path)?,
+        (None, Some(path)) => record_length(&path)?,
         (None, None) => 0,
     };
     let mut rex = Rex::Cli(Cli::from_env()?);
@@ -171,11 +179,11 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
 }
 
 /// The length of a conversation's record now; 0 before the runtime has written it.
-pub fn record_length(path: &str) -> Result<u64> {
+pub fn record_length(path: &Path) -> Result<u64> {
     match std::fs::metadata(path) {
         Ok(metadata) => Ok(metadata.len()),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(0),
-        Err(e) => Err(e).with_context(|| format!("failed to read {path}")),
+        Err(e) => Err(e).with_context(|| format!("failed to read {}", path.display())),
     }
 }
 

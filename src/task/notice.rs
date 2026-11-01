@@ -164,7 +164,7 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
         let text = if due.blocked {
             text::blocked(&due)
         } else {
-            text::finished(&due, super::unread(store.conn(), &due.task)?)
+            text::finished(&due, super::unread(store.conn(), store.dir(), &due.task)?)
         };
         let tx = store.write()?;
         let claimed = claim(&tx, &due.notice, due.waiter)?;

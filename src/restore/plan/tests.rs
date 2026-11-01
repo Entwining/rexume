@@ -1,8 +1,17 @@
 use std::path::Path;
 
 use super::*;
+use crate::task::tests::turn_record;
 
+/// A Claude Code turn record, as its turn hooks write it.
+const PROMPT: &str = r#"{"event":"prompt","prompt_id":"p1","token":null}"#;
+
+/// Conversation `<block>-conversation` reported from `block` as process 10, with `transcript`,
+/// which for Claude Code is its turn record too.
 fn conversation(store: &Store, block: &str, runtime: &str, transcript: &Path) -> Result<()> {
+    if runtime == "claude" {
+        turn_record(store.dir(), &format!("{block}-conversation"), transcript)?;
+    }
     store.conn().execute(
         "INSERT INTO conversation (runtime, native_id, transcript, resumable, reported_at)
          VALUES (?1, ?2, ?3, 1, 0)",
@@ -40,9 +49,8 @@ fn end_reason(server_gone: bool) -> &'static str {
 
 #[test]
 fn only_a_turn_the_servers_end_cut_off_continues() -> Result<()> {
-    const PROMPT: &str = r#"{"type":"user","message":{"role":"user","content":"Write a story"}}"#;
-    const ANSWER: &str = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}"#;
-    const CANCEL: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
+    const ANSWER: &str = r#"{"event":"stop","prompt_id":"p1","id":"s1","answer":"Done."}"#;
+    const FAILURE: &str = r#"{"event":"failure","prompt_id":"p1","text":"API Error"}"#;
     let start_from =
         |transcript: &Path, status: &str, status_pid: i64, server_gone: bool| -> Result<Start> {
             let store = Store::open(transcript.parent().unwrap())?;
@@ -53,7 +61,15 @@ fn only_a_turn_the_servers_end_cut_off_continues() -> Result<()> {
                 params![status, status_pid],
             )?;
             ended(&store, end_reason(server_gone))?;
-            Ok(candidate(store.conn(), "i2", "b")?.start)
+            let planned = candidate(store.conn(), store.dir(), "i2", "b")?;
+            // The gate reads on from where the plan read the record to continue.
+            if planned.start == Start::Continue {
+                assert_eq!(
+                    planned.plan.record_length,
+                    Some(std::fs::metadata(transcript)?.len())
+                );
+            }
+            Ok(planned.start)
         };
     let start =
         |records: &[&str], status: &str, status_pid: i64, server_gone: bool| -> Result<Start> {
@@ -67,9 +83,16 @@ fn only_a_turn_the_servers_end_cut_off_continues() -> Result<()> {
     assert_eq!(start(&[PROMPT], "working", 10, false)?, Start::Agent);
     assert_eq!(start(&[PROMPT], "blocked", 10, true)?, Start::Agent);
     assert_eq!(start(&[PROMPT, ANSWER], "idle", 10, true)?, Start::Agent);
-    // The runtime recorded the cancel or the answer before its status reached the server.
-    assert_eq!(start(&[PROMPT, CANCEL], "working", 10, true)?, Start::Agent);
-    assert_eq!(start(&[PROMPT, ANSWER], "working", 10, true)?, Start::Agent);
+    // The runtime recorded the failure before its status reached the server.
+    assert_eq!(
+        start(&[PROMPT, FAILURE], "working", 10, true)?,
+        Start::Agent
+    );
+    // Claude Code still working after its `Stop` went on as a Stop hook told it to.
+    assert_eq!(
+        start(&[PROMPT, ANSWER], "working", 10, true)?,
+        Start::Continue
+    );
     // A status from another process, such as a nested agent, says nothing about this turn.
     assert_eq!(start(&[PROMPT], "working", 11, true)?, Start::Agent);
     // A line that is not JSON may be what ended the turn.
@@ -79,6 +102,36 @@ fn only_a_turn_the_servers_end_cut_off_continues() -> Result<()> {
     let unreadable = dir.path().join("t.jsonl");
     std::fs::create_dir(&unreadable)?;
     assert_eq!(start_from(&unreadable, "working", 10, true)?, Start::Agent);
+    Ok(())
+}
+
+/// Codex works on after no end its record shows, so its recorded answer wins over a working status
+/// the server's end kept from changing.
+#[test]
+fn a_codex_answer_wins_over_a_working_status() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = dir.path().join("t.jsonl");
+    std::fs::write(
+        &transcript,
+        concat!(
+            r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
+            "\n",
+            r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"u1","last_agent_message":"Done."}}"#,
+            "\n"
+        ),
+    )?;
+    let store = Store::open(dir.path())?;
+    conversation(&store, "b", "codex", &transcript)?;
+    store.conn().execute(
+        "INSERT INTO block (lineage, instance_id, fg_pid, status, status_pid, status_name)
+         VALUES ('b', 'i1', 10, 'working', 10, 'codex')",
+        [],
+    )?;
+    ended(&store, "server_gone")?;
+    assert_eq!(
+        candidate(store.conn(), store.dir(), "i2", "b")?.start,
+        Start::Agent
+    );
     Ok(())
 }
 
@@ -100,10 +153,7 @@ struct Pane<'a> {
 fn planned(pane: &Pane) -> Result<Start> {
     let dir = tempfile::tempdir()?;
     let transcript = dir.path().join("t.jsonl");
-    std::fs::write(
-        &transcript,
-        r#"{"type":"user","message":{"role":"user","content":"Go"}}"#.to_owned() + "\n",
-    )?;
+    std::fs::write(&transcript, format!("{PROMPT}\n"))?;
     let store = Store::open(dir.path())?;
     ended(&store, "server_gone")?;
     let conn = store.conn();
@@ -138,7 +188,7 @@ fn planned(pane: &Pane) -> Result<Start> {
             params![running.then_some(20)],
         )?;
     }
-    Ok(candidate(conn, "i2", "b")?.start)
+    Ok(candidate(conn, store.dir(), "i2", "b")?.start)
 }
 
 #[test]
@@ -235,7 +285,7 @@ fn a_conversation_without_a_record_yet_reopens_only_in_pi() -> Result<()> {
              VALUES ('b', 'i1', 10, 'idle', 10, ?1)",
             params![runtime],
         )?;
-        Ok(candidate(store.conn(), "i2", "b")?.start)
+        Ok(candidate(store.conn(), store.dir(), "i2", "b")?.start)
     };
     // Claude Code and Codex write their record with the first prompt and cannot resume before.
     assert_eq!(start("claude")?, Start::Shell);

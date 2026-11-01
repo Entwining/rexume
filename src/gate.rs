@@ -121,10 +121,11 @@ fn claim(store: &mut Store, id: &str, block: &str, pid: u32) -> Result<(Start, P
     let plan: Plan = serde_json::from_str(&plan)?;
     let mut started = start;
     // Read before the transaction: no record is read while holding the write lock.
-    if start == Start::Continue && !turn_still_open(runtime, plan.transcript.as_deref()) {
+    let record = runtime.record(store.dir(), &native_id, plan.transcript.as_deref());
+    if start == Start::Continue && !turn_still_open(runtime, record.as_deref(), &plan) {
         started = Start::Agent;
     }
-    let start_position = match plan.transcript.as_deref() {
+    let start_position = match &record {
         Some(path) => report::record_length(path)?,
         None => 0,
     };
@@ -192,12 +193,12 @@ fn occupy(
     report::record(tx, lineage, runtime, &report, &process)
 }
 
-/// Whether the conversation's record still ends with the turn the plan would continue.
-fn turn_still_open(runtime: Runtime, transcript: Option<&str>) -> bool {
-    transcript.is_some_and(|transcript| {
+/// Whether the conversation's record ends no turn after what the plan read to continue it.
+fn turn_still_open(runtime: Runtime, record: Option<&Path>, plan: &Plan) -> bool {
+    record.is_some_and(|record| {
         matches!(
-            runtime::last_turn(runtime, Path::new(transcript), 0),
-            Ok(Some(Turn::Open { .. }))
+            runtime::last_turn(runtime, record, plan.record_length.unwrap_or(0)),
+            Ok(Some(Turn::None | Turn::Open))
         )
     })
 }

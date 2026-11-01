@@ -74,9 +74,10 @@ impl Server {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Install the session hooks, the Pi extension, and the job that runs the daemon
+    /// Install the hooks, the Pi extension, and the job that runs the daemon
     ///
-    /// Writes a SessionStart hook into `~/.claude/settings.json` and `~/.codex/hooks.json`, the
+    /// Writes Claude Code's SessionStart, UserPromptSubmit, Stop, and StopFailure hooks into
+    /// `~/.claude/settings.json`, a SessionStart hook into `~/.codex/hooks.json`, the
     /// extension into `~/.pi/agent/extensions/rexume.ts`, and the job: the LaunchAgent
     /// `io.github.entwining.rexume` on macOS, the systemd user service `rexume.service` on Linux.
     /// Prints what changed as JSON. A runtime whose directory does not exist is skipped. Running it
@@ -103,7 +104,7 @@ enum Command {
     ///
     /// Reads the state database without changing it.
     Status(StateDir),
-    /// Record the conversation starting in this pane; the session-start hooks run this
+    /// Record the conversation starting in this pane, or a Claude Code turn; the hooks run this
     ///
     /// Reads the hook's JSON on stdin. Outside a Rex pane it does nothing. A failure is printed on
     /// stderr with exit status 0, so a hook never holds up or fails the session it reports.

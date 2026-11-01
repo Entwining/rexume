@@ -52,7 +52,7 @@ To build from source instead, you need Rust at or above the `rust-version` in `C
 cargo install --locked --git https://github.com/Entwining/rexume --root ~/.local
 ```
 
-This installs `~/.local/bin/rexume`; put that directory on `PATH`, because the session hooks run `rexume` by name. From a checkout, use `--path .` instead of `--git`.
+This installs `~/.local/bin/rexume`; put that directory on `PATH`, because the hooks run `rexume` by name. From a checkout, use `--path .` instead of `--git`.
 
 ### Install the hooks and the daemon
 
@@ -66,7 +66,7 @@ rexume install
 
 | What | Where |
 | --- | --- |
-| Claude Code `SessionStart` hook | `~/.claude/settings.json` |
+| Claude Code `SessionStart`, `UserPromptSubmit`, `Stop`, and `StopFailure` hooks | `~/.claude/settings.json` |
 | Codex `SessionStart` hook | `~/.codex/hooks.json` |
 | Pi extension | `~/.pi/agent/extensions/rexume.ts` |
 | On macOS, LaunchAgent `io.github.entwining.rexume`, which runs `rexume daemon` | `~/Library/LaunchAgents/io.github.entwining.rexume.plist` |
@@ -90,7 +90,7 @@ Agents started before `install` are recorded from their next session start. Seei
 
 ### Upgrade
 
-Upgrading the program, with `brew upgrade` or by installing over it, is enough: the daemon notices that its executable was replaced, its job starts the new one, and it replaces the Pi extension `install` wrote when the new version's differs. It never creates the extension, so one you removed stays removed.
+Upgrading the program, with `brew upgrade` or by installing over it, is enough: the daemon notices that its executable was replaced, its job starts the new one, and it replaces the Pi extension `install` wrote when the new version's differs, and adds the Claude Code hooks a new version needs beside the `SessionStart` hook `install` wrote. It never creates the extension, or a Claude Code hook without that `SessionStart` hook, so a removed extension stays removed, and so does a Claude Code turn hook once you remove the `SessionStart` hook with it.
 
 ## Check a restore
 
@@ -111,7 +111,7 @@ Run the task commands from the orchestrator's own Rex pane: they find the orches
 rexume task add --worker "$WORKER_BLOCK" --title 'review the parser'
 ```
 
-`task add` prints the task, whose `id` is the `ID` the commands below take. The result is the first turn the worker finishes after it starts; [docs/cli.md](docs/cli.md#task) gives the cases where that is an earlier answer, such as a Claude Code fork that copies its parent's turns.
+`task add` prints the task, whose `id` is the `ID` the commands below take. The result is the first turn the worker finishes after it starts; [docs/cli.md](docs/cli.md#task) gives the cases where that is an earlier answer.
 
 When the worker's turn ends, Rexume saves its result and sends the orchestrator one notice. The orchestrator reads the result with `rexume task show ID` and acknowledges it with `rexume task ack ID`. Once it is done with the worker, `rexume task release ID` lets the daemon close a disposable worker's pane, but only if nothing has happened in it since the result; after a restart, a released worker's pane that Rex restored is closed once it shows its shell with nothing typed, and kept otherwise.
 
@@ -131,6 +131,8 @@ Rex and the agents do not provide what these would need:
 - Rex starts a shell in every pane it restores and offers no way to start another program there instead, so Rexume types its line into that shell. Between Rexume's check that nothing is typed at the prompt and the line, you can still start typing; the line begins with Ctrl-E and Ctrl-U, which clear what you typed instead of running it with the line. At a zsh or bash prompt, Ctrl-Y brings it back; text typed before the shell's first prompt is lost. In a vi keymap, Ctrl-U clears only what stands before the cursor, so text you typed and then moved back before stays on the line and runs with it, and a shell you left in vi command mode takes the line as commands: the conversation does not reopen.
 - Rex saves its sessions about a second after a change, so a pane opened or closed within about a second before the server crashed comes back as it was before that change.
 - Claude Code applies [its inbound-message rules](https://code.claude.com/docs/en/cross-session-messaging#control-inbound-messages) to Rexume's notices and requests, which carry no permission class. With `crossSessionInbound` unset, a session that prompts for permissions receives them, but one that bypasses permission prompts holds each for your approval and drops it when you deny it or leave the approval unanswered for [`dialogExpiry`](https://code.claude.com/docs/en/settings-reference#dialogexpiry), five minutes by default; `hold` holds them until an `accept` applies, and `refuse` drops them. A held request that is dropped is never delivered: its round stays unfinished until the orchestrator abandons it or the worker's pane closes, and Rexume never sends it again. You can set it to `accept` to receive them without approval, which also lets that session's other cross-session messages through; Rexume does not change the setting.
+- Claude Code runs no hook for a turn you interrupt, and runs Rexume's hook for a prompt before another `UserPromptSubmit` hook of yours can reject it, without telling either apart. So a Claude Code worker whose turn you interrupt, or whose request your hook rejects, keeps its round open until it takes other input, when the round ends as `cancelled`; `rexume task abandon` stops waiting for it.
+- A Claude Code `Stop` hook of yours that makes Claude Code go on after it finished responding leaves the conversation `working` with an answer in its record. A restore after the server stops then continues the conversation, also when the server stopped in the moment between a finished answer and Claude Code's `done` status.
 - Codex holds queued messages while a conversation's last turn was interrupted and no turn has run since, so a notice or request to it waits until someone gives it input. This was observed on Codex 0.164.0, and [openai/codex#56914](https://github.com/openai/codex/issues/56914) asks Codex to show when it holds them.
 
 These are Rexume's own trade-offs:
@@ -145,7 +147,7 @@ These are Rexume's own trade-offs:
 rexume uninstall
 ```
 
-This removes the two hooks (and any hook group left empty), the Pi extension if `install` wrote it, and the LaunchAgent or systemd service, which stops the daemon. It keeps `~/.local/state/rexume`, which holds recorded panes, conversations, and task results; delete that directory to remove them too. Then remove the program with `brew uninstall rexume`, or delete `~/.local/bin/rexume`.
+This removes Rexume's hooks (and any hook group left empty), the Pi extension if `install` wrote it, and the LaunchAgent or systemd service, which stops the daemon. It keeps `~/.local/state/rexume`, which holds recorded panes, conversations, and task results; delete that directory to remove them too. Then remove the program with `brew uninstall rexume`, or delete `~/.local/bin/rexume`.
 
 ## Contributing
 

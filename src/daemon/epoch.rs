@@ -83,6 +83,9 @@ impl Daemon<'_> {
             tx.commit()?;
         }
         restorer.reconcile(rex, &mut self.store, instance);
+        if let Err(e) = store::sweep_records(&self.store) {
+            log::warn!("failed to sweep the Claude Code turn records: {e:#}");
+        }
         let mut version = self.store.data_version()?;
         let mut follow_due = true;
         loop {

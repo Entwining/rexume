@@ -1,8 +1,8 @@
-//! `rexume install` and `rexume uninstall`: the session hooks of Claude Code and Codex, the Pi
-//! extension, which the daemon also refreshes, and the job that runs the daemon, a LaunchAgent on
-//! macOS and a systemd user service on Linux. Each entry is recognized by its identity (the hook's
-//! command, the extension's and the job's paths), so install changes only what is missing or
-//! different, and uninstall removes only these entries.
+//! `rexume install` and `rexume uninstall`: the hooks of Claude Code and Codex, the Pi extension,
+//! and the job that runs the daemon, a LaunchAgent on macOS and a systemd user service on Linux.
+//! The daemon also refreshes the Pi extension and adds Claude Code's turn hooks. Each entry is
+//! recognized by its identity (the hook's command, the extension's and the job's paths), so
+//! install changes only what is missing or different, and uninstall removes only these entries.
 
 #[cfg(target_os = "macos")]
 mod launch_agent;
@@ -65,6 +65,11 @@ fn run_manager(program: &str, args: &[&str]) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
+/// The events Rexume's Claude Code hook runs on: the session start, which records the pane's
+/// conversation, and the turn events, which write its turn record (`runtime::claude::turn_event`).
+const CLAUDE_EVENTS: [&str; 4] = ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure"];
+const CODEX_EVENTS: [&str; 1] = ["SessionStart"];
+
 /// What install or uninstall did to one entry, and why when that needs saying.
 type Outcome = (&'static str, Option<String>);
 
@@ -82,12 +87,14 @@ pub fn install(home: &Path, install: &Install) -> Result<Value> {
     let claude = add_hook(
         &targets.claude,
         "claude",
-        json!({ "type": "command", "command": "rexume report claude", "timeout": 5 }),
+        &CLAUDE_EVENTS,
+        &json!({ "type": "command", "command": "rexume report claude", "timeout": 5 }),
     )?;
     let codex = add_hook(
         &targets.codex,
         "codex",
-        json!({ "command": "rexume report codex", "timeout": 5, "type": "command" }),
+        &CODEX_EVENTS,
+        &json!({ "command": "rexume report codex", "timeout": 5, "type": "command" }),
     )?;
     let extension = match targets.pi.parent().and_then(Path::parent) {
         Some(agent) if agent.is_dir() => (write(&targets.pi, pi::EXTENSION.as_bytes())?, None),
@@ -109,8 +116,8 @@ pub fn uninstall(home: &Path) -> Result<Value> {
     // The daemon rewrites the Pi extension when it starts, so it is stopped before the extension
     // is removed.
     job::unload(home)?;
-    let claude = remove_hook(&targets.claude, "claude")?;
-    let codex = remove_hook(&targets.codex, "codex")?;
+    let claude = remove_hook(&targets.claude, "claude", &CLAUDE_EVENTS)?;
+    let codex = remove_hook(&targets.codex, "codex", &CODEX_EVENTS)?;
     let extension = remove_file(&targets.pi, |text| text.starts_with(pi::WRITTEN_BY))?;
     let daemon = job::remove(home)?;
     Ok(outcomes([
@@ -135,6 +142,29 @@ pub fn refresh_pi_extension(home: &Path) -> Result<&'static str> {
     }
 }
 
+/// Adds the Claude Code turn hooks an earlier install did not write, once Rexume's session-start
+/// hook is there, so that an upgrade records turns without another install: each runs the
+/// session-start hook's own command, which may name rexume by its path. Settings without that hook
+/// are left as they are, so that uninstall stays final. Returns `created`, `unchanged`, or
+/// `absent`.
+pub fn refresh_claude_hooks(home: &Path) -> Result<&'static str> {
+    let path = Targets::new(home).claude;
+    let settings = read_json(&path)?;
+    let installed = settings
+        .pointer("/hooks/SessionStart")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|group| group.get("hooks").and_then(Value::as_array))
+        .flatten()
+        .find(|h| is_ours(h, "claude"));
+    let Some(hook) = installed else {
+        return Ok("absent");
+    };
+    let hook = json!({ "type": "command", "command": hook["command"], "timeout": 5 });
+    Ok(add_hook(&path, "claude", &CLAUDE_EVENTS[1..], &hook)?.0)
+}
+
 /// Whether a hook runs `rexume report <runtime>`, by whatever path to rexume.
 fn is_ours(hook: &Value, runtime: &str) -> bool {
     let Some(argv) = hook
@@ -148,9 +178,10 @@ fn is_ours(hook: &Value, runtime: &str) -> bool {
         if Path::new(exe).file_name().is_some_and(|n| n == "rexume") && report == "report" && r == runtime)
 }
 
-/// Appends the hook in a group of its own: Codex keys a hook's approval by its position, so
-/// existing groups are never rewritten.
-fn add_hook(path: &Path, runtime: &str, hook: Value) -> Result<Outcome> {
+/// Appends the hook in a group of its own to each event that lacks it: Codex keys a hook's approval
+/// by its position, so existing groups are never rewritten. Returns `created` when it appended
+/// any.
+fn add_hook(path: &Path, runtime: &str, events: &[&str], hook: &Value) -> Result<Outcome> {
     if !path.parent().is_some_and(Path::is_dir) {
         let dir = path.parent().and_then(Path::file_name).unwrap_or_default();
         return Ok((
@@ -159,22 +190,28 @@ fn add_hook(path: &Path, runtime: &str, hook: Value) -> Result<Outcome> {
         ));
     }
     let mut settings = read_json(path)?;
-    let groups = session_start(&mut settings)
-        .with_context(|| format!("failed to update `{}`", path.display()))?;
-    let present = groups
-        .iter()
-        .filter_map(|group| group.get("hooks").and_then(Value::as_array))
-        .flatten()
-        .any(|h| is_ours(h, runtime));
-    if present {
+    let mut added = false;
+    for event in events {
+        let groups = groups(&mut settings, event)
+            .with_context(|| format!("failed to update `{}`", path.display()))?;
+        let present = groups
+            .iter()
+            .filter_map(|group| group.get("hooks").and_then(Value::as_array))
+            .flatten()
+            .any(|h| is_ours(h, runtime));
+        if !present {
+            groups.push(json!({ "hooks": [hook] }));
+            added = true;
+        }
+    }
+    if !added {
         return Ok(("unchanged", None));
     }
-    groups.push(json!({ "hooks": [hook] }));
     write_json(path, &settings)?;
     Ok(("created", None))
 }
 
-fn session_start(settings: &mut Value) -> Result<&mut Vec<Value>> {
+fn groups<'a>(settings: &'a mut Value, event: &str) -> Result<&'a mut Vec<Value>> {
     settings
         .as_object_mut()
         .context("the file is not a JSON object")?
@@ -182,40 +219,46 @@ fn session_start(settings: &mut Value) -> Result<&mut Vec<Value>> {
         .or_insert_with(|| json!({}))
         .as_object_mut()
         .context("`hooks` is not an object")?
-        .entry("SessionStart")
+        .entry(event)
         .or_insert_with(|| json!([]))
         .as_array_mut()
-        .context("`hooks.SessionStart` is not an array")
+        .with_context(|| format!("`hooks.{event}` is not an array"))
 }
 
-fn remove_hook(path: &Path, runtime: &str) -> Result<&'static str> {
+fn remove_hook(path: &Path, runtime: &str, events: &[&str]) -> Result<&'static str> {
     if !path.exists() {
         return Ok("absent");
     }
     let mut settings = read_json(path)?;
-    let Some(groups) = settings
-        .pointer_mut("/hooks/SessionStart")
-        .and_then(Value::as_array_mut)
-    else {
-        return Ok("absent");
-    };
     let mut removed = false;
-    for group in groups.iter_mut() {
-        if let Some(hooks) = group.get_mut("hooks").and_then(Value::as_array_mut) {
-            let count = hooks.len();
-            hooks.retain(|h| !is_ours(h, runtime));
-            removed |= hooks.len() != count;
+    for event in events {
+        let Some(groups) = settings
+            .pointer_mut(&format!("/hooks/{event}"))
+            .and_then(Value::as_array_mut)
+        else {
+            continue;
+        };
+        let mut here = false;
+        for group in groups.iter_mut() {
+            if let Some(hooks) = group.get_mut("hooks").and_then(Value::as_array_mut) {
+                let count = hooks.len();
+                hooks.retain(|h| !is_ours(h, runtime));
+                here |= hooks.len() != count;
+            }
         }
+        if here {
+            groups.retain(|group| {
+                group
+                    .get("hooks")
+                    .and_then(Value::as_array)
+                    .is_none_or(|hooks| !hooks.is_empty())
+            });
+        }
+        removed |= here;
     }
     if !removed {
         return Ok("absent");
     }
-    groups.retain(|group| {
-        group
-            .get("hooks")
-            .and_then(Value::as_array)
-            .is_none_or(|hooks| !hooks.is_empty())
-    });
     write_json(path, &settings)?;
     Ok("removed")
 }

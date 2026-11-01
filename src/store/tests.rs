@@ -210,3 +210,30 @@ fn settle_returns_after_another_connections_commit() -> Result<()> {
     assert_ne!(store.data_version()?, before);
     writer.join().unwrap()
 }
+
+/// A Claude Code turn record goes once its hooks have written nothing for the retention period
+/// and no conversation row names it.
+#[test]
+fn sweep_records_deletes_only_old_records_of_forgotten_conversations() -> Result<()> {
+    let (dir, store) = store();
+    store.conn().execute_batch(
+        "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+           VALUES ('claude', 'known', 1, 0);",
+    )?;
+    let old = SystemTime::now() - RETENTION - Duration::from_secs(60);
+    std::fs::create_dir_all(claude::records(dir.path()))?;
+    for (native_id, modified) in [
+        ("known", old),
+        ("forgotten", old),
+        ("recent", SystemTime::now()),
+    ] {
+        std::fs::File::create(claude::record(dir.path(), native_id))?.set_modified(modified)?;
+    }
+    sweep_records(&store)?;
+    let mut left: Vec<String> = std::fs::read_dir(claude::records(dir.path()))?
+        .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
+        .collect::<Result<_>>()?;
+    left.sort();
+    assert_eq!(left, ["known.jsonl", "recent.jsonl"]);
+    Ok(())
+}

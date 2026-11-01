@@ -11,13 +11,14 @@ use super::outcome::finish;
 use crate::store::{self, now_ms};
 
 /// The rounds a closed worker pane leaves unfinished that no record can finish: a run's, and an
-/// interactive worker's whose conversation is unbound or reported no record. The others take a
-/// turn the record already shows, on the daemon's next pass.
+/// interactive worker's whose conversation is unbound or has no record (`Runtime::record`). The
+/// others take a turn the record already shows, on the daemon's next pass.
 pub(super) static WORKER_ROUNDS: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT t.id, r.round FROM task t JOIN task_round r ON r.task_id = t.id
          LEFT JOIN conversation c ON c.runtime = t.worker_runtime AND c.native_id = t.worker_native_id
-         WHERE t.worker_lineage = ?1 AND {OPEN} AND c.transcript IS NULL"
+         WHERE t.worker_lineage = ?1 AND {OPEN} AND c.transcript IS NULL
+           AND t.worker_runtime IS NOT 'claude'"
     )
 });
 

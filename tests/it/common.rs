@@ -1,8 +1,9 @@
 //! An isolated Rex server and daemon for scenario tests. Each test gets its own directory with
 //! the server's socket, state, and home, so nothing reaches the user's own server.
 
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
-use std::process::{Child, Command, Stdio};
+use std::process::{Child, Command, Output, Stdio};
 use std::time::{Duration, Instant};
 
 use rusqlite::Connection;
@@ -14,6 +15,26 @@ mod server;
 pub use server::{SHELL, Server, rex_bin};
 
 pub const REXUME: &str = env!("CARGO_BIN_EXE_rexume");
+
+/// Runs rexume with `args`, only the environment variables `vars`, and `stdin`.
+pub fn rexume(args: &[&str], vars: &[(&str, &str)], stdin: &str) -> Output {
+    let mut child = Command::new(REXUME)
+        .args(args)
+        .env_clear()
+        .envs(vars.iter().copied())
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(stdin.as_bytes())
+        .unwrap();
+    child.wait_with_output().unwrap()
+}
 
 /// A daemon started without the harness, ended when an assertion fails before it exits.
 pub struct Running(pub Child);

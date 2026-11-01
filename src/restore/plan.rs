@@ -66,8 +66,13 @@ pub struct Plan {
     pub env: Vec<(String, String)>,
     /// The continuation prompt, added to `argv` only when the gate still finds the turn open.
     pub prompt: Option<String>,
-    /// The conversation's record, which the gate reads again before it continues a turn.
+    /// The conversation's transcript, by which the gate finds its record (`Runtime::record`) to
+    /// read again before it continues a turn.
     pub transcript: Option<String>,
+    /// The record's length when the plan read it to continue a turn: the gate continues only when
+    /// no turn ended after it.
+    #[serde(default)]
+    pub record_length: Option<u64>,
     /// Whether the conversation ran with `REX_SESSION`. Workers start without it, so Rex does not
     /// ask them to label the session, and reopen without it too.
     pub keeps_session_env: bool,
@@ -88,7 +93,7 @@ pub fn plan(
 ) -> Result<Option<String>> {
     // Taken before the record is read: a report that arrives meanwhile is later than the plan.
     let planned_at = now_ms();
-    let candidate = candidate(store.conn(), instance, block)?;
+    let candidate = candidate(store.conn(), store.dir(), instance, block)?;
     let tx = store.write()?;
     let planned: bool = tx.query_row(
         "SELECT EXISTS (SELECT 1 FROM restore WHERE instance_id = ?1 AND block_lineage = ?2)",

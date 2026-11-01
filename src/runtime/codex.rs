@@ -6,7 +6,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use super::{Conversation, Lines, Open, Sealed, Sent, Span, Target, Turn, text_at};
+use super::{Conversation, Lines, Sealed, Sent, Span, Target, Turn, text_at};
 
 /// `codex resume` takes the configured defaults rather than the conversation's own settings, so
 /// they are passed on the command line.
@@ -103,7 +103,7 @@ impl Parser {
         };
         let ended = match payload.get("type").and_then(Value::as_str) {
             Some("task_started") => {
-                self.turn = Some(Turn::Open { since: None });
+                self.turn = Some(Turn::Open);
                 self.open = Some(span.start);
                 return;
             }
@@ -129,19 +129,12 @@ impl Parser {
                 start: self.open.take().unwrap_or(span.start),
                 end: span.end,
             },
+            took: Vec::new(),
         });
     }
 
     pub fn turn(&self) -> Turn {
         self.turn.clone().unwrap_or(Turn::None)
-    }
-
-    pub fn open(&self) -> Option<Open> {
-        self.open.map(|start| Open {
-            start,
-            since: None,
-            answer: None,
-        })
     }
 }
 
@@ -160,10 +153,7 @@ mod tests {
         let complete = r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"t1","last_agent_message":"ok"}}"#;
         let aborted = r#"{"type":"event_msg","payload":{"type":"turn_aborted","turn_id":"t1","reason":"interrupted"}}"#;
         let turn = |lines: &[&str]| last_turn(Runtime::Codex, transcript(lines).path(), 0);
-        assert_eq!(
-            turn(&[started, reasoning])?,
-            Some(Turn::Open { since: None })
-        );
+        assert_eq!(turn(&[started, reasoning])?, Some(Turn::Open));
         assert_eq!(
             turn(&[started, complete])?,
             Some(Turn::Completed {

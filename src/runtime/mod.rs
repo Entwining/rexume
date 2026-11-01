@@ -1,8 +1,8 @@
 //! What this tool knows about each coding-agent runtime: how to reopen a conversation, how to read
-//! its turns from the conversation's own record, how to pass it a notice, and which record shows
-//! it took the notice in. A new runtime is a variant here and a file beside this one.
+//! its turns from its record, how to pass it a notice, and which record shows it took the notice
+//! in. A new runtime is a variant here and a file beside this one.
 
-mod claude;
+pub mod claude;
 mod codex;
 mod lines;
 pub mod pi;
@@ -11,7 +11,7 @@ mod receipt;
 mod tests;
 
 use std::fmt;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
@@ -19,7 +19,7 @@ use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use serde_json::{Map, Value};
 
 pub use lines::{Lines, Taken, Tracker, last_turn};
-use lines::{Open, Sealed, Span};
+use lines::{Sealed, Span};
 pub use receipt::Receipt;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, clap::ValueEnum)]
@@ -69,6 +69,21 @@ impl Runtime {
         }
     }
 
+    /// The record this tool reads the conversation's turns from, and the notices and requests it
+    /// took in: the runtime's own record, except for Claude Code, whose own names no turn, so its
+    /// turn hooks write one in the state directory.
+    pub fn record(
+        self,
+        state_dir: &Path,
+        native_id: &str,
+        transcript: Option<&str>,
+    ) -> Option<PathBuf> {
+        match self {
+            Self::Claude => Some(claude::record(state_dir, native_id)),
+            Self::Codex | Self::Pi => transcript.map(PathBuf::from),
+        }
+    }
+
     /// Whether the conversation can be reopened. Claude Code and Codex write a conversation's
     /// record only with its first prompt and refuse to resume one without it; Pi opens a session
     /// file that does not exist yet as a new session.
@@ -109,13 +124,21 @@ impl Runtime {
     }
 
     /// Whether a record is the conversation receiving a notice or request as input, not merely
-    /// text that mentions one; the token in the record tells which it was.
+    /// text that mentions one; the token in the record tells which it was. Claude Code's hooks
+    /// see input before another hook can reject it, so its record shows input received only with
+    /// the turn that took it in (`Sealed::received`).
     fn received(self, record: &Value) -> bool {
         match self {
-            Self::Claude => claude::received(record),
+            Self::Claude => false,
             Self::Codex => codex::received(record),
             Self::Pi => pi::received(record),
         }
+    }
+
+    /// Whether a turn the record shows ended may still be running. A Stop hook that blocks makes
+    /// Claude Code go on after its `Stop`, which the record shows only once it stops again.
+    pub fn works_after_end(self) -> bool {
+        self == Self::Claude
     }
 
     fn parser(self) -> Parser {
@@ -215,11 +238,12 @@ pub fn token(id: &str) -> String {
     format!("[rexume {id}]")
 }
 
-/// The one prompt this tool sends to a conversation whose turn the server's end cut off. The
-/// reference lets the conversation's own record show that this prompt, and no other, was sent.
-pub fn continuation_prompt(reference: &str, tasks: &[String]) -> String {
+/// The one prompt this tool sends to a conversation whose turn the server's end cut off in pane
+/// `block` of server instance `instance`. Its token, which names the two, lets the conversation's
+/// own record show that this prompt, and no other, was sent.
+pub fn continuation_prompt(instance: &str, block: &str, tasks: &[String]) -> String {
     let mut prompt = format!(
-        "[rexume {reference}] The Rex terminal server stopped while your previous turn was still \
+        "[rexume {instance}/{block}] The Rex terminal server stopped while your previous turn was still \
          running, so that turn was cut off. First check whether the last actions you started took \
          effect, then continue the unfinished work. Do not repeat steps that already completed."
     );
@@ -233,16 +257,18 @@ pub fn continuation_prompt(reference: &str, tasks: &[String]) -> String {
     prompt
 }
 
+/// Whether a prompt's token is a continuation prompt's: its `/` is in no notice's or request's ID.
+fn is_continuation(token: &str) -> bool {
+    token.contains('/')
+}
+
 /// How the last turn in a conversation's record stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Turn {
     /// No turn after the offset read from.
     None,
-    /// A prompt was accepted and nothing ended its turn: cut off, or still running. `since` is when
-    /// the prompt was recorded, in Unix milliseconds, for a runtime that records nothing when its
-    /// turn is stopped before any output (Claude Code); its program going idle after that time is
-    /// what ends the turn.
-    Open { since: Option<i64> },
+    /// A prompt was accepted and nothing ended its turn: cut off, or still running.
+    Open,
     /// The turn ended with an answer.
     Completed { reference: String, text: String },
     /// The user stopped the turn.
@@ -256,7 +282,7 @@ impl Turn {
     pub fn describe(&self) -> &'static str {
         match self {
             Self::None => "the record shows no turn",
-            Self::Open { .. } => "the record shows a turn nothing ended",
+            Self::Open => "the record shows a turn nothing ended",
             Self::Completed { .. } => "the record shows the turn finished",
             Self::Cancelled => "the record shows the turn was cancelled",
             Self::Failed { .. } => "the record shows the turn failed",
@@ -271,21 +297,14 @@ enum Parser {
 }
 
 /// Each runtime's parser keeps how the last turn stands and yields each turn as it finishes. A
-/// turn that a new one starts before anything ended it was cut off, and is never yielded.
+/// turn that a new one starts before anything ended it was cut off, and is never yielded, except
+/// in Claude Code's record, whose turns end with no record when the user interrupts them.
 impl Parser {
     fn feed(&mut self, record: &Value, span: Span, sealed: &mut Vec<Sealed>) {
         match self {
             Self::Claude(p) => p.feed(record, span, sealed),
             Self::Codex(p) => p.feed(record, span, sealed),
             Self::Pi(p) => p.feed(record, span, sealed),
-        }
-    }
-
-    fn open(&self) -> Option<Open> {
-        match self {
-            Self::Claude(p) => p.open(),
-            Self::Codex(p) => p.open(),
-            Self::Pi(p) => p.open(),
         }
     }
 

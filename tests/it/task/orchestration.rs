@@ -6,14 +6,14 @@ use std::path::PathBuf;
 use rusqlite::params;
 use serde_json::json;
 
-use super::{DURATION, WAIT, task};
-use crate::common::{Daemon, Server, db, query, shell_block, shell_pids, wait_until};
+use super::{WAIT, task};
+use crate::common::{Daemon, Server, claude, db, query, shell_block, shell_pids, wait_until};
 
-/// Two shells standing in for agents, as their session-start hooks would have reported them: the
-/// owner in pane `owner` with an empty record, and the worker in pane `worker`, which resumed a
-/// conversation whose record already holds a turn, each with a messaging socket; a daemon
-/// following them, and the worker registered as task `id`, titled "review". Fields drop in order,
-/// so the daemon goes before its server.
+/// Two shells standing in for Claude Code, as their session-start hooks would have reported them:
+/// the owner in pane `owner` with an empty turn record, and the worker in pane `worker`, which
+/// resumed a conversation whose turn record already holds a turn, each with a messaging socket; a
+/// daemon following them, and the worker registered as task `id`, titled "review". Fields drop in
+/// order, so the daemon goes before its server.
 pub(super) struct Orchestration {
     pub(super) _daemon: Daemon,
     pub(super) server: Server,
@@ -22,8 +22,6 @@ pub(super) struct Orchestration {
     pub(super) owner: String,
     pub(super) worker: String,
     pub(super) id: String,
-    pub(super) owner_record: PathBuf,
-    pub(super) worker_record: PathBuf,
     pub(super) listener: UnixListener,
     pub(super) worker_listener: UnixListener,
     pub(super) _dir: tempfile::TempDir,
@@ -33,17 +31,6 @@ impl Orchestration {
     pub(super) fn start() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let state = dir.path().join("state");
-        let (owner_record, worker_record) = (
-            dir.path().join("owner.jsonl"),
-            dir.path().join("worker.jsonl"),
-        );
-        std::fs::write(&owner_record, "").unwrap();
-        let earlier = format!(
-            "{}\n{}\n{DURATION}\n",
-            r#"{"type":"user","message":{"role":"user","content":"Review the plan"}}"#,
-            r#"{"type":"assistant","message":{"id":"m0","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Plan approved."}]}}"#,
-        );
-        std::fs::write(&worker_record, &earlier).unwrap();
         let socket = dir.path().join("owner.sock");
         let listener = UnixListener::bind(&socket).unwrap();
         listener.set_nonblocking(true).unwrap();
@@ -56,6 +43,16 @@ impl Orchestration {
         wait_until("the daemon's first epoch", WAIT, || {
             query::<i64>(&state, "SELECT id FROM epoch")
         });
+        claude::turn(
+            &state,
+            "worker",
+            "p0",
+            "Review the plan",
+            Some("Plan approved."),
+        );
+        let earlier = std::fs::metadata(state.join("claude/worker.jsonl"))
+            .unwrap()
+            .len();
         let created = server.call(
             "session.create",
             &json!({ "label": "orchestrate", "initial_windows": [{ "layout": { "split": { "direction": "horizontal",
@@ -73,21 +70,14 @@ impl Orchestration {
         let pids = shell_pids(&server, &state, session, &[owner, worker]);
 
         let conn = db(&state);
-        for (native_id, record, block, pid, socket, start) in [
-            ("owner", &owner_record, owner, pids[0], &socket, 0),
-            (
-                "worker",
-                &worker_record,
-                worker,
-                pids[1],
-                &worker_socket,
-                earlier.len(),
-            ),
+        for (native_id, block, pid, socket, start) in [
+            ("owner", owner, pids[0], &socket, 0),
+            ("worker", worker, pids[1], &worker_socket, earlier),
         ] {
             conn.execute(
-                "INSERT INTO conversation (runtime, native_id, transcript, resumable, reported_at)
-                 VALUES ('claude', ?1, ?2, 1, 0)",
-                params![native_id, record.to_string_lossy()],
+                "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+                 VALUES ('claude', ?1, 1, 0)",
+                params![native_id],
             )
             .unwrap();
             conn.execute(
@@ -121,8 +111,6 @@ impl Orchestration {
             owner: owner.to_owned(),
             worker: worker.to_owned(),
             id,
-            owner_record,
-            worker_record,
             listener,
             worker_listener,
             _dir: dir,

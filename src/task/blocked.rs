@@ -51,7 +51,7 @@ pub fn end_blocked_episodes(tx: &Transaction, lineage: &str) -> Result<()> {
 }
 
 /// Moves an unfinished round to how its worker's pane stands, given whether the round is in an
-/// episode and the pid and report time of the task's conversation while it is the pane's occupant.
+/// episode and the pid of the task's conversation while it is the pane's occupant.
 /// Returns when to read the round again while the grace runs.
 pub(super) fn follow(
     tx: &Transaction,
@@ -59,13 +59,13 @@ pub(super) fn follow(
     round: i64,
     blocked: bool,
     pane: &Pane,
-    process: Option<(i64, i64)>,
+    process: Option<i64>,
 ) -> Result<Option<i64>> {
     // A status recorded on an earlier instance, or reported by another program in the pane, is
     // not the task's conversation waiting on a dialog now.
     let reported = pane.current
         && pane.status.as_deref() == Some("blocked")
-        && process.is_some_and(|(pid, _)| pane.status_pid == Some(pid));
+        && process.is_some_and(|pid| pane.status_pid == Some(pid));
     match (blocked, reported) {
         (true, false) => resume(tx, id, round)?,
         (false, true) => {

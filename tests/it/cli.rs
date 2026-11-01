@@ -1,28 +1,8 @@
 //! Exit statuses and error shapes that callers branch on, from commands that need no server.
 
-use std::io::Write as _;
-use std::process::{Command, Output, Stdio};
+use std::process::Output;
 
-use crate::common::REXUME;
-
-fn rexume(args: &[&str], vars: &[(&str, &str)], stdin: &str) -> Output {
-    let mut child = Command::new(REXUME)
-        .args(args)
-        .env_clear()
-        .envs(vars.iter().copied())
-        .stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped())
-        .spawn()
-        .unwrap();
-    child
-        .stdin
-        .take()
-        .unwrap()
-        .write_all(stdin.as_bytes())
-        .unwrap();
-    child.wait_with_output().unwrap()
-}
+use crate::common::rexume;
 
 fn stderr(output: &Output) -> String {
     String::from_utf8_lossy(&output.stderr).into_owned()
@@ -98,4 +78,37 @@ fn a_report_outside_a_rex_pane_reads_its_input_before_it_exits() {
     );
     let output = rexume(&["report", "pi", "--state-dir", &state], &[], &input);
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+}
+
+/// Claude Code's turn hooks add to the conversation's turn record without reaching the server,
+/// keeping a prompt's token and no other text.
+#[test]
+fn a_claude_turn_hook_appends_to_the_turn_record() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().to_string_lossy();
+    for input in [
+        r#"{"hook_event_name":"UserPromptSubmit","session_id":"s","prompt_id":"p","prompt":"[rexume d1] Review the diff"}"#,
+        r#"{"hook_event_name":"Stop","session_id":"s","prompt_id":"p","last_assistant_message":"Looks good."}"#,
+    ] {
+        let output = rexume(
+            &["report", "claude", "--state-dir", &state],
+            &[("REX_BLOCK", "block:1")],
+            input,
+        );
+        assert_eq!(output.status.code(), Some(0));
+        assert_eq!(stderr(&output), "");
+    }
+    let record = std::fs::read_to_string(dir.path().join("claude/s.jsonl")).unwrap();
+    let lines: Vec<serde_json::Value> = record
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(
+        lines[0],
+        serde_json::json!({ "event": "prompt", "prompt_id": "p", "token": "[rexume d1]" })
+    );
+    assert_eq!(
+        (lines[1]["event"].as_str(), lines[1]["answer"].as_str()),
+        (Some("stop"), Some("Looks good."))
+    );
 }

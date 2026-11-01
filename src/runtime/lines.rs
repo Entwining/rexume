@@ -136,17 +136,18 @@ pub struct Span {
 pub struct Sealed {
     pub turn: Turn,
     pub span: Span,
+    /// The notice and request tokens of the input the turn took in, for a runtime whose record
+    /// names the turn each input went to (Claude Code); other runtimes' records show each receipt
+    /// as a record of its own (`Runtime::received`).
+    pub took: Vec<String>,
 }
 
-/// The turn the record leaves open where it ends, for a runtime whose status can end it.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Open {
-    pub start: u64,
-    /// When its first record was written, in Unix milliseconds, for a runtime that records
-    /// nothing when its turn is stopped before any output (Claude Code).
-    pub since: Option<i64>,
-    /// An answer whose last part may still be coming, with the offset after the part so far.
-    pub answer: Option<(Turn, u64)>,
+impl Sealed {
+    /// Whether the turn took in the input `token` names and the runtime ended it, which shows the
+    /// input received: a cancelled turn may never have taken it in.
+    pub fn received(&self, token: &str) -> bool {
+        self.turn != Turn::Cancelled && self.took.iter().any(|t| t == token)
+    }
 }
 
 /// The turns earlier rounds of a task took. A turn is named by where it starts, and an answered one
@@ -168,10 +169,11 @@ impl Taken {
 }
 
 /// Follows one round through one conversation's record from the task's position: each turn that
-/// finishes, in order, and which of them is the round's. A request round's turn is the first to
-/// end after the record shows the request received; any other round's is the first that no
-/// earlier round took. A record that was replaced or cut is not read again from its start: the
-/// turns after the position could no longer be told apart.
+/// finishes, in order, and which of them is the round's. A request round's turn is the one that
+/// took the request in, where the record names it, or else the first to end after the record
+/// shows the request received; any other round's is the first that no earlier round took. A
+/// record that was replaced or cut is not read again from its start: the turns after the position
+/// could no longer be told apart.
 pub struct Tracker {
     runtime: Runtime,
     lines: Lines,
@@ -179,7 +181,12 @@ pub struct Tracker {
     taken: Taken,
     /// The request's token.
     request: Option<String>,
+    /// The request was recorded as received before this record was read: one the record shows
+    /// no receipt of was received before the position, in a record before version 8 replaced it.
+    delivered: bool,
     receipt: Option<u64>,
+    /// While the receipt of a delivered request is not found, the first turn no round took.
+    untaken: Option<Sealed>,
     /// Each finished turn, and whether an earlier round took it.
     sealed: Vec<(Span, bool)>,
     chosen: Option<Sealed>,
@@ -192,15 +199,17 @@ impl Tracker {
         path: &Path,
         position: u64,
         taken: Taken,
-        request: Option<&str>,
+        request: Option<&(String, bool)>,
     ) -> Self {
         Self {
             runtime,
             lines: Lines::new(path, position),
             parser: runtime.parser(),
             taken,
-            request: request.map(token),
+            request: request.map(|(id, _)| token(id)),
+            delivered: request.is_some_and(|&(_, delivered)| delivered),
             receipt: None,
+            untaken: None,
             sealed: Vec::new(),
             chosen: None,
             replaced: false,
@@ -233,14 +242,29 @@ impl Tracker {
             }
             self.parser.feed(&record, span, &mut sealed);
             for turn in sealed.drain(..) {
+                let took = self.request.as_ref().is_some_and(|t| turn.took.contains(t));
+                if let Some(token) = &self.request
+                    && self.receipt.is_none()
+                    && turn.received(token)
+                {
+                    self.receipt = Some(turn.span.start);
+                }
                 let taken = self.taken.contains(&turn);
                 self.sealed.push((turn.span, taken));
-                if self.chosen.is_none()
-                    && !taken
-                    && after_receipt(self.request.is_some(), self.receipt, turn.span)
-                {
-                    self.chosen = Some(turn);
+                if self.chosen.is_some() || taken {
+                    continue;
                 }
+                if took || after_receipt(self.request.is_some(), self.receipt, turn.span) {
+                    self.chosen = Some(turn);
+                } else if self.delivered && self.untaken.is_none() {
+                    self.untaken = Some(turn);
+                }
+            }
+        }
+        if self.delivered && self.receipt.is_none() {
+            self.receipt = Some(self.lines.start);
+            if self.chosen.is_none() {
+                self.chosen = self.untaken.take();
             }
         }
         Ok(())
@@ -249,26 +273,6 @@ impl Tracker {
     /// The round's turn, once one finished.
     pub fn chosen(&self) -> Option<&Sealed> {
         self.chosen.as_ref()
-    }
-
-    /// The turn left open where the record ends, when it could still be the round's, as it would
-    /// end now: with its answer so far, or, stopped before any answer, cancelled at the end of what
-    /// was read. Also when it started, for a runtime that records it.
-    pub fn open(&self) -> Option<(Sealed, Option<i64>)> {
-        self.open_turn().filter(|(open, _)| {
-            !self.taken.contains(open)
-                && after_receipt(self.request.is_some(), self.receipt, open.span)
-        })
-    }
-
-    fn open_turn(&self) -> Option<(Sealed, Option<i64>)> {
-        let open = self.parser.open()?;
-        let (turn, end) = open.answer.unwrap_or((Turn::Cancelled, self.lines.offset));
-        let span = Span {
-            start: open.start,
-            end,
-        };
-        Some((Sealed { turn, span }, open.since))
     }
 
     /// Whether the record shows the request received.
@@ -280,24 +284,16 @@ impl Tracker {
         self.replaced
     }
 
-    /// The finished turns that no round took. Once the record has `ended`, as it has when the
-    /// worker's pane closed, an answer its last record leaves open is finished too.
-    pub fn unread(&self, ended: bool) -> usize {
-        let answered = ended
-            && self.open_turn().is_some_and(|(open, _)| {
-                matches!(open.turn, Turn::Completed { .. }) && !self.taken.contains(&open)
-            });
-        self.sealed.iter().filter(|(_, taken)| !taken).count() + usize::from(answered)
+    /// The finished turns that no round took.
+    pub fn unread(&self) -> usize {
+        self.sealed.iter().filter(|(_, taken)| !taken).count()
     }
 
     /// The task's position once the round takes the turn at `span`: past every finished turn from
-    /// the position on that a round took, in order. A turn taken while still open follows every
-    /// finished one.
+    /// the position on that a round took, in order.
     pub fn position_after(&self, span: Span) -> u64 {
         let mut position = self.lines.start;
-        let pending =
-            (!self.sealed.iter().any(|(sealed, _)| *sealed == span)).then_some((span, true));
-        for (turn, taken) in self.sealed.iter().chain(pending.as_ref()) {
+        for (turn, taken) in &self.sealed {
             if turn.start != span.start && !taken {
                 break;
             }

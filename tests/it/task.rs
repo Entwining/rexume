@@ -1,4 +1,4 @@
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 use std::process::{Command, Output};
@@ -6,7 +6,7 @@ use std::time::Duration;
 
 use serde_json::{Value, json};
 
-use crate::common::{REXUME, Server, db, query, rex_bin, wait_until};
+use crate::common::{REXUME, Server, claude, db, query, rex_bin, wait_until};
 
 mod abandon;
 mod blocked;
@@ -55,8 +55,6 @@ fn failure(output: &Output) -> (Option<i32>, String) {
     )
 }
 
-const DURATION: &str = r#"{"type":"system","subtype":"turn_duration"}"#;
-
 /// The content of the next message a listening messaging socket receives.
 fn message(listener: &UnixListener, what: &str) -> String {
     let stream = wait_until(what, WAIT, || {
@@ -76,7 +74,6 @@ fn next_request_round(
     state: &Path,
     owner: &str,
     id: &str,
-    worker_record: &Path,
     worker_listener: &UnixListener,
 ) {
     let sent = task(
@@ -89,14 +86,7 @@ fn next_request_round(
     let request = sent["request"]["id"].as_str().unwrap();
     let text = message(worker_listener, "the request");
     assert_eq!(text, format!("[rexume {request}] Fix the nit"));
-    let received = json!({ "type": "user", "isMeta": true, "turnOrigin": "peer", "origin": { "kind": "peer" },
-        "message": { "role": "user", "content": format!("Another Claude session sent a message:\n{text}") } });
-    append(worker_record, &received.to_string());
-    append(
-        worker_record,
-        r#"{"type":"assistant","message":{"id":"m2","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Fixed."}]}}"#,
-    );
-    append(worker_record, DURATION);
+    claude::turn(state, "worker", "p2", &text, Some("Fixed."));
     let waited = task(server, state, owner, &["wait", id, "--timeout", "20"]);
     assert_eq!(
         (
@@ -106,11 +96,6 @@ fn next_request_round(
         ),
         (Some("Fixed."), Some("delivered"), Some(0))
     );
-}
-
-fn append(path: &Path, line: &str) {
-    let mut file = std::fs::OpenOptions::new().append(true).open(path).unwrap();
-    writeln!(file, "{line}").unwrap();
 }
 
 #[test]
@@ -124,8 +109,6 @@ fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
         owner,
         worker,
         id,
-        owner_record,
-        worker_record,
         listener,
         worker_listener,
         ..
@@ -152,15 +135,13 @@ fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
         );
     }
 
-    append(
-        worker_record,
-        r#"{"type":"user","message":{"role":"user","content":"Review the diff"}}"#,
+    claude::turn(
+        state,
+        "worker",
+        "p1",
+        "Review the diff",
+        Some("Looks good."),
     );
-    append(
-        worker_record,
-        r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Looks good."}]}}"#,
-    );
-    append(worker_record, DURATION);
 
     // The notice reaches the owner's message socket once, after the grace a waiting owner gets.
     let notice = message(listener, "the notice");
@@ -172,10 +153,7 @@ fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
         (Some("completed"), Some("Looks good."))
     );
 
-    append(
-        owner_record,
-        &json!({ "type": "user", "origin": { "kind": "peer" }, "message": { "role": "user", "content": text } }).to_string(),
-    );
+    claude::turn(state, "owner", "o1", text, Some("Noted."));
     wait_until("the owner's receipt to settle the notice", WAIT, || {
         query::<String>(state, "SELECT state FROM notice").filter(|s| s == "delivered")
     });
@@ -183,18 +161,10 @@ fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
 
     let acked = task(server, state, owner, &["ack", id]);
     assert!(acked["acked_at"].is_i64());
-    next_request_round(server, state, owner, id, worker_record, worker_listener);
+    next_request_round(server, state, owner, id, worker_listener);
     // A turn the user had the worker finish is unread, so the worker is not released before
     // `task next` takes it.
-    append(
-        worker_record,
-        r#"{"type":"user","message":{"role":"user","content":"And the docs?"}}"#,
-    );
-    append(
-        worker_record,
-        r#"{"type":"assistant","message":{"id":"m3","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Docs too."}]}}"#,
-    );
-    append(worker_record, DURATION);
+    claude::turn(state, "worker", "p3", "And the docs?", Some("Docs too."));
     let (code, stderr) = failure(&run_task(server, state, owner, &["release", id]));
     assert_eq!(code, Some(1));
     assert!(stderr.contains("unread turns (1)"), "{stderr}");

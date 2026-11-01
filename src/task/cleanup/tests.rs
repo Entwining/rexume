@@ -1,7 +1,8 @@
 use std::io::Write as _;
 
 use super::*;
-use crate::task::tests::{ANSWER, DURATION, PROMPT, record, task_world};
+use crate::runtime::claude;
+use crate::task::tests::{ANSWER, PROMPT, record, task_world, turn_record};
 
 /// Task `t`'s disposable worker in pane `b`, its round acknowledged and recorded exactly as its
 /// result left it, and the task released.
@@ -44,20 +45,23 @@ fn a_pane_whose_run_exited_is_retired_until_it_is_restored() -> Result<()> {
     store
         .conn()
         .execute_batch("UPDATE block SET fg_generation = 6 WHERE lineage = 'b'")?;
-    assert_eq!(retired_workers(store.conn())?, [("t".into(), "b".into())]);
+    assert_eq!(
+        retired_workers(store.conn(), store.dir())?,
+        [("t".into(), "b".into())]
+    );
     store.conn().execute_batch(
         "UPDATE block SET instance_id = 'i2', fg_pid = 300, last_exit = NULL WHERE lineage = 'b'",
     )?;
-    assert!(retired_workers(store.conn())?.is_empty());
+    assert!(retired_workers(store.conn(), store.dir())?.is_empty());
     store
         .conn()
         .execute_batch("UPDATE block SET fg_pid = NULL, last_exit = 0 WHERE lineage = 'b'")?;
-    assert!(retired_workers(store.conn())?.is_empty());
+    assert!(retired_workers(store.conn(), store.dir())?.is_empty());
     // A round from before version 3 that the upgrade could not date.
     store
         .conn()
         .execute_batch("UPDATE task_round SET finished_instance_id = NULL")?;
-    assert!(retired_workers(store.conn())?.is_empty());
+    assert!(retired_workers(store.conn(), store.dir())?.is_empty());
     Ok(())
 }
 
@@ -97,19 +101,20 @@ fn a_restored_pane_the_restore_did_not_hold_is_kept() -> Result<()> {
 #[test]
 fn an_untouched_released_worker_is_retired_unless_its_record_cannot_be_read() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let transcript = record(&[PROMPT, ANSWER, DURATION])?;
+    let transcript = record(&[PROMPT, ANSWER])?;
     let store = released_worker(dir.path(), transcript.path())?;
-    assert_eq!(retired_workers(store.conn())?, [("t".into(), "b".into())]);
-    store.conn().execute(
-        "UPDATE conversation SET transcript = ?1 WHERE native_id = 'worker'",
-        params![dir.path().to_string_lossy()],
-    )?;
-    assert!(retired_workers(store.conn())?.is_empty());
+    assert_eq!(
+        retired_workers(store.conn(), store.dir())?,
+        [("t".into(), "b".into())]
+    );
+    std::fs::remove_file(claude::record(dir.path(), "worker"))?;
+    turn_record(dir.path(), "worker", dir.path())?;
+    assert!(retired_workers(store.conn(), store.dir())?.is_empty());
     // Any other error ends the restore's planning instead of deciding it.
     store
         .conn()
         .execute_batch("UPDATE task SET position = -1")?;
-    assert!(retired_workers(store.conn()).is_err());
+    assert!(retired_workers(store.conn(), store.dir()).is_err());
     Ok(())
 }
 
@@ -118,12 +123,12 @@ fn an_untouched_released_worker_is_retired_unless_its_record_cannot_be_read() ->
 #[test]
 fn a_worker_reported_on_another_instance_than_its_pane_is_not_retired() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let transcript = record(&[PROMPT, ANSWER, DURATION])?;
+    let transcript = record(&[PROMPT, ANSWER])?;
     let store = released_worker(dir.path(), transcript.path())?;
     store
         .conn()
         .execute_batch("UPDATE occupant SET instance_id = 'i0' WHERE block_lineage = 'b'")?;
-    assert!(retired_workers(store.conn())?.is_empty());
+    assert!(retired_workers(store.conn(), store.dir())?.is_empty());
     Ok(())
 }
 
@@ -132,13 +137,13 @@ fn a_worker_reported_on_another_instance_than_its_pane_is_not_retired() -> Resul
 #[test]
 fn an_acknowledged_worker_is_neither_closed_nor_retired_until_released() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let transcript = record(&[PROMPT, ANSWER, DURATION])?;
+    let transcript = record(&[PROMPT, ANSWER])?;
     let store = released_worker(dir.path(), transcript.path())?;
     store
         .conn()
         .execute_batch("UPDATE task SET released_at = NULL")?;
     assert!(due(store.conn())?.is_empty());
-    assert!(retired_workers(store.conn())?.is_empty());
+    assert!(retired_workers(store.conn(), store.dir())?.is_empty());
     assert_eq!(store.conn().execute(&CLAIM, params!["t"])?, 0);
     store
         .conn()
@@ -164,10 +169,37 @@ fn later_activity_in_the_worker_pane_keeps_it() -> Result<()> {
         "INSERT INTO task_round (task_id, round, state, created_at) VALUES ('t', 2, 'running', 130)",
     ] {
         let dir = tempfile::tempdir()?;
-        let transcript = record(&[PROMPT, ANSWER, DURATION])?;
+        let transcript = record(&[PROMPT, ANSWER])?;
         let store = released_worker(dir.path(), transcript.path())?;
         store.conn().execute_batch(change)?;
-        assert!(retired_workers(store.conn())?.is_empty(), "{change}");
+        assert!(retired_workers(store.conn(), store.dir())?.is_empty(), "{change}");
+    }
+    Ok(())
+}
+
+/// Claude Code reports `done` once its Stop hooks ran, after the record showed the turn's end and
+/// the round took it, so that status is no use of the pane; a worker still working after the end
+/// its record shows went on as a Stop hook told it to, and any other later status is use.
+#[test]
+fn only_the_status_that_ends_the_turn_leaves_the_worker_retired() -> Result<()> {
+    for (status, at, retired) in [
+        ("done", 95, true),
+        ("working", 90, false),
+        ("blocked", 90, false),
+        ("idle", 95, false),
+    ] {
+        let dir = tempfile::tempdir()?;
+        let transcript = record(&[PROMPT, ANSWER])?;
+        let store = released_worker(dir.path(), transcript.path())?;
+        store.conn().execute(
+            "UPDATE block SET status = ?1, status_at = ?2 WHERE lineage = 'b'",
+            params![status, at],
+        )?;
+        assert_eq!(
+            !retired_workers(store.conn(), store.dir())?.is_empty(),
+            retired,
+            "{status}"
+        );
     }
     Ok(())
 }
@@ -175,19 +207,19 @@ fn later_activity_in_the_worker_pane_keeps_it() -> Result<()> {
 #[test]
 fn a_new_turn_in_the_same_worker_process_is_restored() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let mut transcript = record(&[PROMPT, ANSWER, DURATION])?;
+    let mut transcript = record(&[PROMPT, ANSWER])?;
     let store = released_worker(dir.path(), transcript.path())?;
     // The prompt is in the record before the status event that would also show it.
     writeln!(transcript, "{PROMPT}")?;
     transcript.flush()?;
-    assert!(retired_workers(store.conn())?.is_empty());
+    assert!(retired_workers(store.conn(), store.dir())?.is_empty());
     Ok(())
 }
 
 #[test]
 fn a_pane_with_an_unfinished_round_is_neither_closed_nor_left_out_of_a_restore() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let transcript = record(&[PROMPT, ANSWER, DURATION])?;
+    let transcript = record(&[PROMPT, ANSWER])?;
     let mut store = released_worker(dir.path(), transcript.path())?;
     store.conn().execute_batch(
         "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane, created_at)
@@ -195,7 +227,7 @@ fn a_pane_with_an_unfinished_round_is_neither_closed_nor_left_out_of_a_restore()
          INSERT INTO task_round (task_id, round, state, created_at) VALUES ('u', 1, 'running', 130);",
     )?;
     let tx = store.write()?;
-    assert!(retired_workers(&tx)?.is_empty());
+    assert!(retired_workers(&tx, dir.path())?.is_empty());
     assert_eq!(tx.execute(&CLAIM, params!["t"])?, 0);
     tx.execute(
         "UPDATE task_round SET state = 'cancelled', finished_at = 140 WHERE task_id = 'u'",

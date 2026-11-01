@@ -36,9 +36,6 @@ pub(super) struct Take {
 pub(super) struct Reading {
     /// The round's turn, once one finished.
     pub chosen: Option<Take>,
-    /// The turn left open where the record ends, when it could be the round's: only the worker's
-    /// pane closing or its process going idle ends it. `since` is when it started.
-    pub open: Option<(Take, Option<i64>)>,
     /// The record shows the round's request received.
     pub received: bool,
     /// The record was replaced or cut.
@@ -52,17 +49,8 @@ impl Reading {
             start: sealed.span.start,
             position: tracker.position_after(sealed.span),
         });
-        let open = tracker.open().map(|(open, since)| {
-            let take = Take {
-                turn: open.turn,
-                start: open.span.start,
-                position: tracker.position_after(open.span),
-            };
-            (take, since)
-        });
         Self {
             chosen,
-            open,
             received: tracker.received(),
             replaced: tracker.replaced(),
         }

@@ -29,7 +29,6 @@ fn a_blocked_worker_is_reported_once_per_episode_and_its_result_still_arrives() 
         owner,
         worker,
         id,
-        worker_record,
         listener,
         ..
     } = &world;
@@ -85,15 +84,13 @@ fn a_blocked_worker_is_reported_once_per_episode_and_its_result_still_arrives() 
         "{text}"
     );
 
-    append(
-        worker_record,
-        r#"{"type":"user","message":{"role":"user","content":"Review the diff"}}"#,
+    claude::turn(
+        state,
+        "worker",
+        "p1",
+        "Review the diff",
+        Some("Looks good."),
     );
-    append(
-        worker_record,
-        r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Looks good."}]}}"#,
-    );
-    append(worker_record, DURATION);
     // The next message is the finished notice, so the blocked one went once.
     let text = message(listener, "the finished notice");
     assert!(text.contains("finished round 1"), "{text}");

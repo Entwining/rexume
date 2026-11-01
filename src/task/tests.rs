@@ -11,15 +11,15 @@ use super::outcome;
 use super::register::{Kind, refuse_stopped, start_round};
 use super::{blocked, cleanup, evidence, notice, request, shown, unread};
 use crate::restore;
+use crate::runtime::claude;
 use crate::store::Store;
 
-pub(crate) const PROMPT: &str = r#"{"type":"user","timestamp":"2026-10-24T15:29:45.738Z","message":{"role":"user","content":"Count"}}"#;
-pub(super) const ANSWER: &str = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}"#;
-/// What Claude Code writes after a turn's last record, which seals its answer.
-pub(super) const DURATION: &str = r#"{"type":"system","subtype":"turn_duration"}"#;
-pub(super) const PROMPT_2: &str =
-    r#"{"type":"user","message":{"role":"user","content":"Count again"}}"#;
-pub(super) const ANSWER_2: &str = r#"{"type":"assistant","message":{"id":"m2","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Again."}]}}"#;
+/// Lines of a Claude Code turn record, as its turn hooks write them.
+pub(crate) const PROMPT: &str = r#"{"event":"prompt","prompt_id":"p1","token":null}"#;
+pub(super) const ANSWER: &str = r#"{"event":"stop","prompt_id":"p1","id":"m1","answer":"Done."}"#;
+pub(super) const PROMPT_2: &str = r#"{"event":"prompt","prompt_id":"p2","token":null}"#;
+pub(super) const ANSWER_2: &str =
+    r#"{"event":"stop","prompt_id":"p2","id":"m2","answer":"Again."}"#;
 
 pub(crate) fn record(lines: &[&str]) -> Result<tempfile::NamedTempFile> {
     let mut file = tempfile::NamedTempFile::new()?;
@@ -30,14 +30,24 @@ pub(crate) fn record(lines: &[&str]) -> Result<tempfile::NamedTempFile> {
     Ok(file)
 }
 
+/// Makes `file` the turn record of Claude Code conversation `native_id` in state directory `dir`,
+/// where its turn hooks would write it.
+pub(crate) fn turn_record(dir: &Path, native_id: &str, file: &Path) -> Result<()> {
+    let path = claude::record(dir, native_id);
+    std::fs::create_dir_all(claude::records(dir))?;
+    std::os::unix::fs::symlink(file, path)?;
+    Ok(())
+}
+
 /// The owner `claude/owner` in pane `a` and task `t` on its first round, running in pane `b`,
-/// whose occupant is `claude/worker` with record `transcript` and foreground pid 100. Without
+/// whose occupant is `claude/worker` with turn record `transcript` and foreground pid 100. Without
 /// `result_file` the round follows that conversation; with it the task is a run of pid 100.
 pub(crate) fn task_world(
     dir: &Path,
     transcript: &Path,
     result_file: Option<&str>,
 ) -> Result<Store> {
+    turn_record(dir, "worker", transcript)?;
     let mut store = Store::open(dir)?;
     let tx = store.write()?;
     tx.execute_batch(
@@ -157,16 +167,16 @@ fn a_new_round_needs_a_finished_one_on_an_unreleased_interactive_pane() -> Resul
 #[test]
 fn a_released_task_has_no_unread_turns() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let mut transcript = record(&[PROMPT, ANSWER, DURATION])?;
+    let mut transcript = record(&[PROMPT, ANSWER])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
     Follow::default().pass(&mut store, None)?;
-    writeln!(transcript, "{PROMPT_2}\n{ANSWER_2}\n{DURATION}")?;
+    writeln!(transcript, "{PROMPT_2}\n{ANSWER_2}")?;
     transcript.flush()?;
-    assert_eq!(unread(store.conn(), "t")?, Some(1));
+    assert_eq!(unread(store.conn(), store.dir(), "t")?, Some(1));
     store
         .conn()
         .execute_batch("UPDATE task SET released_at = 2")?;
-    assert_eq!(unread(store.conn(), "t")?, None);
+    assert_eq!(unread(store.conn(), store.dir(), "t")?, None);
     Ok(())
 }
 
@@ -203,7 +213,10 @@ fn a_closed_worker_pane_ends_its_unbound_round_and_every_task_on_it() -> Result<
     block_gone(&tx, "b")?;
     tx.commit()?;
     assert_eq!(round(&store)?.0, "worker_closed");
-    assert_eq!(shown(store.conn(), "i1", "t", None)?["worker"], Value::Null);
+    assert_eq!(
+        shown(store.conn(), store.dir(), "i1", "t", None)?["worker"],
+        Value::Null
+    );
     let panes: Vec<(String, bool, Option<String>)> = store
         .conn()
         .prepare("SELECT pane_state, pane_closed_at IS NOT NULL, pane_note FROM task ORDER BY id")?

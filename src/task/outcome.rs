@@ -12,10 +12,6 @@ use super::{OPEN, blocked};
 use crate::runtime::Turn;
 use crate::store::now_ms;
 
-/// Claude Code can write the end of a turn after its idle status, so an idle status ends a turn
-/// the record leaves open only once the record still shows it open this long after the status.
-const IDLE_GRACE_MS: i64 = 3000;
-
 /// One round, if it is still open, with what `evaluate` needs to judge it.
 pub(super) static ROUND: LazyLock<String> = LazyLock::new(|| {
     format!(
@@ -73,13 +69,13 @@ pub(super) fn evaluate(
             let process = match bound {
                 Some((runtime, native_id)) => tx
                     .prepare_cached(
-                        "SELECT pid, reported_at FROM occupant
+                        "SELECT pid FROM occupant
                          WHERE block_lineage = ?1 AND runtime = ?2 AND native_id = ?3
                            AND (instance_id IS NULL OR instance_id = ?4)",
                     )?
                     .query_row(
                         params![worker, runtime, native_id, pane.instance_id],
-                        |row| Ok((row.get(0)?, row.get(1)?)),
+                        |row| row.get(0),
                     )
                     .optional()?,
                 None => None,
@@ -134,29 +130,17 @@ pub(super) fn evaluate(
     }
 }
 
-/// An interactive worker as recorded: whether its pane closed, the pane, and the pid and report
-/// time of the task's conversation while it is the pane's occupant on the pane's instance.
+/// An interactive worker as recorded: whether its pane closed, the pane, and the pid of the task's
+/// conversation while it is the pane's occupant on the pane's instance.
 struct Worker {
     closed: bool,
     pane: Pane,
-    process: Option<(i64, i64)>,
-}
-
-/// Whether the process that wrote the turn started at `since` went idle after it. A process
-/// started after it, such as one reopening the conversation after a restart, reports idle on its
-/// own start, which does not end the earlier turn.
-fn idle_after(pane: &Pane, (pid, reported_at): (i64, i64), since: i64) -> bool {
-    pane.status.as_deref() == Some("idle")
-        && pane.status_pid == Some(pid)
-        && reported_at < since
-        && pane.status_at.is_some_and(|at| at > since)
+    process: Option<i64>,
 }
 
 /// An interactive round's result is the turn its tracker chose from the worker's record, not the
 /// worker's status: a worker that went idle may have been cancelled or be waiting on a question.
-/// A turn the record leaves open is taken only once nothing more can come of it: the pane closed,
-/// or the process that wrote it went idle after it. `blocked` is whether the round is in a blocked
-/// episode.
+/// `blocked` is whether the round is in a blocked episode.
 fn interactive_outcome(
     tx: &Transaction,
     id: &str,
@@ -179,30 +163,8 @@ fn interactive_outcome(
         return Ok(None);
     }
     if let Some(take) = reading.chosen {
-        take_turn(tx, id, round, take, None)?;
+        take_turn(tx, id, round, take)?;
         return Ok(None);
-    }
-    if let Some((take, since)) = reading.open {
-        let answered = matches!(take.turn, Turn::Completed { .. });
-        if worker.closed && answered {
-            take_turn(tx, id, round, take, None)?;
-            return Ok(None);
-        }
-        if let Some(since) = since
-            && !worker.closed
-            && worker
-                .process
-                .is_some_and(|process| idle_after(&worker.pane, process, since))
-        {
-            let due = worker.pane.status_at.unwrap_or(since) + IDLE_GRACE_MS;
-            if now_ms() < due {
-                blocked::follow(tx, id, round, blocked, &worker.pane, worker.process)?;
-                return Ok(Some(due));
-            }
-            let note = (!answered).then_some("the worker went idle without answering");
-            take_turn(tx, id, round, take, note)?;
-            return Ok(None);
-        }
     }
     if worker.closed {
         let note = "the worker's pane closed before it finished";
@@ -214,7 +176,7 @@ fn interactive_outcome(
 
 /// Finishes a round with the turn it takes, records the turn as taken, and moves the task's
 /// position, all in the transaction that writes the round's notice.
-fn take_turn(tx: &Transaction, id: &str, round: i64, take: Take, note: Option<&str>) -> Result<()> {
+fn take_turn(tx: &Transaction, id: &str, round: i64, take: Take) -> Result<()> {
     match take.turn {
         Turn::Completed { reference, text } => finish(
             tx,
@@ -233,10 +195,10 @@ fn take_turn(tx: &Transaction, id: &str, round: i64, take: Take, note: Option<&s
             round,
             "cancelled",
             None,
-            Some(note.unwrap_or("the worker's turn was cancelled")),
+            Some("the worker's turn was cancelled"),
         )?,
         Turn::Failed { text } => finish(tx, id, round, "failed", None, Some(&text))?,
-        Turn::Open { .. } | Turn::None => bail!("a round can take only a turn that ended"),
+        Turn::Open | Turn::None => bail!("a round can take only a turn that ended"),
     }
     tx.execute(
         "UPDATE task_round SET turn_start = ?1 WHERE task_id = ?2 AND round = ?3",

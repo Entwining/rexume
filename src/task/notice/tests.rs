@@ -8,19 +8,17 @@ use serde_json::json;
 use super::receipt::settle;
 use super::*;
 use crate::runtime;
-use crate::task::tests::{ANSWER, ANSWER_2, DURATION, PROMPT, PROMPT_2, task_world};
+use crate::runtime::claude;
+use crate::task::tests::{ANSWER, ANSWER_2, PROMPT, PROMPT_2, task_world, turn_record};
 
 /// Task `t`'s completed first round and its finished notice `d` in `state`, to the owner idle in
-/// pane `a`, whose record is `transcript` and whose messaging socket is the returned listener.
+/// pane `a`, whose turn record is `transcript` and whose messaging socket is the returned listener.
 fn notice_world(dir: &Path, transcript: &Path, state: &str) -> Result<(Store, UnixListener)> {
     let socket = dir.join("owner.sock");
     let listener = UnixListener::bind(&socket)?;
     listener.set_nonblocking(true)?;
     let store = task_world(dir, &dir.join("worker.jsonl"), None)?;
-    store.conn().execute(
-        "UPDATE conversation SET transcript = ?1 WHERE native_id = 'owner'",
-        params![transcript.to_string_lossy()],
-    )?;
+    turn_record(dir, "owner", transcript)?;
     store.conn().execute(
         "UPDATE occupant SET transport = json_object('messaging_socket', ?1) WHERE block_lineage = 'a'",
         params![socket.to_string_lossy()],
@@ -45,11 +43,12 @@ fn notice(store: &Store) -> Result<(String, Option<String>)> {
         })?)
 }
 
-/// The record line of Claude Code taking in notice `id` from another session.
+/// The turn record lines of Claude Code taking in notice `id` from another session, in a turn it
+/// finished.
 fn receipt(id: &str) -> String {
-    json!({ "type": "user", "origin": { "kind": "peer" }, "message": { "role": "user",
-        "content": format!("Another Claude session sent a message:\n{} Worker task t finished.", runtime::token(id)) } })
-    .to_string()
+    let prompt = json!({ "event": "prompt", "prompt_id": "p9", "token": runtime::token(id) });
+    let stop = json!({ "event": "stop", "prompt_id": "p9", "id": "s9", "answer": "Noted." });
+    format!("{prompt}\n{stop}")
 }
 
 /// What the next daemon does with the notice on its start and through its first pass.
@@ -85,7 +84,11 @@ fn an_owner_record_that_cannot_be_read_is_checked_again() -> Result<()> {
     let mut interest = Interest::default();
     settle(&mut store, &mut receipts, &mut interest)?;
     assert_eq!(notice(&store)?.0, "sent");
-    assert!(!interest.files.contains(&record));
+    assert!(
+        !interest
+            .files
+            .contains(&claude::record(dir.path(), "owner"))
+    );
     std::fs::remove_dir(&record)?;
     std::fs::write(&record, receipt("d") + "\n")?;
     settle(&mut store, &mut receipts, &mut Interest::default())?;
@@ -127,7 +130,7 @@ fn a_notice_goes_to_its_idle_owner_once_its_grace_has_passed() -> Result<()> {
     let transcript = tempfile::NamedTempFile::new()?;
     let (mut store, listener) = notice_world(dir.path(), transcript.path(), "pending")?;
     // The round took the worker's first turn; a second finished after it.
-    let worker = [PROMPT, ANSWER, DURATION, PROMPT_2, ANSWER_2, DURATION].join("\n") + "\n";
+    let worker = [PROMPT, ANSWER, PROMPT_2, ANSWER_2].join("\n") + "\n";
     std::fs::write(dir.path().join("worker.jsonl"), worker)?;
     store
         .conn()

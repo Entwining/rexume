@@ -173,30 +173,32 @@ impl Task {
 }
 
 /// How many finished turns in an interactive worker's record no round took, as `task next` would
-/// take them, including an answer a closed pane's record leaves open; `None` for a run, a released
-/// task, a worker not bound yet, and a record that cannot be read or was replaced. Reads the
-/// record, so it runs outside any transaction.
-fn unread(conn: &Connection, id: &str) -> Result<Option<usize>> {
-    let found: Option<(Runtime, Option<String>, i64, bool)> = conn
+/// take them; `None` for a run, a released task, a worker not bound yet, and a record that cannot
+/// be read or was replaced. Reads the record, so it runs outside any transaction.
+fn unread(conn: &Connection, state_dir: &Path, id: &str) -> Result<Option<usize>> {
+    let found: Option<(Runtime, String, Option<String>, i64)> = conn
         .query_row(
-            "SELECT t.worker_runtime, c.transcript, t.position, t.pane_state = 'closed' FROM task t
+            "SELECT t.worker_runtime, t.worker_native_id, c.transcript, t.position FROM task t
              JOIN conversation c ON c.runtime = t.worker_runtime AND c.native_id = t.worker_native_id
              WHERE t.id = ?1 AND t.released_at IS NULL",
             params![id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
         .optional()?;
-    let Some((runtime, Some(transcript), position, closed)) = found else {
+    let Some((runtime, native_id, transcript, position)) = found else {
+        return Ok(None);
+    };
+    let Some(path) = runtime.record(state_dir, &native_id, transcript.as_deref()) else {
         return Ok(None);
     };
     let position = u64::try_from(position)?;
     let taken = follow::taken(conn, id)?;
-    let mut tracker = Tracker::new(runtime, Path::new(&transcript), position, taken, None);
+    let mut tracker = Tracker::new(runtime, &path, position, taken, None);
     if let Err(e) = tracker.update() {
         log::debug!("task {id}: the worker's record could not be read: {e:#}");
         return Ok(None);
     }
-    Ok((!tracker.replaced()).then(|| tracker.unread(closed)))
+    Ok((!tracker.replaced()).then(|| tracker.unread()))
 }
 
 /// A task with one round's result, as every task command but `list` prints it.
@@ -225,7 +227,7 @@ pub fn list(state_dir: &Path) -> Result<Value> {
         )?
         .collect::<rusqlite::Result<_>>()?;
     for task in &mut tasks {
-        task.unread = unread(store.conn(), &task.id)?;
+        task.unread = unread(store.conn(), store.dir(), &task.id)?;
     }
     let notices = notice::undelivered(store.conn(), Some((caller.runtime, &caller.native_id)))?;
     Ok(json!({ "version": VERSION, "tasks": tasks, "undelivered_notices": notices }))
@@ -251,7 +253,13 @@ fn owned(conn: &Connection, id: &str, caller: &Caller) -> Result<()> {
 }
 
 /// The TASK object for one round, the latest when `round` is `None`, with its result.
-fn shown(conn: &Connection, instance: &str, id: &str, round: Option<i64>) -> Result<Value> {
+fn shown(
+    conn: &Connection,
+    state_dir: &Path,
+    instance: &str,
+    id: &str,
+    round: Option<i64>,
+) -> Result<Value> {
     let mut found = conn
         .query_row(
             &format!(
@@ -270,7 +278,7 @@ fn shown(conn: &Connection, instance: &str, id: &str, round: Option<i64>) -> Res
         )
         .optional()?
         .with_context(|| format!("task {id} has no round {}", round.unwrap_or_default()))?;
-    found.task.unread = unread(conn, id)?;
+    found.task.unread = unread(conn, state_dir, id)?;
     Ok(serde_json::to_value(found)?)
 }
 
@@ -278,7 +286,7 @@ pub fn show(state_dir: &Path, id: &str, round: Option<i64>) -> Result<Value> {
     let store = Store::open(state_dir)?;
     let caller = caller(&store)?;
     owned(store.conn(), id, &caller)?;
-    shown(store.conn(), &caller.instance, id, round)
+    shown(store.conn(), store.dir(), &caller.instance, id, round)
 }
 
 /// A round's number and state: the given one, or the latest.
@@ -309,7 +317,7 @@ pub fn ack(state_dir: &Path, id: &str, round: Option<i64>) -> Result<Value> {
     }
     register::acknowledge(&tx, id, round, "taken by task ack")?;
     tx.commit()?;
-    shown(store.conn(), &caller.instance, id, Some(round))
+    shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
 }
 
 /// The tasks a conversation owns whose latest round it has not acknowledged, one line each, for

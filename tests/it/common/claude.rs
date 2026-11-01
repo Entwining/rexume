@@ -2,7 +2,43 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime};
 
-use super::{rex_bin, wait_until};
+use serde_json::{Value, json};
+
+use super::{rex_bin, rexume, wait_until};
+
+/// Runs Rexume's hook as Claude Code runs it in a Rex pane on one of its turn events, with
+/// `input`, Claude Code's hook input for conversation `native_id`.
+pub fn hook(state: &Path, native_id: &str, mut input: Value) {
+    input["session_id"] = native_id.into();
+    let output = rexume(
+        &["report", "claude", "--state-dir", &state.to_string_lossy()],
+        &[("REX_BLOCK", "hook")],
+        &input.to_string(),
+    );
+    assert!(
+        output.status.success() && output.stderr.is_empty(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
+/// Claude Code taking in `prompt` as turn `prompt_id` of conversation `native_id`, and, when
+/// given, finishing that turn with `answer`.
+pub fn turn(state: &Path, native_id: &str, prompt_id: &str, prompt: &str, answer: Option<&str>) {
+    hook(
+        state,
+        native_id,
+        json!({ "hook_event_name": "UserPromptSubmit", "prompt_id": prompt_id, "prompt": prompt }),
+    );
+    if let Some(answer) = answer {
+        hook(
+            state,
+            native_id,
+            json!({ "hook_event_name": "Stop", "prompt_id": prompt_id,
+                "last_assistant_message": answer }),
+        );
+    }
+}
 
 /// A stand-in for Claude Code in `dir/bin`, with the Rex CLI beside it. Each run writes its
 /// arguments, one per line, to `dir/runs/PID`, then runs `then`, Perl statements. It is Perl

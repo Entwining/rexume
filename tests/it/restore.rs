@@ -14,7 +14,6 @@ const WAIT: Duration = Duration::from_secs(20);
 /// Rex saves a change to its sessions about a second later; a server killed sooner restores them
 /// as they were before it.
 const REX_SAVES: Duration = Duration::from_secs(3);
-const PROMPT: &str = r#"{"type":"user","message":{"role":"user","content":"Write a story"}}"#;
 
 /// A session `agents` of two panes, `writer` and `viewer`, each recorded with its shell as the
 /// foreground; returns the session and the panes.
@@ -127,7 +126,9 @@ fn a_turn_the_crash_cut_off_continues_once_in_its_own_pane() {
                 state.display()
             )),
     );
-    std::fs::write(&transcript, format!("{PROMPT}\n")).unwrap();
+    // Claude Code has saved the conversation and taken a prompt it has not finished.
+    std::fs::write(&transcript, "").unwrap();
+    claude::turn(&state, "story", "p1", "Write a story", None);
     // The user's shell wraps `claude` in a function, which the reopened conversation goes through.
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
@@ -210,7 +211,8 @@ fn text_typed_in_a_restored_pane_is_left_alone() {
     let state = dir.path().join("state");
     let (bin, runs) = claude::stand_in(dir.path(), "sleep 600;");
     let transcript = dir.path().join("story.jsonl");
-    std::fs::write(&transcript, format!("{PROMPT}\n")).unwrap();
+    std::fs::write(&transcript, "").unwrap();
+    claude::turn(&state, "story", "p1", "Write a story", None);
     let mut server = Server::start(dir.path(), Some(&bin));
     let mut daemon = Daemon::start(&server, &state);
     wait_until("the daemon's first epoch", WAIT, || {

@@ -36,7 +36,7 @@ fn open_upgrades_a_version_1_database_and_keeps_its_tasks() -> Result<()> {
     // its pane's next conversation reported.
     conn.execute_batch(
         "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
-           VALUES ('claude', 'owner', 1, 0), ('claude', 'worker', 1, 0);
+           VALUES ('claude', 'owner', 1, 0), ('codex', 'worker', 1, 0);
          INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, worker_pid,
            result_file, keep_pane, pane_state, created_at)
            VALUES ('i', 'x', 'claude', 'owner', 'b1', 7, NULL, 0, 'open', 1),
@@ -46,10 +46,10 @@ fn open_upgrades_a_version_1_database_and_keeps_its_tasks() -> Result<()> {
          INSERT INTO task_round (task_id, round, worker_runtime, worker_native_id, cursor, state,
            finished_at, acked_at, created_at, result_ref, result)
            VALUES ('i', 1, NULL, NULL, 100, 'completed', 3, 4, 1, 'm1', 'first'),
-             ('i', 2, 'claude', 'worker', 250, 'blocked', NULL, NULL, 5, NULL, NULL),
+             ('i', 2, 'codex', 'worker', 250, 'blocked', NULL, NULL, 5, NULL, NULL),
              ('r', 1, NULL, NULL, 0, 'completed', 6, 7, 2, '/r', 'done'),
-             ('k', 1, 'claude', 'worker', 120, 'completed', 6, 7, 3, 'm2', 'kept'),
-             ('u', 1, 'claude', 'worker', 300, 'completed', 6, 7, 4, 'm3', 'before'),
+             ('k', 1, 'codex', 'worker', 120, 'completed', 6, 7, 3, 'm2', 'kept'),
+             ('u', 1, 'codex', 'worker', 300, 'completed', 6, 7, 4, 'm3', 'before'),
              ('u', 2, NULL, NULL, 300, 'running', NULL, NULL, 8, NULL, NULL);
          INSERT INTO notice (id, task_id, round, state, sent_at, delivered_at)
            VALUES ('n', 'i', 1, 'delivered', 3, 4);",
@@ -228,10 +228,10 @@ fn open_upgrades_versions_3_and_4_and_keeps_rounds_notices_and_requests() -> Res
         // blocked with the request still unsent.
         conn.execute_batch(
             "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
-               VALUES ('claude', 'owner', 1, 0), ('claude', 'worker', 1, 0);
+               VALUES ('claude', 'owner', 1, 0), ('codex', 'worker', 1, 0);
              INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage,
                keep_pane, worker_runtime, worker_native_id, position, created_at)
-               VALUES ('i', 'x', 'claude', 'owner', 'b1', 0, 'claude', 'worker', 300, 1);
+               VALUES ('i', 'x', 'claude', 'owner', 'b1', 0, 'codex', 'worker', 300, 1);
              INSERT INTO task_round (task_id, round, state, finished_at, acked_at, created_at,
                turn_start, result_ref, result)
                VALUES ('i', 1, 'completed', 3, 4, 1, 0, 'm1', 'first'),
@@ -327,3 +327,5 @@ fn open_upgrades_a_version_6_database_and_keeps_its_panes() -> Result<()> {
     assert_eq!(kept, ("i1".into(), Some(10), Some("working".into())));
     Ok(())
 }
+
+mod turn_records;

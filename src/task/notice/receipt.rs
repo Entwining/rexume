@@ -45,11 +45,11 @@ pub(in crate::task) fn settle(
         })?
         .collect::<rusqlite::Result<_>>()?;
     for (notice, state, runtime, native_id, transcript) in rows {
-        let Some(transcript) = transcript else {
+        let Some(path) = runtime.record(store.dir(), &native_id, transcript.as_deref()) else {
             continue;
         };
         records
-            .entry(PathBuf::from(transcript))
+            .entry(path)
             .or_insert_with(|| OwnerRecord {
                 runtime,
                 native_id,

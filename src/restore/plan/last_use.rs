@@ -1,6 +1,6 @@
 //! How one pane starts, by what it was last used for as recorded.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -8,7 +8,7 @@ use serde_json::Value;
 
 use super::{Plan, Start};
 use crate::runtime::{self, Conversation, Runtime, Turn};
-use crate::task;
+use crate::{report, task};
 
 /// How one pane starts, as planned before its insert: a conversation exactly when it reopens one.
 pub(super) struct Candidate {
@@ -38,9 +38,11 @@ struct Occupant {
     pid_name: Option<String>,
     own_program: Option<bool>,
     reported_at: i64,
+    /// The record its turns are read from (`Runtime::record`).
+    record: Option<PathBuf>,
 }
 
-fn occupant(conn: &Connection, block: &str) -> Result<Option<Occupant>> {
+fn occupant(conn: &Connection, state_dir: &Path, block: &str) -> Result<Option<Occupant>> {
     Ok(conn
         .query_row(
             "SELECT o.runtime, o.native_id, c.transcript, c.settings, c.resumable,
@@ -49,17 +51,24 @@ fn occupant(conn: &Connection, block: &str) -> Result<Option<Occupant>> {
              WHERE o.block_lineage = ?1",
             params![block],
             |row| {
+                let runtime: Runtime = row.get(0)?;
+                let conversation = Conversation {
+                    native_id: row.get(1)?,
+                    transcript: row.get(2)?,
+                    settings: row
+                        .get::<_, Value>(3)?
+                        .as_object()
+                        .cloned()
+                        .unwrap_or_default(),
+                };
                 Ok(Occupant {
-                    runtime: row.get(0)?,
-                    conversation: Conversation {
-                        native_id: row.get(1)?,
-                        transcript: row.get(2)?,
-                        settings: row
-                            .get::<_, Value>(3)?
-                            .as_object()
-                            .cloned()
-                            .unwrap_or_default(),
-                    },
+                    runtime,
+                    record: runtime.record(
+                        state_dir,
+                        &conversation.native_id,
+                        conversation.transcript.as_deref(),
+                    ),
+                    conversation,
                     resumable: row.get(4)?,
                     keeps_session_env: row.get(5)?,
                     instance_id: row.get(6)?,
@@ -86,7 +95,12 @@ struct LastSeen {
 /// terminal's own program, or may have been, reopens after it exited; a conversation still the
 /// foreground program reopens; anything else keeps the shell. The occupant counts only from the
 /// instance the pane's record describes, where its PID names a process.
-pub(super) fn candidate(conn: &Connection, instance: &str, block: &str) -> Result<Candidate> {
+pub(super) fn candidate(
+    conn: &Connection,
+    state_dir: &Path,
+    instance: &str,
+    block: &str,
+) -> Result<Candidate> {
     let seen: Option<LastSeen> = conn
         .query_row(
             "SELECT instance_id, fg_pid, last_exit, status, status_pid, status_name FROM block
@@ -110,7 +124,7 @@ pub(super) fn candidate(conn: &Connection, instance: &str, block: &str) -> Resul
     if seen.instance_id == instance {
         return Ok(shell("the pane was recorded on this server instance"));
     }
-    let occupant = occupant(conn, block)?.filter(|o| {
+    let occupant = occupant(conn, state_dir, block)?.filter(|o| {
         o.instance_id
             .as_deref()
             .is_none_or(|i| i == seen.instance_id)
@@ -190,17 +204,19 @@ fn reopen(
         Ok(()) => occupant.conversation = read,
         Err(e) => log::warn!("pane {block}: reopens with the settings it reported: {e:#}"),
     }
-    let (start, reason) = match running {
+    let (start, reason, record_length) = match running {
         Some((seen, server_gone)) => continuation(conn, block, occupant, seen, server_gone)?,
         None => (
             Start::Agent,
             "the conversation's program had exited".to_owned(),
+            None,
         ),
     };
     let prompt = (start == Start::Continue)
         .then(|| -> Result<String> {
             Ok(runtime::continuation_prompt(
-                &format!("{instance}/{block}"),
+                instance,
+                block,
                 &task::unacknowledged(conn, occupant.runtime, &occupant.conversation.native_id)?,
             ))
         })
@@ -213,6 +229,7 @@ fn reopen(
             env: occupant.runtime.resume_env(&occupant.conversation),
             prompt,
             transcript: occupant.conversation.transcript.clone(),
+            record_length,
             keeps_session_env: occupant.keeps_session_env,
             reason,
         },
@@ -221,18 +238,21 @@ fn reopen(
 
 /// A turn continues only when the server's end is what stopped it: the server was watched until
 /// it went away, the pane's program was still this conversation's process and was working, and
-/// the conversation's own record shows a prompt that nothing ended. A cancel or answer the
-/// runtime recorded wins over a status event the server never delivered. A non-interactive run
-/// does not continue: its task already ended with the server, and a prompt would not bring back
-/// its result file.
+/// the conversation's record shows a prompt that nothing ended. An end the record shows wins over
+/// a status event the server never delivered, except for a runtime that can work on after the end
+/// its record shows (`Runtime::works_after_end`): there the working status wins, and a server that
+/// stopped between that end and the status after it gets one prompt too many. A non-interactive
+/// run does not continue: its task already ended with the server, and a prompt would not bring
+/// back its result file. A continuation comes with the record's length as read, from which the
+/// gate checks that no turn ended since.
 fn continuation(
     conn: &Connection,
     block: &str,
     occupant: &Occupant,
     seen: &LastSeen,
     server_gone: bool,
-) -> Result<(Start, String)> {
-    let agent = |reason: &str| Ok((Start::Agent, reason.to_owned()));
+) -> Result<(Start, String, Option<u64>)> {
+    let agent = |reason: &str| Ok((Start::Agent, reason.to_owned(), None));
     if !server_gone {
         return agent("the server's end was not observed");
     }
@@ -249,16 +269,21 @@ fn continuation(
         Some("blocked") => return agent("the conversation was waiting for the user"),
         other => return agent(&format!("the last status was {}", other.unwrap_or("none"))),
     }
-    let Some(transcript) = &occupant.conversation.transcript else {
+    let Some(record) = &occupant.record else {
         return agent("no conversation record to check");
     };
-    match runtime::last_turn(occupant.runtime, Path::new(transcript), 0) {
-        Ok(Some(Turn::Open { .. })) => Ok((
-            Start::Continue,
-            "the server's end cut off a running turn".into(),
-        )),
-        Ok(Some(turn)) => agent(turn.describe()),
-        Ok(None) => agent("the record has a line that is not JSON"),
-        Err(e) => agent(&format!("the record could not be read: {e:#}")),
-    }
+    let length = match report::record_length(record) {
+        Ok(length) => length,
+        Err(e) => return agent(&format!("the record could not be read: {e:#}")),
+    };
+    let reason = match runtime::last_turn(occupant.runtime, record, 0) {
+        Ok(Some(Turn::Open)) => "the server's end cut off a running turn",
+        Ok(Some(Turn::Completed { .. })) if occupant.runtime.works_after_end() => {
+            "the server's end cut off work that went on after the turn's end"
+        }
+        Ok(Some(turn)) => return agent(turn.describe()),
+        Ok(None) => return agent("the record has a line that is not JSON"),
+        Err(e) => return agent(&format!("the record could not be read: {e:#}")),
+    };
+    Ok((Start::Continue, reason.into(), Some(length)))
 }

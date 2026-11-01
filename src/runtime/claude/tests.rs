@@ -1,14 +1,13 @@
-use super::super::tests::{ANSWER, DURATION, PROMPT, transcript};
+use serde_json::Value;
+
+use super::super::tests::transcript;
 use super::super::{Lines, Runtime, last_turn};
 use super::*;
 
-const THINKING: &str = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":null,"content":[{"type":"thinking","thinking":""}]}}"#;
-const TOOL_USE: &str = r#"{"type":"assistant","message":{"id":"m0","role":"assistant","stop_reason":"tool_use","content":[{"type":"tool_use","name":"Bash"}]}}"#;
-const TOOL_RESULT: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"tool_result","content":"ok"}]}}"#;
-const CANCEL: &str = r#"{"type":"user","message":{"role":"user","content":[{"type":"text","text":"[Request interrupted by user]"}]}}"#;
-const API_REQUEST: &str = r#"{"type":"api-request"}"#;
-const PEER: &str = r#"{"type":"user","isMeta":true,"turnOrigin":"peer","message":{"role":"user","content":"Another Claude session sent a message:\n[rexume d1] done"}}"#;
-const CONTEXT: &str = r#"{"type":"user","isMeta":true,"message":{"role":"user","content":"<system-reminder>context</system-reminder>"}}"#;
+const PROMPT: &str = r#"{"event":"prompt","prompt_id":"p1","token":null}"#;
+const ANSWER: &str = r#"{"event":"stop","prompt_id":"p1","id":"s1","answer":"Done."}"#;
+const PROMPT_2: &str = r#"{"event":"prompt","prompt_id":"p2","token":null}"#;
+const ANSWER_2: &str = r#"{"event":"stop","prompt_id":"p2","id":"s2","answer":"Again."}"#;
 
 fn turn(lines: &[&str]) -> Result<Option<Turn>> {
     last_turn(Runtime::Claude, transcript(lines).path(), 0)
@@ -31,104 +30,175 @@ fn offset(lines: &[&str]) -> u64 {
     lines.iter().map(|line| line.len() as u64 + 1).sum()
 }
 
-#[test]
-fn an_answer_ends_with_the_last_record_of_its_message() -> Result<()> {
-    let more = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"More."}]}}"#;
-    let answered = [PROMPT, THINKING, ANSWER, more];
-    // Until another record follows, another part of the message may still come.
-    assert!(sealed(&answered)?.is_empty());
-    let finished = [&answered[..], &[DURATION]].concat();
-    assert_eq!(
-        sealed(&finished)?,
-        [Sealed {
-            turn: Turn::Completed {
-                reference: "m1".into(),
-                text: "Done.\nMore.".into()
-            },
-            span: Span {
-                start: 0,
-                end: offset(&answered)
-            }
-        }]
-    );
-    assert_eq!(
-        sealed(&[PROMPT, THINKING, CANCEL])?,
-        [Sealed {
-            turn: Turn::Cancelled,
-            span: Span {
-                start: 0,
-                end: offset(&[PROMPT, THINKING, CANCEL])
-            }
-        }]
-    );
-    Ok(())
+fn completed(reference: &str, text: &str) -> Turn {
+    Turn::Completed {
+        reference: reference.into(),
+        text: text.into(),
+    }
 }
 
-/// A turn the server's end cut off leaves no end in the record; the turn that continues it is
-/// the next one to finish.
+/// Input the running turn takes in, typed or from another session, carries that turn's prompt ID
+/// and does not start another; the turn's end shows its token received.
 #[test]
-fn a_turn_another_started_before_it_ended_is_dropped() -> Result<()> {
-    let cut_off = [PROMPT, TOOL_USE];
-    let found = sealed(&[&cut_off[..], &[PEER, ANSWER, DURATION]].concat())?;
-    assert_eq!(
-        found.iter().map(|s| s.span.start).collect::<Vec<_>>(),
-        [offset(&cut_off)]
-    );
-    Ok(())
-}
-
-/// An answer is a finished turn also without a record that started it, and stays one when a
-/// later part of its message carries no stop reason.
-#[test]
-fn an_answer_without_a_recorded_start_is_a_turn() -> Result<()> {
-    let late_part = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":null,"content":[{"type":"text","text":"More."}]}}"#;
-    let found = sealed(&[CONTEXT, ANSWER, late_part, DURATION])?;
+fn input_a_running_turn_takes_in_belongs_to_it() -> Result<()> {
+    let peer = r#"{"event":"prompt","prompt_id":"p1","token":"[rexume d1]"}"#;
+    let lines = [PROMPT, peer, ANSWER];
+    let found = sealed(&lines)?;
     assert_eq!(
         found,
         [Sealed {
-            turn: Turn::Completed {
-                reference: "m1".into(),
-                text: "Done.\nMore.".into()
-            },
+            turn: completed("s1", "Done."),
             span: Span {
-                start: offset(&[CONTEXT]),
-                end: offset(&[CONTEXT, ANSWER, late_part])
-            }
+                start: 0,
+                end: offset(&lines)
+            },
+            took: vec!["[rexume d1]".into()],
         }]
+    );
+    assert!(found[0].received("[rexume d1]"));
+    Ok(())
+}
+
+/// A prompt nothing ended when the next one starts was interrupted or rejected by another hook:
+/// it ends as cancelled where the next starts, and its token is not shown received, while the
+/// next turn's is.
+#[test]
+fn a_prompt_without_an_end_is_cancelled_when_another_starts() -> Result<()> {
+    let rejected = r#"{"event":"prompt","prompt_id":"p1","token":"[rexume r1]"}"#;
+    let next = r#"{"event":"prompt","prompt_id":"p2","token":"[rexume r2]"}"#;
+    let found = sealed(&[rejected, next, ANSWER_2])?;
+    assert_eq!(
+        found,
+        [
+            Sealed {
+                turn: Turn::Cancelled,
+                span: Span {
+                    start: 0,
+                    end: offset(&[rejected])
+                },
+                took: vec!["[rexume r1]".into()],
+            },
+            Sealed {
+                turn: completed("s2", "Again."),
+                span: Span {
+                    start: offset(&[rejected]),
+                    end: offset(&[rejected, next, ANSWER_2])
+                },
+                took: vec!["[rexume r2]".into()],
+            }
+        ]
+    );
+    assert!(!found[0].received("[rexume r1]"));
+    assert!(found[1].received("[rexume r2]"));
+    Ok(())
+}
+
+/// A Stop hook that makes Claude Code go on records a second stop under the same prompt ID, which
+/// ends a turn of its own.
+#[test]
+fn each_stop_ends_a_turn() -> Result<()> {
+    let again = r#"{"event":"stop","prompt_id":"p1","id":"s2","answer":"More."}"#;
+    let found = sealed(&[PROMPT, ANSWER, again])?;
+    assert_eq!(
+        found,
+        [
+            Sealed {
+                turn: completed("s1", "Done."),
+                span: Span {
+                    start: 0,
+                    end: offset(&[PROMPT, ANSWER])
+                },
+                took: Vec::new(),
+            },
+            Sealed {
+                turn: completed("s2", "More."),
+                span: Span {
+                    start: offset(&[PROMPT, ANSWER]),
+                    end: offset(&[PROMPT, ANSWER, again])
+                },
+                took: Vec::new(),
+            }
+        ]
     );
     Ok(())
 }
 
 #[test]
 fn turn_states_follow_the_records() -> Result<()> {
-    let open = Some(Turn::Open { since: None });
-    assert_eq!(turn(&[PROMPT, TOOL_USE, TOOL_RESULT, API_REQUEST])?, open);
+    let failure = r#"{"event":"failure","prompt_id":"p1","text":"API Error"}"#;
+    assert_eq!(turn(&[])?, Some(Turn::None));
+    assert_eq!(turn(&[PROMPT])?, Some(Turn::Open));
+    assert_eq!(turn(&[PROMPT, ANSWER])?, Some(completed("s1", "Done.")));
     assert_eq!(
-        turn(&[PROMPT, THINKING, ANSWER])?,
-        Some(Turn::Completed {
-            reference: "m1".into(),
-            text: "Done.".into()
+        turn(&[PROMPT, failure])?,
+        Some(Turn::Failed {
+            text: "API Error".into()
         })
     );
-    assert_eq!(turn(&[PROMPT, THINKING, CANCEL])?, Some(Turn::Cancelled));
-    assert_eq!(turn(&[PROMPT, ANSWER, PROMPT])?, open);
-    assert_eq!(turn(&[PROMPT, ANSWER, PEER])?, open);
-    assert!(matches!(
-        turn(&[PROMPT, ANSWER, CONTEXT])?,
-        Some(Turn::Completed { .. })
-    ));
+    assert_eq!(turn(&[PROMPT, ANSWER, PROMPT_2])?, Some(Turn::Open));
     Ok(())
 }
 
+/// The hooks' input becomes a record line with the prompt's token and nothing else of its text; a
+/// subagent's events and other events write nothing.
 #[test]
-fn an_open_prompt_carries_when_it_was_recorded() -> Result<()> {
-    let prompt = r#"{"type":"user","timestamp":"2026-10-24T15:29:45.738Z","turnOrigin":"human","message":{"role":"user","content":"Count"}}"#;
+fn a_hook_input_becomes_its_turn_event() {
+    let event = |input: Value| turn_event(&input);
+    let prompt = |text: &str| {
+        event(json!({ "hook_event_name": "UserPromptSubmit", "prompt_id": "p", "prompt": text }))
+    };
     assert_eq!(
-        turn(&[prompt])?,
-        Some(Turn::Open {
-            since: Some(1_792_855_785_738)
-        })
+        prompt("[rexume d1] Worker task t finished."),
+        Some(json!({ "event": "prompt", "prompt_id": "p", "token": "[rexume d1]" }))
     );
+    for text in ["count", "see [rexume d1]", "[rexume ] x", "[rexume a b] x"] {
+        assert_eq!(prompt(text).unwrap()["token"], Value::Null, "{text}");
+    }
+    // A Rex server instance ID is a UUID and a block ID `block:` and a UUID.
+    let resumed = prompt(&super::super::continuation_prompt(
+        "0f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a",
+        "block:01a00000-0000-7000-8000-000000000001",
+        &["t".into()],
+    ));
+    assert!(
+        resumed.unwrap()["token"]
+            .as_str()
+            .is_some_and(super::super::is_continuation)
+    );
+    let stop = event(json!({ "hook_event_name": "Stop", "prompt_id": "p",
+        "last_assistant_message": "Done." }))
+    .unwrap();
+    assert_eq!(
+        (&stop["event"], &stop["answer"]),
+        (&json!("stop"), &json!("Done."))
+    );
+    assert!(stop["id"].as_str().is_some_and(|id| !id.is_empty()));
+    assert_eq!(
+        event(
+            json!({ "hook_event_name": "StopFailure", "prompt_id": "p", "error": "rate_limit",
+            "last_assistant_message": "API Error: rate limited" })
+        ),
+        Some(json!({ "event": "failure", "prompt_id": "p", "text": "API Error: rate limited" }))
+    );
+    assert_eq!(
+        event(json!({ "hook_event_name": "Stop", "agent_id": "a", "prompt_id": "p" })),
+        None
+    );
+    assert_eq!(event(json!({ "hook_event_name": "SessionStart" })), None);
+}
+
+#[test]
+fn a_record_is_appended_only_under_a_plain_session_id() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    append(dir.path(), "s", &json!({ "event": "prompt" }))?;
+    append(dir.path(), "s", &json!({ "event": "stop" }))?;
+    assert_eq!(
+        std::fs::read_to_string(record(dir.path(), "s"))?,
+        "{\"event\":\"prompt\"}\n{\"event\":\"stop\"}\n"
+    );
+    for id in ["", "../s", ".hidden"] {
+        assert!(append(dir.path(), id, &json!({})).is_err(), "{id}");
+    }
     Ok(())
 }
 

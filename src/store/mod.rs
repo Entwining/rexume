@@ -14,9 +14,11 @@ use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 
+use crate::runtime::claude;
+
 const SCHEMA: &str = include_str!("schema.sql");
 /// The `user_version` that `schema.sql` sets.
-pub const SCHEMA_VERSION: i64 = 7;
+pub const SCHEMA_VERSION: i64 = 8;
 /// The `application_id` that `schema.sql` sets: 'rexu' in ASCII.
 const APPLICATION_ID: i64 = 0x7265_7875;
 /// How long finished restores, tasks, and unused conversations are kept.
@@ -241,6 +243,41 @@ pub fn forget_block(tx: &Transaction, lineage: &str) -> Result<()> {
         "DELETE FROM occupant WHERE block_lineage = ?1",
         params![lineage],
     )?;
+    Ok(())
+}
+
+/// Deletes the Claude Code turn records of conversations the sweep forgot, once their hooks have
+/// written nothing for `RETENTION`; a record whose conversation never reported is one too. Run
+/// after the sweep commits, since no file is changed inside a transaction. A file that cannot be
+/// deleted stays for the next sweep.
+pub fn sweep_records(store: &Store) -> Result<()> {
+    let dir = claude::records(store.dir());
+    let entries = match std::fs::read_dir(&dir) {
+        Ok(entries) => entries,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e).with_context(|| format!("failed to read `{}`", dir.display())),
+    };
+    let cutoff = SystemTime::now() - RETENTION;
+    let mut known = store.conn().prepare(
+        "SELECT EXISTS (SELECT 1 FROM conversation WHERE runtime = 'claude' AND native_id = ?1)",
+    )?;
+    for entry in entries {
+        let path = entry?.path();
+        let Some(native_id) = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .and_then(|name| name.strip_suffix(".jsonl"))
+        else {
+            continue;
+        };
+        let written = std::fs::metadata(&path).and_then(|meta| meta.modified());
+        if written.is_ok_and(|at| at < cutoff)
+            && !known.query_row(params![native_id], |row| row.get(0))?
+            && let Err(e) = std::fs::remove_file(&path)
+        {
+            log::warn!("failed to delete `{}`: {e}", path.display());
+        }
+    }
     Ok(())
 }
 

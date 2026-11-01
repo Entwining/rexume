@@ -2,16 +2,17 @@
 
 pub mod launch;
 
+use std::fs::OpenOptions;
 use std::io::Write;
 use std::os::unix::net::UnixStream;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use serde_json::{Value, json};
 
 use super::lines::last_record;
-use super::{Conversation, Open, Sealed, Sent, Span, Target, Turn, content_texts, text_at};
-use crate::rex::time_at;
+use super::{Conversation, Sealed, Sent, Span, Target, Turn, text_at};
+use crate::store::new_id;
 
 /// Claude Code takes the model and effort of a resumed session from the command line; its session
 /// start leaves them out on resume, so the reported launch settings are what reopen it. Its resume
@@ -85,161 +86,164 @@ pub fn send(target: &Target, text: &str) -> Result<Sent> {
     }
 }
 
-/// A message from another session is a user record whose origin is a peer.
-pub fn received(record: &Value) -> bool {
-    record.get("type").and_then(Value::as_str) == Some("user")
-        && record.pointer("/origin/kind").and_then(Value::as_str) == Some("peer")
+/// The file this tool keeps a Claude Code conversation's turns in, written by its turn hooks:
+/// Claude Code's transcript names no turn, so it does not show which records end one, while the
+/// hooks name the prompt whose turn they report and give its final answer, which the transcript
+/// may not hold yet when the turn ends.
+pub fn record(state_dir: &Path, native_id: &str) -> PathBuf {
+    records(state_dir).join(format!("{native_id}.jsonl"))
 }
 
-const INTERRUPT: &str = "[Request interrupted by user";
+/// The directory of the turn records.
+pub fn records(state_dir: &Path) -> PathBuf {
+    state_dir.join("claude")
+}
 
-/// Claude Code writes the user's cancel as a user text `[Request interrupted by user]` (or `... for
-/// tool use]`) and ends an answered turn with an assistant message whose `stop_reason` is
-/// `end_turn`; a turn cut off by the terminal's end leaves neither. It writes each content block
-/// of a message as its own record, each carrying the message's final `stop_reason`, so an answer
-/// has ended only once a record that is not part of its message follows; normally that is the
-/// turn's duration, written right after.
+/// The line a turn hook adds to the conversation's record: `prompt` when Claude Code takes input,
+/// typed or from another session, which while a turn runs carries that turn's prompt ID; `stop`
+/// when it has finished responding, with its final answer; `failure` when an API error ended the
+/// turn. `None` for any other event and for a subagent's. A prompt that starts with a notice's or
+/// request's token keeps the token, and no other text.
+pub fn turn_event(input: &Value) -> Option<Value> {
+    if input.get("agent_id").is_some_and(|v| !v.is_null()) {
+        return None;
+    }
+    let text = |key: &str| input.get(key).and_then(Value::as_str);
+    let prompt_id = text("prompt_id");
+    Some(match text("hook_event_name")? {
+        "UserPromptSubmit" => json!({
+            "event": "prompt",
+            "prompt_id": prompt_id,
+            "token": text("prompt").and_then(leading_token),
+        }),
+        "Stop" => json!({
+            "event": "stop",
+            "prompt_id": prompt_id,
+            "id": new_id(),
+            "answer": text("last_assistant_message").unwrap_or(""),
+        }),
+        "StopFailure" => json!({
+            "event": "failure",
+            "prompt_id": prompt_id,
+            "text": text("last_assistant_message").or_else(|| text("error")).unwrap_or(""),
+        }),
+        _ => return None,
+    })
+}
+
+/// The token a notice or request starts with (`runtime::token`).
+fn leading_token(prompt: &str) -> Option<&str> {
+    let id = prompt.strip_prefix("[rexume ")?;
+    let end = id
+        .find(']')
+        .filter(|&end| end > 0 && !id[..end].contains(char::is_whitespace))?;
+    Some(&prompt[.."[rexume ".len() + end + 1])
+}
+
+/// Appends a turn hook's line to the conversation's record. Each line goes in one write to a file
+/// opened for appending, so a reader sees it whole or not yet, as with a runtime's own record.
+pub fn append(state_dir: &Path, native_id: &str, event: &Value) -> Result<()> {
+    if native_id.is_empty() || native_id.starts_with('.') || native_id.contains('/') {
+        bail!("`{native_id}` cannot name a record");
+    }
+    let dir = records(state_dir);
+    std::fs::create_dir_all(&dir)
+        .with_context(|| format!("failed to create `{}`", dir.display()))?;
+    let path = record(state_dir, native_id);
+    let mut line = serde_json::to_vec(event)?;
+    line.push(b'\n');
+    OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)
+        .and_then(|mut file| file.write_all(&line))
+        .with_context(|| format!("failed to append to `{}`", path.display()))
+}
+
+/// Claude Code's turns as its hooks record them. A prompt with a new ID starts a turn, and one
+/// with the running turn's ID is input that turn takes in. Each `stop` ends a turn with its
+/// answer: a Stop hook that makes Claude Code go on after it finished responding records another
+/// `stop` once it finishes again, which ends a turn of its own. A `failure` ends a turn with the
+/// error. A prompt that nothing ended when the next one starts was interrupted, or rejected by
+/// another `UserPromptSubmit` hook, which the hooks do not tell apart: it ends as cancelled, and
+/// the input it carried counts as not received. A turn the server's end cut off records no end;
+/// the continuation prompt a restore sends it (`continuation_prompt`) carries on that turn, with
+/// what it took in, under the new prompt's ID.
 #[derive(Default)]
 pub struct Parser {
     turn: Option<Turn>,
-    /// The message ID and texts of the answer being written.
-    answer: Option<(String, Vec<String>)>,
-    /// Where the turn not yet yielded starts, and when its first record was written.
-    open: Option<(u64, Option<i64>)>,
-    /// The offset after the answer's last record so far, once one carried `end_turn`.
-    ending: Option<u64>,
+    open: Option<Open>,
+}
+
+/// The turn not yet yielded.
+struct Open {
+    prompt_id: Option<String>,
+    start: u64,
+    /// The notice and request tokens of the prompts it took in.
+    took: Vec<String>,
 }
 
 impl Parser {
     pub fn feed(&mut self, record: &Value, span: Span, sealed: &mut Vec<Sealed>) {
-        if record.get("isSidechain").and_then(Value::as_bool) == Some(true) {
-            return;
-        }
-        let kind = record.get("type").and_then(Value::as_str);
-        if let Some(end) = self.ending {
-            let message_id = text_at(record, "/message/id");
-            let same = kind == Some("assistant")
-                && self
-                    .answer
-                    .as_ref()
-                    .is_some_and(|(id, _)| *id == message_id);
-            if !same {
-                self.ending = None;
-                if let (Some((start, _)), Some(turn)) = (self.open.take(), self.turn.clone()) {
-                    sealed.push(Sealed {
-                        turn,
-                        span: Span { start, end },
-                    });
-                }
-            }
-        }
-        match kind {
-            Some("user") => {
-                let content = record.pointer("/message/content");
-                // Every turn start, typed or delivered from another session, carries `turnOrigin`;
-                // a delivered message is also marked `isMeta` like injected context.
-                let starts_turn = record.get("turnOrigin").is_some()
-                    || (record.get("isMeta").and_then(Value::as_bool) != Some(true)
-                        && is_prompt(content));
-                if content_texts(content)
-                    .iter()
-                    .any(|t| t.starts_with(INTERRUPT))
-                {
-                    self.turn = Some(Turn::Cancelled);
-                    self.answer = None;
-                    if let Some((start, _)) = self.open.take() {
-                        sealed.push(Sealed {
-                            turn: Turn::Cancelled,
-                            span: Span {
-                                start,
-                                end: span.end,
-                            },
+        let ended = match record.get("event").and_then(Value::as_str) {
+            Some("prompt") => {
+                let id = record.get("prompt_id").and_then(Value::as_str);
+                let token = record.get("token").and_then(Value::as_str);
+                match &mut self.open {
+                    Some(open) if open.prompt_id.is_some() && open.prompt_id.as_deref() == id => {
+                        open.took.extend(token.map(str::to_owned));
+                    }
+                    Some(open) if token.is_some_and(super::is_continuation) => {
+                        open.prompt_id = id.map(str::to_owned);
+                    }
+                    _ => {
+                        self.seal(Turn::Cancelled, span.start, sealed);
+                        self.open = Some(Open {
+                            prompt_id: id.map(str::to_owned),
+                            start: span.start,
+                            took: token.map(str::to_owned).into_iter().collect(),
                         });
                     }
-                } else if starts_turn {
-                    let since = time_at(record, "/timestamp");
-                    self.turn = Some(Turn::Open { since });
-                    self.answer = None;
-                    self.open = Some((span.start, since));
                 }
+                self.turn = Some(Turn::Open);
+                return;
             }
-            Some("assistant") => self.assistant(record, span, sealed),
-            _ => {}
+            Some("stop") => Turn::Completed {
+                reference: text_at(record, "/id"),
+                text: text_at(record, "/answer"),
+            },
+            Some("failure") => Turn::Failed {
+                text: text_at(record, "/text"),
+            },
+            _ => return,
+        };
+        if self.open.is_none() {
+            self.open = Some(Open {
+                prompt_id: None,
+                start: span.start,
+                took: Vec::new(),
+            });
         }
+        self.seal(ended.clone(), span.end, sealed);
+        self.turn = Some(ended);
     }
 
-    fn assistant(&mut self, record: &Value, span: Span, sealed: &mut Vec<Sealed>) {
-        let message_id = text_at(record, "/message/id");
-        let texts = content_texts(record.pointer("/message/content"));
-        let start = self.open.map_or(span.start, |(start, _)| start);
-        if record.get("isApiErrorMessage").and_then(Value::as_bool) == Some(true) {
-            let failed = Turn::Failed {
-                text: texts.join("\n"),
-            };
-            self.turn = Some(failed.clone());
-            self.answer = None;
-            self.open = None;
+    /// Yields the open turn, if any, as `turn`, ending at `end`.
+    fn seal(&mut self, turn: Turn, end: u64, sealed: &mut Vec<Sealed>) {
+        if let Some(open) = self.open.take() {
             sealed.push(Sealed {
-                turn: failed,
+                turn,
                 span: Span {
-                    start,
-                    end: span.end,
+                    start: open.start,
+                    end,
                 },
+                took: open.took,
             });
-            return;
-        }
-        self.open
-            .get_or_insert((start, time_at(record, "/timestamp")));
-        match &mut self.answer {
-            Some((id, collected)) if *id == message_id => collected.extend(texts),
-            _ => self.answer = Some((message_id, texts)),
-        }
-        // A record reaching here while the answer is ending is another part of its message.
-        if self.ending.is_some()
-            || record
-                .pointer("/message/stop_reason")
-                .and_then(Value::as_str)
-                == Some("end_turn")
-        {
-            let (reference, text) = self.answer.clone().unwrap_or_default();
-            self.turn = Some(Turn::Completed {
-                reference,
-                text: text.join("\n"),
-            });
-            self.ending = Some(span.end);
-        } else if matches!(self.turn, Some(Turn::Completed { .. })) {
-            self.turn = Some(Turn::Open { since: None });
         }
     }
 
     pub fn turn(&self) -> Turn {
         self.turn.clone().unwrap_or(Turn::None)
-    }
-
-    pub fn open(&self) -> Option<Open> {
-        let (start, since) = self.open?;
-        Some(Open {
-            start,
-            since,
-            answer: self
-                .ending
-                .zip(self.turn.clone())
-                .map(|(end, turn)| (turn, end)),
-        })
-    }
-}
-
-/// A user record that starts a turn, as opposed to a tool result fed back into a running one.
-fn is_prompt(content: Option<&Value>) -> bool {
-    match content {
-        Some(Value::String(_)) => true,
-        Some(Value::Array(items)) => {
-            !items.is_empty()
-                && items
-                    .iter()
-                    .all(|item| item.get("type").and_then(Value::as_str) != Some("tool_result"))
-        }
-        _ => false,
     }
 }
 

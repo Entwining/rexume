@@ -118,7 +118,7 @@ impl Restorer {
             }
             tx.commit()?;
         }
-        let retired = task::retired_workers(store.conn())?;
+        let retired = task::retired_workers(store.conn(), store.dir())?;
         for (block, label) in panes {
             if let Some((task, _)) = retired.iter().find(|(_, worker)| *worker == block)
                 && task::hold(store, task)?

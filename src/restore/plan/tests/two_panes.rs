@@ -56,7 +56,6 @@ fn a_conversation_shown_in_two_panes_is_reopened_in_one() -> Result<()> {
 /// showed the conversation idle was planned first.
 #[test]
 fn the_pane_whose_turn_was_cut_off_reopens_a_conversation_two_panes_showed() -> Result<()> {
-    const PROMPT: &str = r#"{"type":"user","message":{"role":"user","content":"Write a story"}}"#;
     let dir = tempfile::tempdir()?;
     let mut store = Store::open(dir.path())?;
     let transcript = dir.path().join("t.jsonl");

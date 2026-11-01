@@ -23,6 +23,7 @@ use rusqlite::params;
 use crate::event::{Queue, Token};
 use crate::install;
 use crate::rex::Cli;
+use crate::runtime::claude;
 use crate::store::{Store, now_ms};
 use crate::task;
 
@@ -56,8 +57,11 @@ pub fn run(options: &Options) -> Result<()> {
         stop.add(signal);
     }
     stop.thread_block()?;
-    std::fs::create_dir_all(&options.state_dir)
-        .with_context(|| format!("failed to create `{}`", options.state_dir.display()))?;
+    // With the directory of Claude Code's turn records, a record not written yet is followed
+    // through it until it appears.
+    let records = claude::records(&options.state_dir);
+    std::fs::create_dir_all(&records)
+        .with_context(|| format!("failed to create `{}`", records.display()))?;
     let lock = File::create(options.state_dir.join("daemon.lock"))?;
     match lock.try_lock() {
         Ok(()) => {}
@@ -79,6 +83,12 @@ pub fn run(options: &Options) -> Result<()> {
         Ok("updated") => log::info!("updated the Pi extension"),
         Ok(_) => {}
         Err(e) => log::warn!("failed to refresh the Pi extension: {e:#}"),
+    }
+    // Claude Code rounds finish only from the turn record its turn hooks write.
+    match install::refresh_claude_hooks(&options.home) {
+        Ok("created") => log::info!("added the Claude Code turn hooks"),
+        Ok(_) => {}
+        Err(e) => log::warn!("failed to add the Claude Code turn hooks: {e:#}"),
     }
     let mut store = Store::open(&options.state_dir)?;
     // Holding the lock, an epoch still open belongs to a daemon that died. Whether its server

@@ -11,7 +11,7 @@ fn a_claude_conversation_reopens_in_the_mode_its_record_last_shows() -> Result<(
         store.conn().execute_batch(
             "INSERT INTO block (lineage, instance_id, fg_pid, status) VALUES ('b', 'i1', 10, 'idle')",
         )?;
-        Ok(candidate(store.conn(), "i2", "b")?.plan.argv)
+        Ok(candidate(store.conn(), store.dir(), "i2", "b")?.plan.argv)
     };
     let resume = |mode: &[&str]| -> Vec<String> {
         ["claude", "--resume", "b-conversation"]

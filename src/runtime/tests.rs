@@ -20,11 +20,8 @@ pub(super) fn transcript(lines: &[&str]) -> tempfile::NamedTempFile {
     file
 }
 
-pub(super) const PROMPT: &str =
-    r#"{"type":"user","message":{"role":"user","content":"Write a story"}}"#;
-pub(super) const ANSWER: &str = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}"#;
-
-pub(super) const DURATION: &str = r#"{"type":"system","subtype":"turn_duration"}"#;
+const PROMPT: &str = r#"{"event":"prompt","prompt_id":"p1","token":null}"#;
+const ANSWER: &str = r#"{"event":"stop","prompt_id":"p1","id":"s1","answer":"Done."}"#;
 
 /// A tracker following a first round from the record's start.
 fn tracker(path: &Path) -> Tracker {
@@ -45,25 +42,15 @@ fn a_tracker_reads_only_whole_lines_and_continues_from_them() -> Result<()> {
     tracker.update()?;
     assert!(tracker.chosen().is_none());
     // Half of the answer reaches the file first.
-    let (head, tail) = ANSWER.split_at(40);
+    let (head, tail) = ANSWER.split_at(20);
     write!(file, "{head}")?;
     file.flush()?;
     tracker.update()?;
-    let open = |tracker: &Tracker| tracker.open().map(|(open, _)| (open.turn, open.span.end));
-    assert_eq!(
-        open(&tracker),
-        Some((Turn::Cancelled, PROMPT.len() as u64 + 1))
-    );
+    assert!(tracker.chosen().is_none());
     writeln!(file, "{tail}")?;
     file.flush()?;
     tracker.update()?;
     let answered = std::fs::metadata(file.path())?.len();
-    // The answer's last record may still be followed by another part of its message.
-    assert!(tracker.chosen().is_none());
-    assert!(matches!(open(&tracker), Some((Turn::Completed { .. }, end)) if end == answered));
-    writeln!(file, "{DURATION}")?;
-    file.flush()?;
-    tracker.update()?;
     assert_eq!(chosen_text(&tracker).as_deref(), Some("Done."));
     assert_eq!(
         tracker.chosen().map(|sealed| sealed.span),
@@ -85,14 +72,14 @@ fn a_tracker_stops_when_the_record_is_replaced_or_cut() -> Result<()> {
     std::fs::write(&path, "")?;
     cut.update()?;
     assert!(cut.replaced());
-    std::fs::write(&path, format!("{PROMPT}\n{ANSWER}\n{DURATION}\n"))?;
+    std::fs::write(&path, format!("{PROMPT}\n{ANSWER}\n"))?;
     cut.update()?;
     assert!(cut.replaced() && cut.chosen().is_none());
     // Replaced by another file of the same length.
     let mut replaced = tracker(&path);
     replaced.update()?;
     let other = dir.path().join("other.jsonl");
-    std::fs::write(&other, format!("{PROMPT}\n{ANSWER}\n{DURATION}\n"))?;
+    std::fs::write(&other, format!("{PROMPT}\n{ANSWER}\n"))?;
     std::fs::rename(&other, &path)?;
     replaced.update()?;
     assert!(replaced.replaced());
@@ -110,16 +97,22 @@ fn a_missing_record_has_no_turn_and_other_read_errors_surface() -> Result<()> {
     Ok(())
 }
 
+/// Claude Code's input counts as received once the turn that took it in ends, which may be in a
+/// later check than its prompt; a prompt another hook rejected, which the next prompt follows
+/// without an end, and an answer that mentions a token are no receipts.
 #[test]
-fn only_received_input_counts_as_a_receipt() -> Result<()> {
-    let mut file =
-        transcript(&[r#"{"type":"assistant","message":{"content":"I saw [rexume d1] earlier"}}"#]);
+fn only_input_a_finished_turn_took_counts_as_a_receipt() -> Result<()> {
+    let mut file = transcript(&[
+        r#"{"event":"stop","prompt_id":"p1","id":"s1","answer":"I saw [rexume d2] earlier"}"#,
+        r#"{"event":"prompt","prompt_id":"p2","token":"[rexume d2]"}"#,
+        r#"{"event":"prompt","prompt_id":"p3","token":"[rexume d1]"}"#,
+    ]);
     let pending = ["d1".to_owned(), "d2".to_owned()];
     let mut receipt = Receipt::new(Runtime::Claude, file.path());
     assert!(receipt.found(&pending)?.is_empty());
     writeln!(
         file,
-        r#"{{"type":"user","origin":{{"kind":"peer"}},"message":{{"content":"Another Claude session sent a message:\n[rexume d1] ready"}}}}"#
+        r#"{{"event":"stop","prompt_id":"p3","id":"s2","answer":"Read."}}"#
     )?;
     file.flush()?;
     assert_eq!(receipt.found(&pending)?, HashSet::from(["d1".to_owned()]));
@@ -154,23 +147,18 @@ fn a_line_that_is_not_json_leaves_the_last_turn_unknown() -> Result<()> {
     // A tracker following a round still reads the records around it.
     let mut tracker = tracker(file.path());
     tracker.update()?;
-    assert!(
-        tracker
-            .open()
-            .is_some_and(|(open, _)| matches!(open.turn, Turn::Completed { .. }))
-    );
+    assert_eq!(chosen_text(&tracker).as_deref(), Some("Done."));
     Ok(())
 }
 
 #[test]
 fn a_long_record_reads_the_same_as_a_short_one() -> Result<()> {
-    let filler =
-        r#"{"type":"user","message":{"role":"user","content":"Write a story"},"isMeta":true}"#;
+    let filler = r#"{"event":"other","prompt_id":"p0"}"#;
     let mut file = transcript(&[]);
     for _ in 0..50_000 {
         writeln!(file, "{filler}")?;
     }
-    writeln!(file, "{PROMPT}\n{ANSWER}\n{DURATION}")?;
+    writeln!(file, "{PROMPT}\n{ANSWER}")?;
     file.flush()?;
     let mut tracker = tracker(file.path());
     tracker.update()?;

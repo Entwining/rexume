@@ -6,7 +6,7 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use serde_json::{Value, json};
 
-use super::{Conversation, Open, Sealed, Sent, Span, Target, Turn, content_texts, text_at};
+use super::{Conversation, Sealed, Sent, Span, Target, Turn, content_texts, text_at};
 
 /// The extension `rexume install` writes into Pi's extensions directory.
 pub const EXTENSION: &str = include_str!("pi/extension.ts");
@@ -112,7 +112,7 @@ impl Parser {
                     text: text_at(message, "/errorMessage"),
                 },
                 _ => {
-                    self.turn = Some(Turn::Open { since: None });
+                    self.turn = Some(Turn::Open);
                     self.open.get_or_insert(span.start);
                     return;
                 }
@@ -126,24 +126,17 @@ impl Parser {
                 start: self.open.take().unwrap_or(span.start),
                 end: span.end,
             },
+            took: Vec::new(),
         });
     }
 
     fn start(&mut self, span: Span) {
-        self.turn = Some(Turn::Open { since: None });
+        self.turn = Some(Turn::Open);
         self.open = Some(span.start);
     }
 
     pub fn turn(&self) -> Turn {
         self.turn.clone().unwrap_or(Turn::None)
-    }
-
-    pub fn open(&self) -> Option<Open> {
-        self.open.map(|start| Open {
-            start,
-            since: None,
-            answer: None,
-        })
     }
 }
 
@@ -163,7 +156,7 @@ mod tests {
         let aborted = r#"{"type":"message","id":"a2","message":{"role":"assistant","stopReason":"aborted","errorMessage":"Operation aborted","content":[{"type":"thinking"}]}}"#;
         let notice = r#"{"type":"custom_message","id":"n1","customType":"rexume","content":"[rexume d1] done","display":true}"#;
         let turn = |lines: &[&str]| last_turn(Runtime::Pi, transcript(lines).path(), 0);
-        let open = Some(Turn::Open { since: None });
+        let open = Some(Turn::Open);
         assert_eq!(turn(&[user])?, open);
         assert_eq!(turn(&[user, tool])?, open);
         assert_eq!(

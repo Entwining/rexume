@@ -1,5 +1,9 @@
 use super::*;
 
+fn read(path: &Path) -> Result<Value> {
+    Ok(serde_json::from_slice(&std::fs::read(path)?)?)
+}
+
 #[test]
 fn another_path_to_rexume_is_the_same_hook() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -7,16 +11,51 @@ fn another_path_to_rexume_is_the_same_hook() -> Result<()> {
     let other = json!({ "hooks": [{ "type": "command", "command": "other", "timeout": 5 }] });
     let installed = json!({ "hooks": [{ "type": "command",
         "command": "/opt/homebrew/bin/rexume report claude", "timeout": 5 }] });
+    let hooks = json!({ "SessionStart": [other, installed], "UserPromptSubmit": [installed],
+        "Stop": [installed], "StopFailure": [installed] });
+    std::fs::write(&path, json!({ "hooks": hooks }).to_string())?;
+    let hook = json!({ "type": "command", "command": "rexume report claude", "timeout": 5 });
+    assert_eq!(
+        add_hook(&path, "claude", &CLAUDE_EVENTS, &hook)?.0,
+        "unchanged"
+    );
+    assert_eq!(remove_hook(&path, "claude", &CLAUDE_EVENTS)?, "removed");
+    assert_eq!(
+        read(&path)?,
+        json!({ "hooks": { "SessionStart": [other], "UserPromptSubmit": [], "Stop": [],
+            "StopFailure": [] } })
+    );
+    assert_eq!(remove_hook(&path, "claude", &CLAUDE_EVENTS)?, "absent");
+    Ok(())
+}
+
+/// An earlier install wrote only the session-start hook; the daemon adds the turn hooks with the
+/// same command, once, and adds nothing to settings without Rexume's hook.
+#[test]
+fn the_daemon_adds_the_turn_hooks_an_earlier_install_left_out() -> Result<()> {
+    let home = tempfile::tempdir()?;
+    let path = Targets::new(home.path()).claude;
+    assert_eq!(refresh_claude_hooks(home.path())?, "absent");
+    std::fs::create_dir_all(path.parent().unwrap())?;
+    let other = json!({ "hooks": [{ "type": "command", "command": "other" }] });
+    std::fs::write(&path, json!({ "hooks": { "Stop": [other] } }).to_string())?;
+    assert_eq!(refresh_claude_hooks(home.path())?, "absent");
+    let command = "/opt/homebrew/bin/rexume report claude";
+    let hook = json!({ "type": "command", "command": command, "timeout": 5 });
     std::fs::write(
         &path,
-        json!({ "hooks": { "SessionStart": [other, installed] } }).to_string(),
+        json!({ "model": "m", "hooks": { "SessionStart": [{ "hooks": [hook] }],
+            "Stop": [other] } })
+        .to_string(),
     )?;
-    let hook = json!({ "type": "command", "command": "rexume report claude", "timeout": 5 });
-    assert_eq!(add_hook(&path, "claude", hook)?.0, "unchanged");
-    assert_eq!(remove_hook(&path, "claude")?, "removed");
-    let left: Value = serde_json::from_slice(&std::fs::read(&path)?)?;
-    assert_eq!(left, json!({ "hooks": { "SessionStart": [other] } }));
-    assert_eq!(remove_hook(&path, "claude")?, "absent");
+    assert_eq!(refresh_claude_hooks(home.path())?, "created");
+    assert_eq!(refresh_claude_hooks(home.path())?, "unchanged");
+    let ours = json!({ "hooks": [hook] });
+    assert_eq!(
+        read(&path)?,
+        json!({ "model": "m", "hooks": { "SessionStart": [ours], "Stop": [other, ours],
+            "UserPromptSubmit": [ours], "StopFailure": [ours] } })
+    );
     Ok(())
 }
 
@@ -24,7 +63,7 @@ fn another_path_to_rexume_is_the_same_hook() -> Result<()> {
 fn a_runtime_that_is_not_set_up_gets_no_settings() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join(".codex/hooks.json");
-    let (value, note) = add_hook(&path, "codex", json!({}))?;
+    let (value, note) = add_hook(&path, "codex", &CODEX_EVENTS, &json!({}))?;
     assert_eq!(value, "skipped");
     assert_eq!(note.as_deref(), Some("`~/.codex` does not exist"));
     assert!(!path.exists());

@@ -39,7 +39,8 @@ pub struct Follow {
 pub(super) static OPEN_ROUNDS: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT r.task_id, r.round, t.result_file, t.worker_lineage, t.worker_pid, t.created_at,
-           t.worker_runtime, c.transcript, t.position, q.id, t.worker_instance_id
+           t.worker_runtime, c.transcript, t.position, q.id, t.worker_instance_id, t.worker_native_id,
+           q.state = 'delivered'
          FROM task_round r JOIN task t ON t.id = r.task_id
          LEFT JOIN conversation c ON c.runtime = t.worker_runtime AND c.native_id = t.worker_native_id
          LEFT JOIN request q ON q.task_id = r.task_id AND q.round = r.round
@@ -59,9 +60,11 @@ struct OpenRound {
     worker_instance: Option<String>,
     created_at: i64,
     runtime: Option<Runtime>,
+    native_id: Option<String>,
     transcript: Option<String>,
     position: i64,
-    request: Option<String>,
+    /// The request's ID, and whether it was recorded as received.
+    request: Option<(String, bool)>,
 }
 
 impl Follow {
@@ -126,8 +129,9 @@ impl Follow {
                     runtime: row.get(6)?,
                     transcript: row.get(7)?,
                     position: row.get(8)?,
-                    request: row.get(9)?,
+                    request: row.get::<_, Option<String>>(9)?.zip(row.get(12)?),
                     worker_instance: row.get(10)?,
+                    native_id: row.get(11)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -150,11 +154,14 @@ impl Follow {
                     if round.runtime.is_none() {
                         bind(store, &mut round)?;
                     }
-                    let (Some(runtime), Some(transcript)) = (round.runtime, &round.transcript)
+                    let (Some(runtime), Some(native_id)) = (round.runtime, &round.native_id) else {
+                        continue;
+                    };
+                    let Some(path) =
+                        runtime.record(store.dir(), native_id, round.transcript.as_deref())
                     else {
                         continue;
                     };
-                    let path = PathBuf::from(transcript);
                     let tracker = match self.trackers.get_mut(&key) {
                         Some(tracker) if tracker.path() == path => tracker,
                         _ => {
@@ -165,7 +172,7 @@ impl Follow {
                                 &path,
                                 position,
                                 taken,
-                                round.request.as_deref(),
+                                round.request.as_ref(),
                             );
                             self.trackers
                                 .entry(key.clone())
@@ -254,6 +261,7 @@ fn bind(store: &mut Store, round: &mut OpenRound) -> Result<()> {
     tx.commit()?;
     if bound == 1 {
         round.runtime = Some(runtime);
+        round.native_id = Some(native_id);
         round.transcript = transcript;
         round.position = position;
     }

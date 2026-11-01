@@ -74,8 +74,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS live_lineage ON live (instance_id, lineage);
 -- whatever its resume command needs); a later report merges into it (json_patch), so a value
 -- a resumed session's start omits is kept and one the report sets to null is removed.
 -- `transcript` is the runtime's record of the conversation, which a later report without one
--- leaves in place. `resumable` is 0 for a conversation its runtime cannot reopen, such as a run
--- its runtime keeps no record of or a Pi session without a session file.
+-- leaves in place; a Claude Code conversation's turns are read instead from the record its turn
+-- hooks write in the state directory, named by `native_id`. `resumable` is 0 for a conversation
+-- its runtime cannot reopen, such as a run its runtime keeps no record of or a Pi session without
+-- a session file.
 -- `reported_at` is when the conversation was last reported.
 CREATE TABLE IF NOT EXISTS conversation (
   runtime     TEXT    NOT NULL,
@@ -103,11 +105,12 @@ CREATE TABLE IF NOT EXISTS conversation (
 -- terminal's own program rather than one started from its shell, so its exit is the terminal's,
 -- as a conversation an earlier version's restore started was; NULL, unknown, before version 3.
 -- `keeps_session_env`: the process ran with `REX_SESSION`, so its reopened conversation gets it
--- too. `start_position`: the length of the conversation's record
--- when the process was first recorded, where a task bound to this report starts reading, so that
--- turns the record already held, as a resumed conversation's does, never belong to a task; 0
--- before version 4. A later report of the same conversation from the same process, such as Claude
--- Code's after a compaction or its first after the gate started it, keeps it.
+-- too. `start_position`: the length of the conversation's record of turns when the process was
+-- first recorded, where a task bound to this report starts reading, so that turns the record
+-- already held, as a resumed conversation's does, never belong to a task; 0 before version 4, and
+-- for Claude Code before version 8. A later report of the same conversation from the same
+-- process, such as Claude Code's after a compaction or its first after the gate started it, keeps
+-- it.
 CREATE TABLE IF NOT EXISTS occupant (
   block_lineage     TEXT    PRIMARY KEY,
   runtime           TEXT    NOT NULL,
@@ -138,14 +141,14 @@ CREATE INDEX IF NOT EXISTS occupant_conversation ON occupant (runtime, native_id
 -- typed again; 'claimed' once the gate claimed the row, with `claimed_at`, `pid`, the gate's
 -- process, which the shell it becomes keeps and whose foreground children the daemon takes for
 -- the conversation until it reports itself, and `started`, what the gate starts, committed
--- before it starts it: 'shell' when the conversation had reported
--- from another pane since the plan, which leaves the pane's shell as it is, and 'agent' instead
--- of 'continue' when the conversation's record no longer showed the interrupted turn. 'unknown'
--- when no gate claimed the row soon after the write, which may not have reached the shell; a
--- gate that starts later still claims it. 'skipped' when nothing was typed because the pane was
--- in use, closed, or the conversation reported from another pane, and 'failed' when the server
--- refused the write; `note` says which. A row that ends 'skipped' or 'failed' leaves the pane
--- with the shell Rex started.
+-- before it starts it: 'shell' when the conversation had reported from another pane since the
+-- plan, which leaves the pane's shell as it is, and 'agent' instead of 'continue' when the
+-- conversation's record showed a turn ended after what the plan read. 'unknown' when no gate
+-- claimed the row soon after the write, which may not have reached the shell; a gate that starts
+-- later still claims it. 'skipped' when nothing was typed because the pane was in use, closed, or
+-- the conversation reported from another pane, and 'failed' when the server refused the write;
+-- `note` says which. A row that ends 'skipped' or 'failed' leaves the pane with the shell Rex
+-- started.
 CREATE TABLE IF NOT EXISTS restore (
   id            TEXT    PRIMARY KEY,
   instance_id   TEXT    NOT NULL,
@@ -191,9 +194,10 @@ CREATE UNIQUE INDEX IF NOT EXISTS restore_executor ON restore (instance_id, runt
 -- and `worker_native_id` are the interactive worker's conversation, bound once (at registration
 -- when the pane's foreground process had reported, else by the daemon once the pane's occupant
 -- reported after registration or is its foreground process) and never moved to a conversation that
--- takes over the pane later. `position`: byte offset into that record up to which every finished
--- turn has been taken by a round; it starts at the bound report's `occupant.start_position` and
--- moves in the transaction that takes a turn. `released_at`: when the orchestrator released the
+-- takes over the pane later. `position`: byte offset into that conversation's record of turns up
+-- to which every finished turn has been taken by a round; it starts at the bound report's
+-- `occupant.start_position` and moves in the transaction that takes a turn; 0 for a Claude Code
+-- worker's task upgraded from before version 8. `released_at`: when the orchestrator released the
 -- worker; a released task starts no more rounds, and only its pane may be closed. `pane_state`:
 -- 'open' while the pane exists and Rexume has neither closed nor given it up; 'closing' while the
 -- daemon, the only closer, holds the pane for one close attempt, or while a restore holds a
@@ -242,9 +246,10 @@ CREATE INDEX IF NOT EXISTS task_worker_conversation ON task (worker_runtime, wor
 -- at most one turn from the task's worker record: `turn_start` is the byte offset where that turn
 -- starts, which identifies it however often the record is read again, and an answered turn's
 -- `result_ref` identifies it too, also for a round upgraded from version 1 without a `turn_start`;
--- so no two rounds of a task take the same turn. A round with a `request` row takes the turn that
--- took its request in; any other takes the earliest turn after the task's `position` that no round
--- took.
+-- so no two rounds of a task take the same turn. A Claude Code worker's round from before version
+-- 8 names no turn in the record its turn hooks write, which starts after it. A round with a
+-- `request` row takes the turn that took its request in; any other takes the earliest turn after
+-- the task's `position` that no round took.
 -- `waiter_pid`: the `task wait` process that takes the round's notices itself while it runs; a
 -- wait takes its place whenever it is empty or names a process that is gone.
 -- `blocked_at`: when the round's current blocked episode began, set exactly while it is 'blocked'.
@@ -261,9 +266,9 @@ CREATE INDEX IF NOT EXISTS task_worker_conversation ON task (worker_runtime, wor
 -- NULL when the pane was not recorded or the round finished before version 3 and no epoch dates
 -- it, and its status time and foreground generation, which mean something only on that instance.
 -- `acked_at`: when the owner acknowledged the result. `result_ref` is the record ID of an
--- interactive worker's answer, or a non-interactive run's result file; `note` says why a round
--- ended without a result. `result` is last: the one large column, so reads of the others never
--- cross its overflow pages.
+-- interactive worker's answer (for Claude Code, the ID of the stop its turn record shows), or a
+-- non-interactive run's result file; `note` says why a round ended without a result. `result` is
+-- last: the one large column, so reads of the others never cross its overflow pages.
 CREATE TABLE IF NOT EXISTS task_round (
   task_id              TEXT    NOT NULL REFERENCES task (id) ON DELETE CASCADE,
   round                INTEGER NOT NULL,
@@ -355,4 +360,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS notice_blocked_unsent ON notice (task_id, roun
 
 -- 'rexu' in ASCII, which Store::open checks before it uses a database.
 PRAGMA application_id = 0x72657875;
-PRAGMA user_version = 7;
+PRAGMA user_version = 8;

@@ -4,7 +4,7 @@ use super::*;
 use crate::store::Store;
 use crate::task::follow::Follow;
 use crate::task::gone::block_gone;
-use crate::task::tests::{ANSWER, DURATION, PROMPT, record, round, task_world};
+use crate::task::tests::{ANSWER, PROMPT, record, round, task_world};
 
 /// The worker's pane `b` reports `status`, last at `at`.
 fn report(store: &Store, status: &str, at: i64) -> Result<()> {
@@ -184,25 +184,6 @@ fn an_episode_does_not_outlive_its_server_instance() -> Result<()> {
     Ok(())
 }
 
-/// A worker whose user dismissed the dialog goes idle with its turn still open. The record may
-/// still end that turn within the idle grace, but the block is over at once, so its notice is not
-/// sent meanwhile.
-#[test]
-fn a_worker_idle_after_its_dialog_ends_the_episode_within_the_idle_grace() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let transcript = record(&[PROMPT])?;
-    let mut store = task_world(dir.path(), transcript.path(), None)?;
-    let mut follow = Follow::default();
-    report(&store, "blocked", long_ago())?;
-    follow.pass(&mut store, None)?;
-    report(&store, "idle", now_ms())?;
-    follow.pass(&mut store, None)?;
-    assert_eq!(round(&store)?.0, "running");
-    assert!(follow.deadline().is_some());
-    assert_eq!(notices(&store)?, [ended()]);
-    Ok(())
-}
-
 /// A round that finishes while blocked, by its answer or by its pane closing, leaves its finished
 /// notice as the only one to send.
 #[test]
@@ -219,7 +200,7 @@ fn a_round_that_finishes_while_blocked_ends_its_episode() -> Result<()> {
             block_gone(&tx, "b")?;
             tx.commit()?;
         } else {
-            writeln!(transcript, "{ANSWER}\n{DURATION}")?;
+            writeln!(transcript, "{ANSWER}")?;
             transcript.flush()?;
         }
         follow.pass(&mut store, None)?;

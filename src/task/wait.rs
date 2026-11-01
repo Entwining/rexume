@@ -44,7 +44,7 @@ pub fn wait(state_dir: &Path, id: &str, timeout: Duration) -> Result<(Value, Ret
         round,
         until,
     )?;
-    let mut task = shown(store.conn(), &caller.instance, id, Some(round))?;
+    let mut task = shown(store.conn(), store.dir(), &caller.instance, id, Some(round))?;
     task["timed_out"] = json!(returned == Returned::TimedOut);
     Ok((task, returned))
 }

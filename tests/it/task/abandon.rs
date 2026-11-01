@@ -3,8 +3,8 @@ use std::process::Stdio;
 use serde_json::Value;
 
 use super::orchestration::Orchestration;
-use super::{DURATION, WAIT, append, failure, run_task, task, task_command};
-use crate::common::{query, wait_until};
+use super::{WAIT, failure, run_task, task, task_command};
+use crate::common::{claude, query, wait_until};
 
 /// The owner stops waiting for a round the worker has not answered: a running `task wait` returns
 /// with it and no notice is sent. The answer the worker gives later is unread, so the task is
@@ -18,7 +18,6 @@ fn an_abandoned_round_ends_a_wait_and_leaves_the_late_answer_unread() {
         state,
         owner,
         id,
-        worker_record,
         listener,
         ..
     } = &world;
@@ -46,15 +45,7 @@ fn an_abandoned_round_ends_a_wait_and_leaves_the_late_answer_unread() {
     assert_eq!(code, Some(1));
     assert!(stderr.contains("already finished as abandoned"), "{stderr}");
 
-    append(
-        worker_record,
-        r#"{"type":"user","message":{"role":"user","content":"Review the diff"}}"#,
-    );
-    append(
-        worker_record,
-        r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Late."}]}}"#,
-    );
-    append(worker_record, DURATION);
+    claude::turn(state, "worker", "p1", "Review the diff", Some("Late."));
     wait_until("the late answer to be unread", WAIT, || {
         task(server, state, owner, &["show", id])["unread"]
             .as_u64()

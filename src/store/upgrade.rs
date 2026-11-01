@@ -12,6 +12,24 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
     if !(1..SCHEMA_VERSION).contains(&version) {
         bail!("schema {version} has no upgrade");
     }
+    if version < 7 {
+        to_v7(tx, version)?;
+    } else {
+        tx.execute_batch(SCHEMA)?;
+    }
+    // Version 8 reads a Claude Code conversation's turns from the record its turn hooks write,
+    // which starts empty, so an offset into its transcript names nothing there: its tasks read the
+    // new record from the start, and no round's turn is named by an offset.
+    tx.execute_batch(
+        "UPDATE task SET position = 0 WHERE worker_runtime = 'claude';
+         UPDATE task_round SET turn_start = NULL
+           WHERE task_id IN (SELECT id FROM task WHERE worker_runtime = 'claude');
+         UPDATE occupant SET start_position = 0 WHERE runtime = 'claude';",
+    )?;
+    Ok(())
+}
+
+fn to_v7(tx: &Transaction, version: i64) -> Result<()> {
     if version < 5 {
         blocked_episodes(tx)?;
     }

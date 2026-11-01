@@ -1,16 +1,24 @@
-use super::*;
+use serde_json::json;
 
-const PROMPT: &str = r#"{"type":"user","message":{"role":"user","content":"Write a story"}}"#;
-const ANSWER: &str = r#"{"type":"assistant","message":{"id":"m1","role":"assistant","stop_reason":"end_turn","content":[{"type":"text","text":"Done."}]}}"#;
+use super::*;
+use crate::runtime::claude;
+use crate::task::Follow;
+use crate::task::tests::{record, task_world, turn_record};
+
+/// Lines of a Claude Code turn record, as its turn hooks write them.
+const PROMPT: &str = r#"{"event":"prompt","prompt_id":"p1","token":null}"#;
+const ANSWER: &str = r#"{"event":"stop","prompt_id":"p1","id":"s1","answer":"Done."}"#;
 
 /// A store with restore `r` on instance `i2`, typed into pane `b`, which Rex restored under its
-/// own ID, to continue conversation `c`.
+/// own ID, to continue conversation `c`, whose turn record is `transcript`, as the plan read it now.
 fn typed(dir: &Path, transcript: &Path) -> Result<Store> {
+    turn_record(dir, "c", transcript)?;
     let mut store = Store::open(dir)?;
     let plan = Plan {
         argv: vec!["claude".into(), "--resume".into(), "c".into()],
         prompt: Some("go on".into()),
         transcript: Some(transcript.to_string_lossy().into_owned()),
+        record_length: Some(std::fs::metadata(transcript)?.len()),
         ..Plan::default()
     };
     let tx = store.write()?;
@@ -90,11 +98,25 @@ fn a_claim_continues_a_turn_still_open_once() -> Result<()> {
 fn a_turn_that_ended_after_the_plan_reopens_without_the_prompt() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = dir.path().join("t.jsonl");
-    std::fs::write(&transcript, format!("{PROMPT}\n{ANSWER}\n"))?;
+    std::fs::write(&transcript, format!("{PROMPT}\n"))?;
     let mut store = typed(dir.path(), &transcript)?;
+    std::fs::write(&transcript, format!("{PROMPT}\n{ANSWER}\n"))?;
     let (start, _) = claim(&mut store, "r", "b", 42)?;
     assert_eq!(start, Start::Agent);
     assert_eq!(started(&store)?, ("claimed".into(), Some("agent".into())));
+    Ok(())
+}
+
+/// Work a Stop hook made Claude Code go on with after the end its record shows continues while
+/// the record shows nothing after what the plan read.
+#[test]
+fn work_after_a_turn_end_the_plan_read_continues() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = dir.path().join("t.jsonl");
+    std::fs::write(&transcript, format!("{PROMPT}\n{ANSWER}\n"))?;
+    let mut store = typed(dir.path(), &transcript)?;
+    let (start, _) = claim(&mut store, "r", "b", 42)?;
+    assert_eq!(start, Start::Continue);
     Ok(())
 }
 
@@ -149,6 +171,56 @@ fn a_reopen_command_takes_its_variables_as_assignments() -> Result<()> {
         command_line(&plan, Some("go on"))?,
         "CLOUD_ML_REGION='us east' claude --resume c 'go on'"
     );
+    Ok(())
+}
+
+/// A turn the server's end cut off goes on under the continuation prompt the restore sends, so
+/// the round that waited for it, also one waiting for a request the turn took in, takes the
+/// answer the continuation finishes with.
+#[test]
+fn the_round_a_cut_off_turn_left_takes_the_answer_its_continuation_finishes() -> Result<()> {
+    for request in [None, Some("[rexume q]")] {
+        let dir = tempfile::tempdir()?;
+        let prompt = json!({ "event": "prompt", "prompt_id": "p1", "token": request });
+        let transcript = record(&[&prompt.to_string()])?;
+        let mut store = task_world(dir.path(), transcript.path(), None)?;
+        if request.is_some() {
+            store.conn().execute_batch(
+                "INSERT INTO request (id, task_id, round, text, state)
+                   VALUES ('q', 't', 1, 'Count.', 'sent')",
+            )?;
+        }
+        store.conn().execute_batch(
+            "UPDATE epoch SET ended_at = 60, end_reason = 'server_gone';
+             INSERT INTO epoch (id, instance_id, started_at) VALUES (2, 'i2', 70);",
+        )?;
+        let mut follow = Follow::default();
+        follow.instance_started(&mut store, "i2")?;
+        let id = restore::plan(&mut store, "i2", "b", None)?.unwrap();
+        store.conn().execute(
+            "UPDATE restore SET state = 'typed', typed_at = 80 WHERE id = ?1",
+            [&id],
+        )?;
+        let (start, plan) = claim(&mut store, &id, "b", 200)?;
+        assert_eq!(start, Start::Continue);
+        for input in [
+            json!({ "hook_event_name": "UserPromptSubmit", "prompt_id": "p2", "prompt": plan.prompt }),
+            json!({ "hook_event_name": "Stop", "prompt_id": "p2", "last_assistant_message": "Counted." }),
+        ] {
+            claude::append(dir.path(), "worker", &claude::turn_event(&input).unwrap())?;
+            follow.pass(&mut store, None)?;
+        }
+        let round: (String, Option<String>) = store.conn().query_row(
+            "SELECT state, result FROM task_round WHERE task_id = 't'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
+        assert_eq!(
+            round,
+            ("completed".into(), Some("Counted.".into())),
+            "{request:?}"
+        );
+    }
     Ok(())
 }
 

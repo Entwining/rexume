@@ -79,7 +79,7 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
     )?;
     insert_round(&tx, &id, 1, now)?;
     tx.commit()?;
-    shown(store.conn(), &caller.instance, &id, None)
+    shown(store.conn(), store.dir(), &caller.instance, &id, None)
 }
 
 /// The conversation whose process `pid` on `instance` last reported from the pane, which the task
@@ -163,11 +163,11 @@ pub fn next(state_dir: &Path, id: &str) -> Result<Value> {
     let mut store = Store::open(state_dir)?;
     let caller = caller(&store)?;
     owned(store.conn(), id, &caller)?;
-    let unread = unread(store.conn(), id)?;
+    let unread = unread(store.conn(), store.dir(), id)?;
     let tx = store.write()?;
     let round = start_round(&tx, id, &Kind::Next { unread })?;
     tx.commit()?;
-    shown(store.conn(), &caller.instance, id, Some(round))
+    shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
 }
 
 /// Starts the next round with a request the daemon delivers to the worker.
@@ -179,7 +179,7 @@ pub fn send(state_dir: &Path, id: &str, message: &str) -> Result<Value> {
     let tx = store.write()?;
     let round = start_round(&tx, id, &Kind::Request(message))?;
     tx.commit()?;
-    shown(store.conn(), &caller.instance, id, Some(round))
+    shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
 }
 
 /// Ends the latest round, still unfinished, as `abandoned` and acknowledges it: the owner stops
@@ -192,7 +192,7 @@ pub fn abandon(state_dir: &Path, id: &str) -> Result<Value> {
     owned(&tx, id, &caller)?;
     let round = abandon_round(&tx, id)?;
     tx.commit()?;
-    shown(store.conn(), &caller.instance, id, Some(round))
+    shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
 }
 
 fn abandon_round(tx: &Transaction, id: &str) -> Result<i64> {
@@ -212,7 +212,7 @@ pub fn release(state_dir: &Path, id: &str) -> Result<Value> {
     let mut store = Store::open(state_dir)?;
     let caller = caller(&store)?;
     owned(store.conn(), id, &caller)?;
-    let unread = unread(store.conn(), id)?;
+    let unread = unread(store.conn(), store.dir(), id)?;
     let tx = store.write()?;
     let round = latest_finished(&tx, id)?;
     if let Some(count @ 1..) = unread {
@@ -224,7 +224,7 @@ pub fn release(state_dir: &Path, id: &str) -> Result<Value> {
     )?;
     acknowledge(&tx, id, round, "taken by task release")?;
     tx.commit()?;
-    shown(store.conn(), &caller.instance, id, Some(round))
+    shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
 }
 
 /// Records the owner's acknowledgement of a finished round; a notice not yet sent for it is
