@@ -1,6 +1,6 @@
 [package]
 name = "rexume"
-version = "0.1.14"
+version = "0.1.15"
 edition = "2024"
 rust-version = "1.99.1"
 description = "Reopens agent conversations in the Rex panes the server restores after it restarts, and carries worker-task results back to the orchestrator"
