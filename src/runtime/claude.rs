@@ -146,9 +146,7 @@ pub fn append(state_dir: &Path, native_id: &str, event: &Value) -> Result<()> {
     if native_id.is_empty() || native_id.starts_with('.') || native_id.contains('/') {
         bail!("`{native_id}` cannot name a record");
     }
-    let dir = records(state_dir);
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create `{}`", dir.display()))?;
+    crate::store::create_private_dir(&records(state_dir))?;
     let path = record(state_dir, native_id);
     let mut line = serde_json::to_vec(event)?;
     line.push(b'\n');

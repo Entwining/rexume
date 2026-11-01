@@ -6,6 +6,8 @@
 mod tests;
 mod upgrade;
 
+use std::fs::DirBuilder;
+use std::os::unix::fs::DirBuilderExt;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
@@ -29,6 +31,18 @@ pub fn default_dir() -> Result<PathBuf> {
     Ok(home.join(".local/state/rexume"))
 }
 
+/// Creates `dir` and each missing parent for its user alone; an existing directory keeps its mode.
+/// Rexume creates every directory in the state directory here, and the Pi extension with the same
+/// mode, whichever needs it first, so none is ever open to other users (`docs/design.md`, "What is
+/// saved").
+pub fn create_private_dir(dir: &Path) -> Result<()> {
+    DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)
+        .with_context(|| format!("failed to create `{}`", dir.display()))
+}
+
 pub fn now_ms() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -48,8 +62,7 @@ pub struct Store {
 impl Store {
     /// Opens the database in `dir`, creating both on first use.
     pub fn open(dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(dir)
-            .with_context(|| format!("failed to create `{}`", dir.display()))?;
+        create_private_dir(dir)?;
         let path = dir.join("state.db");
         let mut conn = Connection::open(&path)
             .with_context(|| format!("failed to open `{}`", path.display()))?;

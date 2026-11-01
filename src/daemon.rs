@@ -11,8 +11,9 @@ mod tests;
 mod view;
 
 use std::collections::{HashMap, HashSet};
-use std::fs::{File, TryLockError};
+use std::fs::{File, Permissions, TryLockError};
 use std::os::fd::AsFd;
+use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 
@@ -24,7 +25,7 @@ use crate::event::{Queue, Token};
 use crate::install;
 use crate::rex::Cli;
 use crate::runtime::claude;
-use crate::store::{Store, now_ms};
+use crate::store::{self, Store, now_ms};
 use crate::task;
 
 pub struct Options {
@@ -60,8 +61,20 @@ pub fn run(options: &Options) -> Result<()> {
     // With the directory of Claude Code's turn records, a record not written yet is followed
     // through it until it appears.
     let records = claude::records(&options.state_dir);
-    std::fs::create_dir_all(&records)
-        .with_context(|| format!("failed to create `{}`", records.display()))?;
+    store::create_private_dir(&records)?;
+    // A daemon starts after every upgrade, so this closes a state directory an earlier version
+    // created open to other users. The daemon works the same either way, so a failure is no reason
+    // to stop restoring.
+    match std::fs::metadata(&options.state_dir) {
+        Ok(meta) if meta.permissions().mode() & 0o077 == 0 => {}
+        _ => match std::fs::set_permissions(&options.state_dir, Permissions::from_mode(0o700)) {
+            Ok(()) => log::info!("restricted `{}` to its user", options.state_dir.display()),
+            Err(e) => log::warn!(
+                "failed to restrict `{}` to its user: {e}",
+                options.state_dir.display()
+            ),
+        },
+    }
     let lock = File::create(options.state_dir.join("daemon.lock"))?;
     match lock.try_lock() {
         Ok(()) => {}

@@ -19,6 +19,30 @@ fn open_creates_the_schema_once_and_reopens_without_writing() -> Result<()> {
     Ok(())
 }
 
+/// The state directory, each parent it needed, and the directories under it are created for their
+/// user alone, whether a turn hook or the database creates them first.
+#[test]
+fn the_state_directory_is_created_for_its_user_alone() -> Result<()> {
+    use std::os::unix::fs::PermissionsExt;
+    let mode =
+        |path: &Path| -> Result<u32> { Ok(std::fs::metadata(path)?.permissions().mode() & 0o777) };
+    let dir = tempfile::tempdir()?;
+    let hooked = dir.path().join("hooked/rexume");
+    claude::append(&hooked, "s", &serde_json::json!({ "event": "prompt" }))?;
+    let opened = dir.path().join("opened/rexume");
+    Store::open(&opened)?;
+    for path in [
+        dir.path().join("hooked"),
+        hooked.clone(),
+        claude::records(&hooked),
+        dir.path().join("opened"),
+        opened,
+    ] {
+        assert_eq!(mode(&path)?, 0o700, "{}", path.display());
+    }
+    Ok(())
+}
+
 #[test]
 fn open_refuses_a_newer_schema_and_a_foreign_file() -> Result<()> {
     let (dir, store) = store();

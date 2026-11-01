@@ -4,7 +4,7 @@ A command that succeeds prints one JSON object on stdout, when it has a result, 
 
 A command's JSON object carries `version` at its top level, which changes only when a field changes meaning or goes away. Times are Unix milliseconds. `rexume COMMAND --help` lists each command's options.
 
-`daemon`, `status`, `report`, and `task` take `--state-dir DIR`, the directory holding `state.db`; it defaults to `$HOME/.local/state/rexume`. The Pi extension always uses the default.
+`daemon`, `status`, `report`, and `task` take `--state-dir DIR`, the directory holding `state.db`; it defaults to `$HOME/.local/state/rexume`. The Pi extension always uses the default. A directory there, and each missing parent, is created with mode `0700` by whichever command or the Pi extension needs it first. An existing directory keeps its mode, except the state directory itself, which the daemon restricts when it starts.
 
 ## install
 
@@ -61,7 +61,7 @@ Each field is `removed` or `absent`; `pi_extension` can also be `kept`. On Linux
 rexume daemon [--rex PATH] [--server ADDRESS]
 ```
 
-The process the job runs. It runs until stopped, logs to stderr (set `RUST_LOG=rexume=debug` for every call it makes through its adapter), and exits 1 at once when another daemon holds the same state directory. It starts `rex do` with its adapter script as a child process and reconnects with a growing delay, from 1 to 30 seconds, when the server goes away; a new server socket wakes it early. On `SIGTERM` or `SIGINT` it ends `rex do` and exits 0; it also exits 0 when its executable is replaced, so that its job starts the new one. When it starts, it replaces the Pi extension install wrote, as install does, when that differs from this version's; it never creates a missing one, leaves a file install did not write as it is, and logs a failure without stopping. Likewise, when Rexume's `SessionStart` hook is in `~/.claude/settings.json`, it appends a group to each Claude Code turn event that lacks Rexume's hook, running the same command as that hook with a `timeout` of 5, so an install from before the turn hooks gets them; settings without that hook are left as they are.
+The process the job runs. It runs until stopped, logs to stderr (set `RUST_LOG=rexume=debug` for every call it makes through its adapter), and exits 1 at once when another daemon holds the same state directory. It starts `rex do` with its adapter script as a child process and reconnects with a growing delay, from 1 to 30 seconds, when the server goes away; a new server socket wakes it early. On `SIGTERM` or `SIGINT` it ends `rex do` and exits 0; it also exits 0 when its executable is replaced, so that its job starts the new one. When it starts, it sets the state directory's mode to `0700` if other users have any access to it, as one an earlier version created does, and logs that it did or that it failed, without stopping. It also replaces the Pi extension install wrote, as install does, when that differs from this version's; it never creates a missing one, leaves a file install did not write as it is, and logs a failure without stopping. Likewise, when Rexume's `SessionStart` hook is in `~/.claude/settings.json`, it appends a group to each Claude Code turn event that lacks Rexume's hook, running the same command as that hook with a `timeout` of 5, so an install from before the turn hooks gets them; settings without that hook are left as they are.
 
 ## status
 

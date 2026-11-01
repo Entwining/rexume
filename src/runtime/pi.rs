@@ -3,7 +3,7 @@
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use serde_json::{Value, json};
 
 use super::{Conversation, Sealed, Sent, Span, Target, Turn, content_texts, text_at};
@@ -57,8 +57,7 @@ pub fn inbox(state_dir: &Path, native_id: &str) -> PathBuf {
 /// passes it to Pi, which records it as a `custom_message`.
 pub fn send(target: &Target, state_dir: &Path, id: &str, text: &str) -> Result<Sent> {
     let dir = inbox(state_dir, target.native_id);
-    std::fs::create_dir_all(&dir)
-        .with_context(|| format!("failed to create `{}`", dir.display()))?;
+    crate::store::create_private_dir(&dir)?;
     // Written whole under a name the extension ignores, then renamed into view.
     let mut file = tempfile::NamedTempFile::with_prefix_in(".", &dir)?;
     file.write_all(json!({ "text": text }).to_string().as_bytes())?;
@@ -143,6 +142,8 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
+
+    use anyhow::Context;
 
     use super::super::tests::{settings, transcript};
     use super::super::{Runtime, last_turn};

@@ -77,7 +77,8 @@ export default function (pi: ExtensionAPI) {
       }
     };
     try {
-      mkdirSync(inbox, { recursive: true });
+      // Only its user may read rexume's state directory, whichever program creates it.
+      mkdirSync(inbox, { recursive: true, mode: 0o700 });
       watcher = watch(inbox, drain);
     } catch (error) {
       if (ctx.hasUI) ctx.ui.notify(`rexume cannot watch its inbox for messages: ${error}`, "warning");
