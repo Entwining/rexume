@@ -35,10 +35,10 @@ jobs:
           persist-credentials: false
       - name: Install the pinned Rust toolchain
         run: rustup show active-toolchain
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           cache-bin: false
-      - uses: taiki-e/install-action@v2.87.29
+      - uses: taiki-e/install-action@v2.87.31
         with:
           tool: cargo-deny@${{ env.CARGO_DENY_VERSION }},cargo-about@${{ env.CARGO_ABOUT_VERSION }}
           fallback: none
@@ -92,11 +92,11 @@ jobs:
           rustup target add "$TARGET"
           sudo apt-get update -qq
           sudo apt-get install -y -qq musl-tools
-      - uses: Swatinem/rust-cache@v2.9.2
+      - uses: Swatinem/rust-cache@v2.9.3
         with:
           cache-bin: false
           key: ${{ matrix.target }}
-      - uses: taiki-e/install-action@v2.87.29
+      - uses: taiki-e/install-action@v2.87.31
         with:
           tool: cargo-deny@${{ env.CARGO_DENY_VERSION }},cargo-about@${{ env.CARGO_ABOUT_VERSION }}
           fallback: none
