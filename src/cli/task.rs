@@ -46,7 +46,7 @@ pub(super) enum Command {
     /// Without --result-file the worker is an interactive conversation, and the first turn it
     /// finishes is the result; with it, the worker is a non-interactive run, and the file is the
     /// result once the run exits 0. Register a worker right after starting it, and prompt it again
-    /// only through `task send`.
+    /// only through `task send`. Fails while another task that is not released has the pane.
     Add {
         /// The Rex block ID of the worker's pane, as REX_BLOCK gives it there
         #[arg(long, value_name = "BLOCK")]

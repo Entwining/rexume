@@ -192,3 +192,36 @@ fn a_queued_round_started_on_a_later_instance_ends_with_its_pane() -> Result<()>
     assert_eq!(round_state(&tx, "t", None)?, (2, "terminated".into()));
     Ok(())
 }
+
+/// A pane takes a new task only once its task is released and the daemon is not closing it.
+#[test]
+fn a_pane_takes_no_second_task_until_its_task_is_released() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = record(&[PROMPT])?;
+    let store = task_world(dir.path(), transcript.path(), None)?;
+    let refusal = |store: &Store| {
+        refuse_taken(store.conn(), "b", "block:b")
+            .err()
+            .map(|e| e.to_string())
+    };
+    assert_eq!(
+        refusal(&store),
+        Some(
+            "pane block:b is the worker of task t, which is not released; send that task another \
+             round, or release it first"
+                .into()
+        )
+    );
+    store
+        .conn()
+        .execute_batch("UPDATE task SET released_at = 1, pane_state = 'closing'")?;
+    assert_eq!(
+        refusal(&store),
+        Some("rexume is closing pane block:b".into())
+    );
+    store
+        .conn()
+        .execute_batch("UPDATE task SET pane_state = 'open'")?;
+    assert_eq!(refusal(&store), None);
+    Ok(())
+}

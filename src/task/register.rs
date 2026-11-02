@@ -47,7 +47,7 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
             caller.block
         );
     }
-    refuse_closing(&tx, &worker, new.worker)?;
+    refuse_taken(&tx, &worker, new.worker)?;
     refuse_stopped(&tx, &caller.instance, asked_at)?;
     let bound = match foreground {
         Some(pid) if new.result_file.is_none() => occupant_of(&tx, &worker, &caller.instance, pid)?,
@@ -102,17 +102,27 @@ fn occupant_of(
         .optional()?)
 }
 
-/// The daemon holds the pane for one close attempt; a task registered meanwhile would lose it.
-fn refuse_closing(conn: &Connection, lineage: &str, block: &str) -> Result<()> {
-    let closing: bool = conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM task WHERE worker_lineage = ?1 AND pane_state = 'closing')",
-        params![lineage],
-        |row| row.get(0),
-    )?;
-    if closing {
-        bail!("rexume is closing pane {block}");
+/// A pane works for one task until that task is released: tasks follow their worker's record each
+/// on their own, so a second task would take the first one's turns for unread ones of its own and
+/// send while the first one's request is on its way. The daemon also holds a released task's pane
+/// for one close attempt, which a task registered meanwhile would lose.
+fn refuse_taken(conn: &Connection, lineage: &str, block: &str) -> Result<()> {
+    let holder: Option<(String, bool)> = conn
+        .query_row(
+            "SELECT id, released_at IS NULL FROM task
+             WHERE worker_lineage = ?1 AND (released_at IS NULL OR pane_state = 'closing')",
+            params![lineage],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()?;
+    match holder {
+        Some((id, true)) => bail!(
+            "pane {block} is the worker of task {id}, which is not released; send that task another \
+             round, or release it first"
+        ),
+        Some((_, false)) => bail!("rexume is closing pane {block}"),
+        None => Ok(()),
     }
-    Ok(())
 }
 
 /// `instance` answered when asked at `asked_at`, so a server the daemon started to observe after
