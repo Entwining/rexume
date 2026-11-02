@@ -24,16 +24,16 @@ pub(super) fn finished(due: &Due, unread: Option<usize>) -> String {
     };
     if round_state == "completed" {
         format!(
-            "{token} Worker task {task} \"{title}\" finished round {round}. Read its result with \
+            "{token} Worker task \"{title}\" finished round {round}. Read its result with \
              `rexume task show {task} --round {round}`, then acknowledge it with \
              `rexume task ack {task} --round {round}`.{unread}"
         )
     } else {
         let reason = note.as_ref().map_or(String::new(), |n| format!(" ({n})"));
         format!(
-            "{token} Worker task {task} \"{title}\" ended round {round} without a result: \
+            "{token} Worker task \"{title}\" ended round {round} without a result: \
              {round_state}{reason}. Check it with `rexume task show {task} --round {round}`; once \
-             it is dealt with, acknowledge it with `rexume task ack {task} --round {round}`.{unread}"
+             handled, acknowledge it with `rexume task ack {task} --round {round}`.{unread}"
         )
     }
 }
@@ -55,13 +55,13 @@ pub(super) fn blocked(due: &Due) -> String {
         .as_ref()
         .map_or(String::new(), |block| format!(" in pane {block}"));
     let request = if request.as_deref() == Some("pending") {
-        " The round's request is still pending: rexume sends it once the worker is idle."
+        " The round's request is still pending: Rexume sends it once the worker is idle."
     } else {
         ""
     };
     format!(
-        "{token} Worker task {task} \"{title}\" is blocked in round {round}: the worker{pane} is \
-         waiting on a dialog or a question, which may have been answered since. Check it with \
+        "{token} Worker task \"{title}\" is blocked in round {round}{pane}, waiting on a dialog \
+         or question that may have been answered since. Check it with \
          `rexume task show {task} --round {round}`.{request}"
     )
 }

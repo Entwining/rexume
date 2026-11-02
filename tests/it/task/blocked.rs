@@ -77,9 +77,8 @@ fn a_blocked_worker_is_reported_once_per_episode_and_its_result_still_arrives() 
     report(&world, "state=blocked:kind=permission");
     let text = message(listener, "the blocked notice");
     assert!(
-        text.contains(&format!(
-            "Worker task {id} \"review\" is blocked in round 1"
-        )) && text.contains(worker.as_str())
+        text.contains("Worker task \"review\" is blocked in round 1")
+            && text.contains(worker.as_str())
             && !text.contains("task ack"),
         "{text}"
     );
