@@ -10,7 +10,7 @@ use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Map, Value};
 
-use super::Interest;
+use super::{Interest, OPEN};
 use crate::proc;
 use crate::runtime::{Runtime, Sent, Target};
 use crate::store::{Store, new_id, now_ms};
@@ -89,17 +89,23 @@ pub(super) fn supersede(
 }
 
 /// Pending notices with the round each tells of, the worker pane's Rex block ID on the instance
-/// the daemon observes last, and the state of the round's request, in the order they come due, so
-/// that an owner's notices, which go one at a time, reach it in that order.
-pub(super) const PENDING: &str = "SELECT n.id, n.kind = 'blocked', t.id, t.title, n.round,
-    r.state, r.note, r.waiter_pid, n.created_at, l.live_id, q.state
-  FROM notice n JOIN task t ON t.id = n.task_id
-  JOIN task_round r ON r.task_id = n.task_id AND r.round = n.round
-  LEFT JOIN request q ON q.task_id = n.task_id AND q.round = n.round
-  LEFT JOIN epoch e ON e.id = (SELECT MAX(id) FROM epoch)
-  LEFT JOIN live l ON l.instance_id = e.instance_id AND l.lineage = t.worker_lineage
-  WHERE n.state = 'pending'
-  ORDER BY n.created_at, n.id";
+/// the daemon observes last, the state of the round's request, and whether the task has an open
+/// round, in the order they come due, so that an owner's notices, which go one at a time, reach it
+/// in that order.
+pub(super) static PENDING: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT n.id, n.kind = 'blocked', t.id, t.title, n.round,
+           r.state, r.note, r.waiter_pid, n.created_at, l.live_id, q.state,
+           EXISTS (SELECT 1 FROM task_round r WHERE r.task_id = n.task_id AND {OPEN})
+         FROM notice n JOIN task t ON t.id = n.task_id
+         JOIN task_round r ON r.task_id = n.task_id AND r.round = n.round
+         LEFT JOIN request q ON q.task_id = n.task_id AND q.round = n.round
+         LEFT JOIN epoch e ON e.id = (SELECT MAX(id) FROM epoch)
+         LEFT JOIN live l ON l.instance_id = e.instance_id AND l.lineage = t.worker_lineage
+         WHERE n.state = 'pending'
+         ORDER BY n.created_at, n.id"
+    )
+});
 
 struct Due {
     notice: String,
@@ -114,6 +120,9 @@ struct Due {
     since: i64,
     worker: Option<String>,
     request: Option<String>,
+    /// Whether the task has an open round: for a finished notice, a later one, which the worker's
+    /// unread turns wait behind.
+    open: bool,
 }
 
 /// Sends each due notice to its owner once the owner is running and between turns, unless a live
@@ -128,7 +137,7 @@ struct Due {
 pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Option<Instant>> {
     let pending: Vec<Due> = store
         .conn()
-        .prepare_cached(PENDING)?
+        .prepare_cached(&PENDING)?
         .query_map([], |row| {
             Ok(Due {
                 notice: row.get(0)?,
@@ -142,6 +151,7 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
                 since: row.get(8)?,
                 worker: row.get(9)?,
                 request: row.get(10)?,
+                open: row.get(11)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -163,6 +173,9 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
         };
         let text = if due.blocked {
             text::blocked(&due)
+        } else if due.open {
+            // `task next` refuses while that round is open; its own notice names the unread turns.
+            text::finished(&due, None)
         } else {
             text::finished(&due, super::unread(store.conn(), store.dir(), &due.task)?)
         };

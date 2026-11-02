@@ -126,3 +126,36 @@ fn a_request_sent_but_not_seen_received_before_the_upgrade_waits() -> Result<()>
     assert_eq!(round(&store)?, ("running".into(), None, "sent".into()));
     Ok(())
 }
+
+/// A version 8 database already reads Claude Code turn records, so the upgrade to version 9, which
+/// adds the 'queued' and 'dropped' round states, keeps its tasks' places in them.
+#[test]
+fn open_upgrades_a_version_8_database_and_keeps_claude_turn_offsets() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let conn = Connection::open(dir.path().join("state.db"))?;
+    conn.execute_batch(include_str!("../../../../tests/fixtures/schema-v8.sql"))?;
+    conn.execute_batch(
+        "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+           VALUES ('claude', 'owner', 1, 0), ('claude', 'cw', 1, 0);
+         INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env,
+           start_position, reported_at)
+           VALUES ('b1', 'claude', 'cw', 7, 0, 90, 0);
+         INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
+           worker_runtime, worker_native_id, position, created_at)
+           VALUES ('c', 'x', 'claude', 'owner', 'b1', 0, 'claude', 'cw', 300, 1);
+         INSERT INTO task_round (task_id, round, state, finished_at, created_at, turn_start,
+           result_ref, result)
+           VALUES ('c', 1, 'completed', 3, 1, 100, 'm1', 'first');",
+    )?;
+    drop(conn);
+    let store = Store::open(dir.path())?;
+    assert_eq!(definitions(store.conn())?, fresh()?);
+    let kept: (i64, Option<i64>, i64) = store.conn().query_row(
+        "SELECT t.position, r.turn_start, o.start_position FROM task t
+         JOIN task_round r ON r.task_id = t.id JOIN occupant o ON o.block_lineage = t.worker_lineage",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    assert_eq!(kept, (300, Some(100), 90));
+    Ok(())
+}

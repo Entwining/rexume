@@ -20,7 +20,7 @@ use crate::runtime::claude;
 
 const SCHEMA: &str = include_str!("schema.sql");
 /// The `user_version` that `schema.sql` sets.
-pub const SCHEMA_VERSION: i64 = 8;
+pub const SCHEMA_VERSION: i64 = 9;
 /// The `application_id` that `schema.sql` sets: 'rexu' in ASCII.
 const APPLICATION_ID: i64 = 0x7265_7875;
 /// How long finished restores, tasks, and unused conversations are kept.
@@ -322,9 +322,9 @@ pub fn sweep(tx: &Transaction, instance: &str, now: i64) -> Result<()> {
     )?;
     tx.execute(
         "DELETE FROM task
-          WHERE id IN (SELECT t.id FROM task t JOIN task_round r ON r.task_id = t.id
-                       WHERE r.round = (SELECT MAX(round) FROM task_round WHERE task_id = t.id)
-                         AND COALESCE(r.acked_at, r.finished_at) < ?1)
+          WHERE id IN (SELECT task_id FROM task_round GROUP BY task_id
+                       HAVING COUNT(finished_at) = COUNT(*)
+                         AND MAX(COALESCE(acked_at, finished_at)) < ?1)
             AND NOT EXISTS (SELECT 1 FROM notice n WHERE n.task_id = task.id
                             AND n.state IN ('pending', 'sending', 'sent', 'accepted', 'unknown'))",
         params![cutoff],

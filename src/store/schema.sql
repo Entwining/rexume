@@ -249,7 +249,10 @@ CREATE INDEX IF NOT EXISTS task_worker_conversation ON task (worker_runtime, wor
 -- so no two rounds of a task take the same turn. A Claude Code worker's round from before version
 -- 8 names no turn in the record its turn hooks write, which starts after it. A round with a
 -- `request` row takes the turn that took its request in; any other takes the earliest turn after
--- the task's `position` that no round took.
+-- the task's `position` that no round took. A request round sent while the task has an open round
+-- is 'queued' behind it: it starts as 'running' in the transaction that finishes the open round,
+-- or ends there as 'dropped' when the worker can take no further request, as it does when its owner
+-- abandons it; a dropped round never ran, so it never stands for the task's latest result.
 -- `waiter_pid`: the `task wait` process that takes the round's notices itself while it runs; a
 -- wait takes its place whenever it is empty or names a process that is gone.
 -- `blocked_at`: when the round's current blocked episode began, set exactly while it is 'blocked'.
@@ -273,9 +276,9 @@ CREATE TABLE IF NOT EXISTS task_round (
   task_id              TEXT    NOT NULL REFERENCES task (id) ON DELETE CASCADE,
   round                INTEGER NOT NULL,
   waiter_pid           INTEGER,
-  state                TEXT    NOT NULL CHECK (state IN ('running', 'blocked', 'completed', 'cancelled',
-                                                         'failed', 'terminated', 'worker_closed',
-                                                         'abandoned')),
+  state                TEXT    NOT NULL CHECK (state IN ('queued', 'running', 'blocked', 'completed',
+                                                         'cancelled', 'failed', 'terminated',
+                                                         'worker_closed', 'abandoned', 'dropped')),
   blocked_at           INTEGER,
   note                 TEXT,
   finished_at          INTEGER,
@@ -288,14 +291,14 @@ CREATE TABLE IF NOT EXISTS task_round (
   result_ref           TEXT,
   result               TEXT,
   PRIMARY KEY (task_id, round),
-  CHECK ((state IN ('running', 'blocked')) = (finished_at IS NULL)),
+  CHECK ((state IN ('queued', 'running', 'blocked')) = (finished_at IS NULL)),
   CHECK ((blocked_at IS NOT NULL) = (state = 'blocked')),
   CHECK ((state = 'completed') = (result IS NOT NULL)),
   CHECK ((state = 'completed') = (result_ref IS NOT NULL)),
   CHECK (turn_start IS NULL OR state IN ('completed', 'cancelled', 'failed')),
   CHECK (acked_at IS NULL OR finished_at IS NOT NULL)
 ) STRICT;
--- A task has at most one round that has not finished.
+-- A task has at most one open round, which the rounds queued behind it wait for.
 CREATE UNIQUE INDEX IF NOT EXISTS task_round_open ON task_round (task_id) WHERE state IN ('running', 'blocked');
 CREATE UNIQUE INDEX IF NOT EXISTS task_round_turn ON task_round (task_id, turn_start);
 
@@ -360,4 +363,4 @@ CREATE UNIQUE INDEX IF NOT EXISTS notice_blocked_unsent ON notice (task_id, roun
 
 -- 'rexu' in ASCII, which Store::open checks before it uses a database.
 PRAGMA application_id = 0x72657875;
-PRAGMA user_version = 8;
+PRAGMA user_version = 9;

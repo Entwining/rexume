@@ -8,6 +8,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 
 use super::evidence::{Evidence, Pane, Reading, RunProcess, Take};
 use super::notice::{self, Kind};
+use super::queue::{self, Queued};
 use super::{OPEN, blocked};
 use crate::runtime::Turn;
 use crate::store::now_ms;
@@ -61,7 +62,7 @@ pub(super) fn evaluate(
     };
     match evidence {
         Evidence::Turn(Err(note)) => {
-            finish(tx, id, round, "failed", None, Some(&note))?;
+            finish(tx, id, round, "failed", None, Some(&note), Queued::End)?;
             Ok(None)
         }
         Evidence::Turn(Ok(reading)) => {
@@ -87,43 +88,32 @@ pub(super) fn evaluate(
             };
             interactive_outcome(tx, id, round, blocked, &worker, reading)
         }
-        Evidence::Run {
-            file: Some(read), ..
-        } => {
-            match read {
-                Ok(result) => finish(
-                    tx,
-                    id,
-                    round,
-                    "completed",
-                    Some(Finished {
-                        result,
-                        reference: result_file.unwrap_or_default(),
-                    }),
-                    None,
-                )?,
-                Err(note) => finish(tx, id, round, "failed", None, Some(&note))?,
-            }
-            Ok(None)
-        }
-        Evidence::Run { pane, file: None } => {
-            let run = RunProcess {
-                instance: worker_instance.as_deref(),
-                pid: worker_pid,
-            };
-            match (pane.ended(&run), pane.last_exit) {
-                (true, Some(-1)) => {
-                    finish(tx, id, round, "terminated", None, Some("ended by a signal"))?;
+        Evidence::Run { pane, file } => {
+            let ended = match file {
+                Some(Ok(result)) => {
+                    let reference = result_file.unwrap_or_default();
+                    Some(("completed", Some(Finished { result, reference }), None))
                 }
-                (true, Some(code)) if code != 0 => finish(
-                    tx,
-                    id,
-                    round,
-                    "failed",
-                    None,
-                    Some(&format!("exited {code}")),
-                )?,
-                _ => {}
+                Some(Err(note)) => Some(("failed", None, Some(note))),
+                None => {
+                    let run = RunProcess {
+                        instance: worker_instance.as_deref(),
+                        pid: worker_pid,
+                    };
+                    match (pane.ended(&run), pane.last_exit) {
+                        (true, Some(-1)) => {
+                            Some(("terminated", None, Some("ended by a signal".into())))
+                        }
+                        (true, Some(code)) if code != 0 => {
+                            Some(("failed", None, Some(format!("exited {code}"))))
+                        }
+                        _ => None,
+                    }
+                }
+            };
+            // A run takes no request, so nothing is queued behind its round.
+            if let Some((state, done, note)) = ended {
+                finish(tx, id, round, state, done, note.as_deref(), Queued::End)?;
             }
             Ok(None)
         }
@@ -159,7 +149,7 @@ fn interactive_outcome(
     if reading.replaced {
         let note = "the worker's record was replaced or cut, so its turns after the task's \
                     position can no longer be told apart";
-        finish(tx, id, round, "failed", None, Some(note))?;
+        finish(tx, id, round, "failed", None, Some(note), Queued::End)?;
         return Ok(None);
     }
     if let Some(take) = reading.chosen {
@@ -168,7 +158,15 @@ fn interactive_outcome(
     }
     if worker.closed {
         let note = "the worker's pane closed before it finished";
-        finish(tx, id, round, "worker_closed", None, Some(note))?;
+        finish(
+            tx,
+            id,
+            round,
+            "worker_closed",
+            None,
+            Some(note),
+            Queued::End,
+        )?;
         return Ok(None);
     }
     blocked::follow(tx, id, round, blocked, &worker.pane, worker.process)
@@ -188,6 +186,7 @@ fn take_turn(tx: &Transaction, id: &str, round: i64, take: Take) -> Result<()> {
                 reference,
             }),
             None,
+            Queued::Start,
         )?,
         Turn::Cancelled => finish(
             tx,
@@ -196,8 +195,9 @@ fn take_turn(tx: &Transaction, id: &str, round: i64, take: Take) -> Result<()> {
             "cancelled",
             None,
             Some("the worker's turn was cancelled"),
+            Queued::Start,
         )?,
-        Turn::Failed { text } => finish(tx, id, round, "failed", None, Some(&text))?,
+        Turn::Failed { text } => finish(tx, id, round, "failed", None, Some(&text), Queued::Start)?,
         Turn::Open | Turn::None => bail!("a round can take only a turn that ended"),
     }
     tx.execute(
@@ -218,9 +218,23 @@ pub(super) struct Finished {
 }
 
 /// Ends a round, and any blocked episode it was in, and writes its finished notice in the same
-/// transaction. The worker pane's status time and foreground generation are kept to tell later
-/// activity in the pane apart.
+/// transaction, which also moves the rounds queued behind it.
 pub(super) fn finish(
+    tx: &Transaction,
+    id: &str,
+    round: i64,
+    state: &str,
+    done: Option<Finished>,
+    note: Option<&str>,
+    queued: Queued,
+) -> Result<()> {
+    end(tx, id, round, state, done, note)?;
+    queue::advance(tx, id, round, state, queued)
+}
+
+/// Ends one round as `finish` describes, leaving the queue as it is. The worker pane's status time
+/// and foreground generation are kept to tell later activity in the pane apart.
+pub(super) fn end(
     tx: &Transaction,
     id: &str,
     round: i64,

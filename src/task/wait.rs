@@ -28,8 +28,8 @@ const WAL: Token = 0;
 /// The exit of the waiter this one stands behind, which writes nothing to the log.
 const HOLDER_EXIT: Token = 1;
 
-/// Waits in the owner's turn for the task's latest round to finish or its worker to block, and
-/// returns that round, with `timed_out`, and why it returned. The round is read after that
+/// Waits in the owner's turn for the task's open or latest round to finish or its worker to block,
+/// and returns that round, with `timed_out`, and why it returned. The round is read after that
 /// decision, so it may have moved on since.
 pub fn wait(state_dir: &Path, id: &str, timeout: Duration) -> Result<(Value, Returned)> {
     let until = Instant::now() + timeout;

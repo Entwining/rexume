@@ -8,6 +8,7 @@ use rusqlite::{Params, Transaction, params};
 
 use super::OPEN;
 use super::outcome::finish;
+use super::queue::Queued;
 use crate::store::{self, now_ms};
 
 /// The rounds a closed worker pane leaves unfinished that no record can finish: a run's, and an
@@ -100,7 +101,7 @@ fn finish_each(
         .query_map(params, |row| Ok((row.get(0)?, row.get(1)?)))?
         .collect::<rusqlite::Result<_>>()?;
     for (id, round) in open {
-        finish(tx, &id, round, state, None, Some(note))?;
+        finish(tx, &id, round, state, None, Some(note), Queued::End)?;
     }
     Ok(())
 }

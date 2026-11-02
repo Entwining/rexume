@@ -12,7 +12,7 @@ use super::{Interest, OPEN};
 use crate::runtime::{self, Runtime, Sent, Target, pi};
 use crate::store::Store;
 
-/// The pending requests of unfinished rounds, reached through the rounds so that the request table
+/// The pending requests of open rounds, reached through the rounds so that the request table
 /// is never scanned: SQLite keeps the left table of a `CROSS JOIN` as the outer loop.
 pub(super) static PENDING: LazyLock<String> = LazyLock::new(|| {
     format!(
@@ -129,7 +129,7 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<()>
     settle_pi(store, interest)
 }
 
-/// The requests of unfinished rounds sent to Pi workers that Pi has not yet been seen to hold,
+/// The requests of open rounds sent to Pi workers that Pi has not yet been seen to hold,
 /// reached through the rounds as in `PENDING`.
 pub(super) static SENT_TO_PI: LazyLock<String> = LazyLock::new(|| {
     format!(

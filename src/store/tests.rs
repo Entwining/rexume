@@ -165,6 +165,36 @@ fn sweep_keeps_what_an_open_task_or_a_recent_restore_still_names() -> Result<()>
     Ok(())
 }
 
+/// A task goes once every round finished and was acknowledged, or finished unacknowledged, before
+/// the retention period; a later round dropped long ago does not stand for an earlier one.
+#[test]
+fn sweep_deletes_a_task_only_once_all_its_rounds_are_old() -> Result<()> {
+    let (_dir, mut store) = store();
+    let old = now_ms() - i64::try_from(RETENTION.as_millis())? - 1;
+    let tx = store.write()?;
+    tx.execute_batch(&format!(
+        "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+           VALUES ('claude', 'owner', 1, 0);
+         INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
+           created_at)
+           VALUES ('old', 'x', 'claude', 'owner', 'b1', 0, 0),
+             ('open', 'x', 'claude', 'owner', 'b2', 0, 0),
+             ('recent', 'x', 'claude', 'owner', 'b3', 0, 0);
+         INSERT INTO task_round (task_id, round, state, finished_at, acked_at, created_at)
+           VALUES ('old', 1, 'cancelled', {old}, {old}, 0), ('old', 2, 'dropped', {old}, NULL, 0),
+             ('open', 1, 'running', NULL, NULL, 0), ('open', 2, 'dropped', {old}, {old}, 0),
+             ('recent', 1, 'failed', {old}, {now}, 0), ('recent', 2, 'dropped', {old}, {old}, 0);",
+        now = now_ms()
+    ))?;
+    sweep(&tx, "i2", now_ms())?;
+    let tasks: Vec<String> = tx
+        .prepare("SELECT id FROM task ORDER BY id")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    assert_eq!(tasks, ["open", "recent"]);
+    Ok(())
+}
+
 /// A pane the sweep forgets takes its occupant along, so the conversation's row can expire; an
 /// occupant reported on the current instance before the daemon has seen its pane stays.
 #[test]

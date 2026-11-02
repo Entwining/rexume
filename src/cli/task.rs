@@ -34,7 +34,7 @@ pub(super) struct TaskId {
 
 #[derive(clap::Args)]
 pub(super) struct Round {
-    /// The round, as a notice names it, instead of the latest
+    /// The round, as a notice or `task send` names it, instead of the open or latest one
     #[arg(long, value_name = "N")]
     round: Option<i64>,
 }
@@ -64,20 +64,21 @@ pub(super) enum Command {
     /// Start the next round with the earliest finished turn no round has taken
     ///
     /// For a worker that ends turns on its own, such as interim reports while it waits for CI;
-    /// a turn that finished before this command counts. Acknowledges the previous round.
+    /// a turn that finished before this command counts. Acknowledges every earlier round.
     Next(TaskId),
     /// Start the next round with a new request to the interactive worker
     ///
     /// Rexume delivers the message to the worker's conversation once it is idle, without typing
-    /// into its pane; the round's result is the turn that takes it in. Acknowledges the previous
-    /// round.
+    /// into its pane; the round's result is the turn that takes it in. Acknowledges every earlier
+    /// round; while a round is still running or blocked, the new one is queued behind it instead,
+    /// acknowledging nothing, and starts once it finishes.
     Send {
         #[command(flatten)]
         task: TaskId,
         #[command(flatten)]
         message: Message,
     },
-    /// List this conversation's tasks with their latest round
+    /// List this conversation's tasks with their open or latest round
     List,
     /// Show one task with a round's result
     Show {
@@ -86,7 +87,7 @@ pub(super) enum Command {
         #[command(flatten)]
         round: Round,
     },
-    /// Wait until the task's latest round finishes or its worker blocks, then show it
+    /// Wait until the task's open or latest round finishes or its worker blocks, then show it
     ///
     /// Exits 3 when the worker is blocked on a dialog or a question that no notice or earlier wait
     /// reported, and 124 when the timeout passes first; the task is printed either way, with
@@ -100,7 +101,7 @@ pub(super) enum Command {
     },
     /// Acknowledge a finished round's result
     ///
-    /// Fails while the round is still running or blocked. A notice not yet sent for the round is
+    /// Fails while the round is still queued, running, or blocked. A notice not yet sent for it is
     /// dropped, since its owner has the result.
     Ack {
         #[command(flatten)]
@@ -108,15 +109,21 @@ pub(super) enum Command {
         #[command(flatten)]
         round: Round,
     },
-    /// Stop waiting for the latest round, which ends as `abandoned`
+    /// Stop waiting for a round, the open one by default, which ends as `abandoned`
     ///
     /// Acknowledges the round and leaves the worker as it is: a turn it finishes later is unread
-    /// and `task next` takes it, and the task takes further rounds. A request that already left is
-    /// not withdrawn. Fails once the round has finished.
-    Abandon(TaskId),
+    /// and `task next` takes it, and the task takes further rounds. Abandoning the open round
+    /// starts the next queued one; an abandoned queued round ends as `dropped`, never sent. A
+    /// request that already left is not withdrawn. Fails once the round has finished.
+    Abandon {
+        #[command(flatten)]
+        task: TaskId,
+        #[command(flatten)]
+        round: Round,
+    },
     /// Release the worker, so the daemon closes an unused disposable worker's pane
     ///
-    /// Acknowledges the latest round. Fails while a round is unfinished or turns are unread; a
+    /// Acknowledges its rounds. Fails while a round is unfinished or turns are unread; a
     /// released task starts no more rounds.
     Release(TaskId),
 }
@@ -186,7 +193,7 @@ pub(super) fn run(command: Command, dir: &Path) -> Result<(Value, u8)> {
         Command::Ack { task, round } => task::ack(dir, &task.id, round.round),
         Command::Next(task) => task::next(dir, &task.id),
         Command::Send { task, message } => task::send(dir, &task.id, &message.read()?),
-        Command::Abandon(task) => task::abandon(dir, &task.id),
+        Command::Abandon { task, round } => task::abandon(dir, &task.id, round.round),
         Command::Release(task) => task::release(dir, &task.id),
     }?;
     Ok((value, 0))

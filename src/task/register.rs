@@ -1,5 +1,5 @@
-//! Registering a worker pane for a task, each round after the first, abandoning a round, and
-//! releasing the worker.
+//! Registering a worker pane for a task, each round after the first, abandoning or acknowledging a
+//! round, and releasing the worker.
 
 use std::path::Path;
 
@@ -7,6 +7,7 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
+use super::queue::{self, Queued};
 use super::{caller, finished, notice, outcome, owned, round_state, shown, unread};
 use crate::runtime::Runtime;
 use crate::store::{Store, ensure_lineage, new_id, now_ms};
@@ -170,7 +171,8 @@ pub fn next(state_dir: &Path, id: &str) -> Result<Value> {
     shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
 }
 
-/// Starts the next round with a request the daemon delivers to the worker.
+/// Starts the next round with a request the daemon delivers to the worker, or queues it behind
+/// the task's open round.
 pub fn send(state_dir: &Path, id: &str, message: &str) -> Result<Value> {
     refuse_too_large(message.len())?;
     let mut store = Store::open(state_dir)?;
@@ -182,31 +184,52 @@ pub fn send(state_dir: &Path, id: &str, message: &str) -> Result<Value> {
     shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
 }
 
-/// Ends the latest round, still unfinished, as `abandoned` and acknowledges it: the owner stops
-/// waiting for it, and only the owner. The task is not released, so a turn the worker finishes
-/// later is unread and `task next` takes it, and `task release` still refuses until then.
-pub fn abandon(state_dir: &Path, id: &str) -> Result<Value> {
+/// Ends a round still unfinished, the open one by default, as `abandoned` and acknowledges
+/// it: the owner stops waiting for it, and only the owner. The task is not released, so a turn the
+/// worker finishes later is unread and `task next` takes it, and `task release` still refuses
+/// until then. Abandoning the open round starts the next queued one; abandoning a queued round
+/// drops it, its request never sent.
+pub fn abandon(state_dir: &Path, id: &str, round: Option<i64>) -> Result<Value> {
     let mut store = Store::open(state_dir)?;
     let caller = caller(&store)?;
     let tx = store.write()?;
     owned(&tx, id, &caller)?;
-    let round = abandon_round(&tx, id)?;
+    let round = abandon_round(&tx, id, round)?;
     tx.commit()?;
     shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
 }
 
-fn abandon_round(tx: &Transaction, id: &str) -> Result<i64> {
-    let (round, state) = round_state(tx, id, None)?;
+fn abandon_round(tx: &Transaction, id: &str, round: Option<i64>) -> Result<i64> {
+    let (round, state) = round_state(tx, id, round)?;
     if finished(&state) {
         bail!("task {id} round {round} has already finished as {state}");
     }
-    let note = "the owner abandoned the round";
-    outcome::finish(tx, id, round, "abandoned", None, Some(note))?;
+    let (state, note) = if state == "queued" {
+        ("dropped", "the owner abandoned the round before it started")
+    } else {
+        ("abandoned", "the owner abandoned the round")
+    };
+    outcome::finish(tx, id, round, state, None, Some(note), Queued::Start)?;
     acknowledge(tx, id, round, "taken by task abandon")?;
     Ok(round)
 }
 
-/// Records that the orchestrator is done with the worker and acknowledges the latest round; only a
+/// Records that the owner has a finished round's result.
+pub fn ack(state_dir: &Path, id: &str, round: Option<i64>) -> Result<Value> {
+    let mut store = Store::open(state_dir)?;
+    let caller = caller(&store)?;
+    let tx = store.write()?;
+    owned(&tx, id, &caller)?;
+    let (round, state) = round_state(&tx, id, round)?;
+    if !finished(&state) {
+        bail!("task {id} is {state}; ack it once the round has finished");
+    }
+    acknowledge(&tx, id, round, "taken by task ack")?;
+    tx.commit()?;
+    shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
+}
+
+/// Records that the orchestrator is done with the worker and acknowledges its rounds; only a
 /// released task's pane is ever closed. Releasing again changes nothing.
 pub fn release(state_dir: &Path, id: &str) -> Result<Value> {
     let mut store = Store::open(state_dir)?;
@@ -222,7 +245,7 @@ pub fn release(state_dir: &Path, id: &str) -> Result<Value> {
         "UPDATE task SET released_at = COALESCE(released_at, ?1) WHERE id = ?2",
         params![now_ms(), id],
     )?;
-    acknowledge(&tx, id, round, "taken by task release")?;
+    acknowledge_all(&tx, id, "taken by task release")?;
     tx.commit()?;
     shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
 }
@@ -238,8 +261,23 @@ pub(super) fn acknowledge(tx: &Transaction, id: &str, round: i64, by: &str) -> R
     Ok(())
 }
 
-/// Inserts the task's next round after checking it can take one, acknowledges the round before
-/// it, and returns its number.
+/// Acknowledges every round of the task its owner has not acknowledged, which must all have
+/// finished. Rounds queued behind an open one start without acknowledging it, so earlier rounds
+/// than the latest can wait for an acknowledgement.
+fn acknowledge_all(tx: &Transaction, id: &str, by: &str) -> Result<()> {
+    let rounds: Vec<i64> = tx
+        .prepare("SELECT round FROM task_round WHERE task_id = ?1 AND acked_at IS NULL")?
+        .query_map(params![id], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    for round in rounds {
+        acknowledge(tx, id, round, by)?;
+    }
+    Ok(())
+}
+
+/// Inserts the task's next round after checking it can take one and returns its number. A request
+/// sent while a round is open is queued behind it and acknowledges nothing; otherwise the rounds
+/// before are acknowledged, since the owner acts after their results.
 pub(super) fn start_round(tx: &Transaction, id: &str, kind: &Kind) -> Result<i64> {
     // Another task on the same pane may hold it for a close.
     let (interactive, released, closed, closing): (bool, bool, bool, bool) = tx.query_row(
@@ -268,20 +306,32 @@ pub(super) fn start_round(tx: &Transaction, id: &str, kind: &Kind) -> Result<i64
         }
         _ => {}
     }
-    let round = latest_finished(tx, id)?;
+    // A dropped round can be the latest, so the next number comes after it.
+    let round: i64 = tx.query_row(
+        "SELECT MAX(round) + 1 FROM task_round WHERE task_id = ?1",
+        params![id],
+        |row| row.get(0),
+    )?;
+    if let Kind::Request(message) = kind
+        && !finished(&round_state(tx, id, None)?.1)
+    {
+        queue::add(tx, id, round, message)?;
+        return Ok(round);
+    }
+    latest_finished(tx, id)?;
     let by = match kind {
         Kind::Next { .. } => "taken by task next",
         Kind::Request(_) => "taken by task send",
     };
-    acknowledge(tx, id, round, by)?;
-    insert_round(tx, id, round + 1, now_ms())?;
+    acknowledge_all(tx, id, by)?;
+    insert_round(tx, id, round, now_ms())?;
     if let Kind::Request(message) = kind {
         tx.execute(
             "INSERT INTO request (id, task_id, round, text) VALUES (?1, ?2, ?3, ?4)",
-            params![new_id(), id, round + 1, message],
+            params![new_id(), id, round, message],
         )?;
     }
-    Ok(round + 1)
+    Ok(round)
 }
 
 /// The task's latest round, which must have finished before another starts or the task is

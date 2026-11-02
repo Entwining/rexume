@@ -158,6 +158,31 @@ fn a_notice_goes_to_its_idle_owner_once_its_grace_has_passed() -> Result<()> {
     Ok(())
 }
 
+/// While a later round of the task is open, `task next` refuses, so a finished notice leaves the
+/// worker's unread turns to that round's own notice.
+#[test]
+fn a_finished_notice_names_no_unread_turns_while_a_later_round_is_open() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = tempfile::NamedTempFile::new()?;
+    let (mut store, listener) = notice_world(dir.path(), transcript.path(), "pending")?;
+    let worker = [PROMPT, ANSWER, PROMPT_2, ANSWER_2].join("\n") + "\n";
+    std::fs::write(dir.path().join("worker.jsonl"), worker)?;
+    store.conn().execute(
+        "UPDATE notice SET created_at = ?1",
+        params![now_ms() - GRACE_MS - 1],
+    )?;
+    store.conn().execute_batch(
+        "UPDATE task_round SET turn_start = 0;
+         INSERT INTO task_round (task_id, round, state, created_at) VALUES ('t', 2, 'running', 1);",
+    )?;
+    send_due(&mut store, &mut Interest::default())?;
+    let mut sent = String::new();
+    std::io::Read::read_to_string(&mut listener.accept()?.0, &mut sent)?;
+    assert!(sent.contains("finished round 1"), "{sent}");
+    assert!(!sent.contains("unread"), "{sent}");
+    Ok(())
+}
+
 #[test]
 fn a_failed_send_stays_pending_and_is_listed_with_its_reason() -> Result<()> {
     let dir = tempfile::tempdir()?;

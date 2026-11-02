@@ -5,10 +5,10 @@ use std::path::Path;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use super::super::LATEST_ROUND;
+use super::super::CURRENT_ROUND;
 use crate::runtime::{Runtime, Turn, last_turn};
 
-/// What the latest round recorded when it finished, and where the task stands in its worker's
+/// What the latest round that ran recorded when it finished, and where the task stands in its worker's
 /// record.
 pub(super) struct Taken {
     pub(super) interactive: bool,
@@ -28,7 +28,9 @@ pub(super) fn taken(conn: &Connection, id: &str) -> Result<Taken> {
             "SELECT t.result_file IS NULL, t.worker_lineage,
                r.finished_at, r.finished_status_at, r.finished_generation, t.position,
                t.worker_runtime, t.worker_native_id, t.worker_instance_id, r.finished_instance_id
-             FROM task t JOIN task_round r ON r.task_id = t.id WHERE t.id = ?1 AND {LATEST_ROUND}"
+             FROM task t JOIN task_round r ON r.task_id = t.id
+             WHERE t.id = ?1 AND r.round = {current}",
+            current = *CURRENT_ROUND
         ),
         params![id],
         |row| {

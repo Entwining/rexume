@@ -118,6 +118,25 @@ fn an_untouched_released_worker_is_retired_unless_its_record_cannot_be_read() ->
     Ok(())
 }
 
+/// A queued round withdrawn while the round before it ran never ran itself, so what the pane showed
+/// when it was dropped says nothing about whether the worker was touched since its result.
+#[test]
+fn a_dropped_round_does_not_keep_an_untouched_worker() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = record(&[PROMPT, ANSWER])?;
+    let store = released_worker(dir.path(), transcript.path())?;
+    store.conn().execute_batch(
+        "INSERT INTO task_round (task_id, round, state, finished_at, finished_instance_id,
+           finished_status_at, finished_generation, acked_at, created_at)
+         VALUES ('t', 2, 'dropped', 60, 'i1', 50, 3, 60, 40)",
+    )?;
+    assert_eq!(
+        retired_workers(store.conn(), store.dir())?,
+        [("t".into(), "b".into())]
+    );
+    Ok(())
+}
+
 /// A conversation reported in the pane on an earlier server instance is not what the pane runs
 /// now, as when the pane came back as a shell and the worker never reported again.
 #[test]
