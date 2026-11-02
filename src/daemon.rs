@@ -33,7 +33,8 @@ pub struct Options {
     pub cli: Cli,
     /// This executable, which restored panes run as their gate and the adapter runs as its relay.
     pub exe: PathBuf,
-    /// The home directory whose Pi extension the daemon refreshes when it starts.
+    /// The home directory whose Claude Code plugin, Pi extension, and Claude Code turn hooks the
+    /// daemon refreshes when it starts.
     pub home: PathBuf,
 }
 
@@ -96,6 +97,13 @@ pub fn run(options: &Options) -> Result<()> {
         Ok("updated") => log::info!("updated the Pi extension"),
         Ok(_) => {}
         Err(e) => log::warn!("failed to refresh the Pi extension: {e:#}"),
+    }
+    // Likewise for the Claude Code plugin, without which notices and requests still arrive, framed
+    // as another session's messages.
+    match install::refresh_claude_plugin(&options.home) {
+        Ok("updated") => log::info!("updated the Claude Code plugin"),
+        Ok(_) => {}
+        Err(e) => log::warn!("failed to refresh the Claude Code plugin: {e:#}"),
     }
     // Claude Code rounds finish only from the turn record its turn hooks write.
     match install::refresh_claude_hooks(&options.home) {

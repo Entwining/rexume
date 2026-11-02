@@ -143,9 +143,7 @@ impl Parser {
 mod tests {
     use std::os::unix::fs::PermissionsExt;
 
-    use anyhow::Context;
-
-    use super::super::tests::{settings, transcript};
+    use super::super::tests::{node, settings, transcript};
     use super::super::{Runtime, last_turn};
     use super::*;
 
@@ -282,15 +280,6 @@ mod tests {
             );
         }
         Ok(())
-    }
-
-    /// A version manager's `node` may be a shim that needs the `PATH` the harness replaces.
-    fn node() -> Result<String> {
-        let node = std::process::Command::new("node")
-            .args(["-p", "process.execPath"])
-            .output()
-            .context("this test runs the Pi extension in Node")?;
-        Ok(String::from_utf8(node.stdout)?.trim().to_owned())
     }
 
     /// The report gets the session file's length as the extension found it, and none when the

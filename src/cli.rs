@@ -74,20 +74,21 @@ impl Server {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Install the hooks, the Pi extension, and the job that runs the daemon
+    /// Install the hooks, the Claude Code plugin, the Pi extension, and the daemon's job
     ///
     /// Writes Claude Code's SessionStart, UserPromptSubmit, Stop, and StopFailure hooks into
     /// `~/.claude/settings.json`, a SessionStart hook into `~/.codex/hooks.json`, the
     /// extension into `~/.pi/agent/extensions/rexume.ts`, and the job: the LaunchAgent
     /// `io.github.entwining.rexume` on macOS, the systemd user service `rexume.service` on Linux.
-    /// Prints what changed as JSON. A runtime whose directory does not exist is skipped. Running it
-    /// again changes only what is missing or different.
+    /// Then writes the Claude Code plugin to `~/.local/share/rexume/claude-plugin` and registers it
+    /// through the `claude` on `PATH`. Prints what changed as JSON. A runtime whose directory does
+    /// not exist is skipped. Running it again changes only what is missing or different.
     Install(Server),
     /// Remove what install wrote, keeping the state directory and this executable
     ///
     /// Removes the hooks, the Pi extension when install wrote it, and the job, which stops the
-    /// daemon. `~/.local/state/rexume` keeps the recorded panes, conversations, and task results;
-    /// delete it to remove them too.
+    /// daemon, then the Claude Code plugin, through the `claude` on `PATH`. `~/.local/state/rexume`
+    /// keeps the recorded panes, conversations, and task results; delete it to remove them too.
     Uninstall,
     /// Follow the Rex server and reopen the conversations of the panes it restores
     ///
@@ -200,7 +201,10 @@ fn run(command: Command) -> Result<Option<(Value, u8)>> {
             };
             install::install(&home()?, &options).map(|value| Some((value, 0)))
         }
-        Command::Uninstall => install::uninstall(&home()?).map(|value| Some((value, 0))),
+        Command::Uninstall => {
+            let path = std::env::var("PATH").context("PATH is not set")?;
+            install::uninstall(&home()?, &path).map(|value| Some((value, 0)))
+        }
         Command::Daemon { server, state } => {
             server.warn_ignored();
             let options = daemon::Options {

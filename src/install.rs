@@ -1,9 +1,11 @@
-//! `rexume install` and `rexume uninstall`: the hooks of Claude Code and Codex, the Pi extension,
-//! and the job that runs the daemon, a LaunchAgent on macOS and a systemd user service on Linux.
-//! The daemon also refreshes the Pi extension and adds Claude Code's turn hooks. Each entry is
-//! recognized by its identity (the hook's command, the extension's and the job's paths), so
-//! install changes only what is missing or different, and uninstall removes only these entries.
+//! `rexume install` and `rexume uninstall`: the hooks of Claude Code and Codex, the Claude Code
+//! plugin, the Pi extension, and the job that runs the daemon, a LaunchAgent on macOS and a
+//! systemd user service on Linux. The daemon also refreshes the plugin and the Pi extension and
+//! adds Claude Code's turn hooks. Each entry is recognized by its identity (the hook's command, the
+//! plugin's name, the extension's and the job's paths), so install changes only what is missing or
+//! different, and uninstall removes only these entries.
 
+mod claude_plugin;
 #[cfg(target_os = "macos")]
 mod launch_agent;
 #[cfg(target_os = "linux")]
@@ -11,7 +13,7 @@ mod systemd_unit;
 
 use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Output};
 
 use anyhow::{Context, Result, bail};
 #[cfg(target_os = "macos")]
@@ -19,6 +21,8 @@ use launch_agent as job;
 use serde_json::{Value, json};
 #[cfg(target_os = "linux")]
 use systemd_unit as job;
+
+pub use claude_plugin::refresh as refresh_claude_plugin;
 
 use crate::runtime::pi;
 
@@ -54,8 +58,12 @@ fn run_manager(program: &str, args: &[&str]) -> Result<String> {
         .args(args)
         .output()
         .with_context(|| format!("failed to run `{program}`"))?;
+    check(&format!("{program} {}", args.join(" ")), &output)
+}
+
+/// What `command` printed, or a failure with what it printed when it exited unsuccessfully.
+fn check(command: &str, output: &Output) -> Result<String> {
     if !output.status.success() {
-        let command = format!("{program} {}", args.join(" "));
         let stderr = String::from_utf8_lossy(&output.stderr);
         if stderr.trim().is_empty() {
             bail!("`{command}` exited {}", output.status);
@@ -73,7 +81,7 @@ const CODEX_EVENTS: [&str; 1] = ["SessionStart"];
 /// What install or uninstall did to one entry, and why when that needs saying.
 type Outcome = (&'static str, Option<String>);
 
-fn outcomes(entries: [(&str, Outcome); 4]) -> Value {
+fn outcomes<const N: usize>(entries: [(&str, Outcome); N]) -> Value {
     let mut out = serde_json::Map::from_iter([("version".to_owned(), json!(1))]);
     for (key, (value, note)) in entries {
         out.insert(key.to_owned(), json!(value));
@@ -101,8 +109,12 @@ pub fn install(home: &Path, install: &Install) -> Result<Value> {
         _ => ("skipped", Some("`~/.pi/agent` does not exist".to_owned())),
     };
     let daemon = job::install(install, home)?;
+    // Last: notices and requests reach Claude Code without the plugin, so a failing `claude`
+    // leaves only the plugin for the next install.
+    let plugin = claude_plugin::install(home, &install.path)?;
     let mut out = outcomes([
         ("claude_hook", claude),
+        (claude_plugin::KEY, plugin),
         ("codex_hook", codex),
         ("pi_extension", extension),
         (job::KEY, (daemon, None)),
@@ -111,17 +123,21 @@ pub fn install(home: &Path, install: &Install) -> Result<Value> {
     Ok(out)
 }
 
-pub fn uninstall(home: &Path) -> Result<Value> {
+/// `path` is the `PATH` through which uninstall finds `claude`.
+pub fn uninstall(home: &Path, path: &str) -> Result<Value> {
     let targets = Targets::new(home);
-    // The daemon rewrites the Pi extension when it starts, so it is stopped before the extension
-    // is removed.
+    // The daemon rewrites the plugin and the Pi extension when it starts, so it is stopped before
+    // they are removed.
     job::unload(home)?;
     let claude = remove_hook(&targets.claude, "claude", &CLAUDE_EVENTS)?;
     let codex = remove_hook(&targets.codex, "codex", &CODEX_EVENTS)?;
     let extension = remove_file(&targets.pi, |text| text.starts_with(pi::WRITTEN_BY))?;
     let daemon = job::remove(home)?;
+    // Last, so that a missing or failing `claude` leaves only the plugin for the next uninstall.
+    let plugin = claude_plugin::uninstall(home, path)?;
     Ok(outcomes([
         ("claude_hook", (claude, None)),
+        (claude_plugin::KEY, (plugin, None)),
         ("codex_hook", (codex, None)),
         ("pi_extension", extension),
         (job::KEY, daemon),

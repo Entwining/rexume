@@ -2,6 +2,8 @@ use std::collections::HashSet;
 use std::io::Write;
 use std::path::Path;
 
+use anyhow::Context;
+
 use super::lines::last_record;
 use super::*;
 
@@ -18,6 +20,15 @@ pub(super) fn transcript(lines: &[&str]) -> tempfile::NamedTempFile {
         writeln!(file, "{line}").unwrap();
     }
     file
+}
+
+/// A version manager's `node` may be a shim that needs the `PATH` a harness replaces.
+pub(super) fn node() -> Result<String> {
+    let node = std::process::Command::new("node")
+        .args(["-p", "process.execPath"])
+        .output()
+        .context("this test runs TypeScript in Node")?;
+    Ok(String::from_utf8(node.stdout)?.trim().to_owned())
 }
 
 const PROMPT: &str = r#"{"event":"prompt","prompt_id":"p1","token":null}"#;

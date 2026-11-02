@@ -140,3 +140,148 @@ fn the_daemon_refreshes_only_an_extension_install_wrote() -> Result<()> {
     );
     Ok(())
 }
+
+/// A home with `~/.claude` and a `PATH` whose `claude` records each call's arguments in `calls`
+/// and exits with `status`.
+struct FakeClaude {
+    home: tempfile::TempDir,
+    path: String,
+    calls: PathBuf,
+}
+
+impl FakeClaude {
+    fn new(status: i32) -> Result<Self> {
+        use std::os::unix::fs::PermissionsExt;
+
+        let home = tempfile::tempdir()?;
+        std::fs::create_dir(home.path().join(".claude"))?;
+        let bin = home.path().join("bin");
+        std::fs::create_dir(&bin)?;
+        let calls = home.path().join("calls");
+        let script = format!(
+            "#!/bin/sh\necho \"$*\" >> '{}'\necho refused >&2\nexit {status}\n",
+            calls.display()
+        );
+        std::fs::write(bin.join("claude"), script)?;
+        std::fs::set_permissions(bin.join("claude"), PermissionsExt::from_mode(0o755))?;
+        let path = bin.to_string_lossy().into_owned();
+        Ok(Self { home, path, calls })
+    }
+
+    fn settings(&self, value: &Value) -> Result<()> {
+        Ok(std::fs::write(
+            Targets::new(self.home.path()).claude,
+            value.to_string(),
+        )?)
+    }
+
+    /// The calls since the last time this was read.
+    fn calls(&self) -> Result<Vec<String>> {
+        let calls = match std::fs::read_to_string(&self.calls) {
+            Ok(text) => text.lines().map(str::to_owned).collect(),
+            Err(e) if e.kind() == ErrorKind::NotFound => Vec::new(),
+            Err(e) => return Err(e.into()),
+        };
+        let _ = std::fs::remove_file(&self.calls);
+        Ok(calls)
+    }
+
+    fn plugin_dir(&self) -> PathBuf {
+        self.home.path().join(".local/share/rexume/claude-plugin")
+    }
+}
+
+/// Install registers what Claude Code's settings lack and nothing they name, so that a plugin the
+/// user disabled stays disabled; uninstall removes what they name, then the files.
+#[test]
+fn install_registers_the_plugin_once_and_uninstall_removes_it() -> Result<()> {
+    let claude = FakeClaude::new(0)?;
+    let home = claude.home.path();
+    let dir = claude.plugin_dir();
+    let (value, note) = claude_plugin::install(home, &claude.path)?;
+    assert_eq!((value, note), ("created", None));
+    assert_eq!(
+        claude.calls()?,
+        [
+            format!("plugin marketplace add {}", dir.display()),
+            "plugin install rexume@rexume".to_owned()
+        ]
+    );
+    assert_eq!(
+        std::fs::read_to_string(dir.join("hooks/rexume.ts"))?,
+        crate::runtime::claude::PLUGIN
+    );
+
+    let registered = |enabled: bool| {
+        json!({ "extraKnownMarketplaces": { "rexume": {} },
+            "enabledPlugins": { "rexume@rexume": enabled } })
+    };
+    claude.settings(&registered(true))?;
+    assert_eq!(
+        claude_plugin::install(home, &claude.path)?,
+        ("unchanged", None)
+    );
+    claude.settings(&registered(false))?;
+    assert_eq!(
+        claude_plugin::install(home, &claude.path)?,
+        ("unchanged", Some("disabled in Claude Code".to_owned()))
+    );
+    assert_eq!(claude.calls()?, Vec::<String>::new());
+
+    assert_eq!(claude_plugin::uninstall(home, &claude.path)?, "removed");
+    assert_eq!(
+        claude.calls()?,
+        [
+            "plugin uninstall rexume@rexume",
+            "plugin marketplace remove rexume"
+        ]
+    );
+    assert!(!dir.exists());
+    claude.settings(&json!({}))?;
+    assert_eq!(claude_plugin::uninstall(home, &claude.path)?, "absent");
+    assert_eq!(claude.calls()?, Vec::<String>::new());
+    Ok(())
+}
+
+#[test]
+fn install_skips_the_plugin_without_claude_and_reports_its_failure() -> Result<()> {
+    let claude = FakeClaude::new(1)?;
+    let home = claude.home.path();
+    assert_eq!(
+        claude_plugin::install(home, "/nonexistent")?,
+        ("skipped", Some("`claude` is not on `PATH`".to_owned()))
+    );
+    assert!(!claude.plugin_dir().exists());
+    let failed = claude_plugin::install(home, &claude.path).unwrap_err();
+    assert!(format!("{failed:#}").contains("refused"), "{failed:#}");
+    assert!(!claude.plugin_dir().exists());
+
+    std::fs::remove_dir_all(home.join(".claude"))?;
+    assert_eq!(
+        claude_plugin::install(home, &claude.path)?,
+        ("skipped", Some("`~/.claude` does not exist".to_owned()))
+    );
+    assert!(!claude.plugin_dir().exists());
+    Ok(())
+}
+
+#[test]
+fn the_daemon_refreshes_only_a_plugin_install_wrote() -> Result<()> {
+    let claude = FakeClaude::new(0)?;
+    let home = claude.home.path();
+    assert_eq!(refresh_claude_plugin(home)?, "absent");
+    assert!(
+        !claude.plugin_dir().exists(),
+        "a removed plugin is not written back"
+    );
+    claude_plugin::install(home, &claude.path)?;
+    let module = claude.plugin_dir().join("hooks/rexume.ts");
+    std::fs::write(&module, "// an older version\n")?;
+    assert_eq!(refresh_claude_plugin(home)?, "updated");
+    assert_eq!(
+        std::fs::read_to_string(&module)?,
+        crate::runtime::claude::PLUGIN
+    );
+    assert_eq!(refresh_claude_plugin(home)?, "unchanged");
+    Ok(())
+}

@@ -14,6 +14,10 @@ use super::lines::last_record;
 use super::{Conversation, Sealed, Sent, Span, Target, Turn, text_at};
 use crate::store::new_id;
 
+/// The hooks module of the plugin `rexume install` registers, which takes the notices and requests
+/// `send` writes and submits them as the user's own prompts.
+pub const PLUGIN: &str = include_str!("claude/plugin.ts");
+
 /// Claude Code takes the model and effort of a resumed session from the command line; its session
 /// start leaves them out on resume, so the reported launch settings are what reopen it. Its resume
 /// starts a session that was bypassing permissions in a new session's mode, and a Manual one in a

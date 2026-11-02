@@ -11,6 +11,7 @@ const SERVER: &str = "unix:///tmp/rex.sock";
 const OTHER_SERVER: &str = "unix:///tmp/other-rex.sock";
 
 mod manager;
+mod plugin;
 
 /// A home directory with Claude Code, Codex, and Pi set up, and a fake of the service manager on
 /// its PATH.
@@ -170,6 +171,14 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
     let first = home.install(SERVER);
     assert!(outcomes(&first).iter().all(|o| *o == ("created", None)));
     assert_eq!(first[manager::NAME_KEY], manager::NAME);
+    // This PATH has no `claude`, so the plugin is neither registered nor written.
+    assert_eq!(first["claude_plugin"], "skipped");
+    assert!(
+        !home
+            .home()
+            .join(".local/share/rexume/claude-plugin")
+            .exists()
+    );
     let installed = home.targets();
     assert!(installed.iter().all(|(_, bytes)| bytes.is_some()));
     assert_eq!(
@@ -210,6 +219,7 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
 
     let removed = home.run(&["uninstall"]);
     assert!(outcomes(&removed).iter().all(|o| *o == ("removed", None)));
+    assert_eq!(removed["claude_plugin"], "absent");
     assert_eq!(
         session_start(&home.home().join(".claude/settings.json")),
         ["rex-hook"]
