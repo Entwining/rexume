@@ -13,8 +13,8 @@ const OTHER_SERVER: &str = "unix:///tmp/other-rex.sock";
 mod manager;
 mod plugin;
 
-/// A home directory with Claude Code, Codex, and Pi set up, and a fake of the service manager on
-/// its PATH.
+/// A home directory with Claude Code, Codex, Pi, and omp set up, and a fake of the service manager
+/// on its PATH.
 struct Home {
     dir: tempfile::TempDir,
 }
@@ -23,7 +23,7 @@ impl Home {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
-        for sub in [".claude", ".codex", ".pi/agent", "bin"] {
+        for sub in [".claude", ".codex", ".pi/agent", ".omp/agent", "bin"] {
             std::fs::create_dir_all(home.join(sub)).unwrap();
         }
         let rex_hook =
@@ -111,6 +111,7 @@ while :; do sleep 60 & sleeper=$!; wait $sleeper; done
             ".claude/settings.json",
             ".codex/hooks.json",
             ".pi/agent/extensions/rexume.ts",
+            ".omp/agent/extensions/rexume.ts",
         ]
         .iter()
         .map(|p| home.join(p))
@@ -156,8 +157,15 @@ fn session_start(path: &Path) -> Vec<String> {
 }
 
 /// The value and note install or uninstall reported for each entry.
-fn outcomes(out: &Value) -> [(&str, Option<&str>); 4] {
-    ["claude_hook", "codex_hook", "pi_extension", manager::KEY].map(|key| {
+fn outcomes(out: &Value) -> [(&str, Option<&str>); 5] {
+    let keys = [
+        "claude_hook",
+        "codex_hook",
+        "pi_extension",
+        "omp_extension",
+        manager::KEY,
+    ];
+    keys.map(|key| {
         (
             out[key].as_str().unwrap(),
             out[format!("{key}_note")].as_str(),
@@ -185,7 +193,7 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
         session_start(&home.home().join(".claude/settings.json")),
         ["rex-hook", "rexume report claude"]
     );
-    let job = String::from_utf8(installed[3].1.clone().unwrap()).unwrap();
+    let job = String::from_utf8(installed[4].1.clone().unwrap()).unwrap();
     assert!(job.contains(&manager::quoted("daemon")) && job.contains("/opt/rex/bin/rex"));
     let path = format!("{}:/usr/bin:/bin", home.home().join("bin").display());
     assert!(job.contains(&path), "the daemon runs with install's PATH");
@@ -229,7 +237,7 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
             .unwrap();
     assert_eq!(settings["model"], "opus");
     let left = home.targets();
-    assert!(left[2].1.is_none() && left[3].1.is_none());
+    assert!(left[2].1.is_none() && left[3].1.is_none() && left[4].1.is_none());
     assert_eq!(home.starts_and_stops(), (2, 2));
     let twice = home.run(&["uninstall"]);
     assert!(outcomes(&twice).iter().all(|o| *o == ("absent", None)));
@@ -242,6 +250,37 @@ fn a_runtime_that_is_not_set_up_is_skipped_with_a_note() {
     let out = home.install(SERVER);
     let out = outcomes(&out);
     assert_eq!(out[2], ("skipped", Some("`~/.pi/agent` does not exist")));
+    assert_eq!(out[3], ("created", None));
+
+    let home = Home::new();
+    std::fs::remove_dir_all(home.home().join(".omp")).unwrap();
+    let out = home.install(SERVER);
+    let out = outcomes(&out);
+    assert_eq!(out[2], ("created", None));
+    assert_eq!(out[3], ("skipped", Some("`~/.omp/agent` does not exist")));
+    assert!(
+        !home.home().join(".omp").exists(),
+        "install creates no omp directory"
+    );
+}
+
+/// Each extension is the user's when it lacks install's first line: uninstall keeps it and removes
+/// the other runtime's extension install wrote.
+#[test]
+fn uninstall_keeps_an_extension_install_did_not_write() {
+    let home = Home::new();
+    home.install(SERVER);
+    let omp = home.home().join(".omp/agent/extensions/rexume.ts");
+    std::fs::write(&omp, "// the user's own extension\n").unwrap();
+    let out = home.run(&["uninstall"]);
+    let out = outcomes(&out);
+    assert_eq!(out[2], ("removed", None));
+    assert_eq!(out[3], ("kept", Some("not written by install")));
+    assert!(!home.home().join(".pi/agent/extensions/rexume.ts").exists());
+    assert_eq!(
+        std::fs::read_to_string(&omp).unwrap(),
+        "// the user's own extension\n"
+    );
 }
 
 /// A reload that fails part way leaves the definition differing or the job stopped, so the next

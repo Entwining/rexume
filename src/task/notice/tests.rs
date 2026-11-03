@@ -265,4 +265,5 @@ fn a_registered_waiter_keeps_the_notice_from_the_daemon() -> Result<()> {
 }
 
 mod blocked;
+mod inbox;
 mod pacing;

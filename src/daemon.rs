@@ -33,8 +33,8 @@ pub struct Options {
     pub cli: Cli,
     /// This executable, which restored panes run as their gate and the adapter runs as its relay.
     pub exe: PathBuf,
-    /// The home directory whose Claude Code plugin, Pi extension, and Claude Code turn hooks the
-    /// daemon refreshes when it starts.
+    /// The home directory whose Claude Code plugin, Pi and omp extensions, and Claude Code turn
+    /// hooks the daemon refreshes when it starts.
     pub home: PathBuf,
 }
 
@@ -91,12 +91,14 @@ pub fn run(options: &Options) -> Result<()> {
             });
         }
     }
-    // A daemon starts after every upgrade, so this is where a new extension reaches Pi; Pi without
-    // it only misses reports and notices, which is no reason to stop restoring.
-    match install::refresh_pi_extension(&options.home) {
-        Ok("updated") => log::info!("updated the Pi extension"),
-        Ok(_) => {}
-        Err(e) => log::warn!("failed to refresh the Pi extension: {e:#}"),
+    // A daemon starts after every upgrade, so this is where a new extension reaches Pi and omp; a
+    // runtime without it only misses reports and notices, which is no reason to stop restoring.
+    for (runtime, refreshed) in install::refresh_extensions(&options.home) {
+        match refreshed {
+            Ok("updated") => log::info!("updated the {runtime} extension"),
+            Ok(_) => {}
+            Err(e) => log::warn!("failed to refresh the {runtime} extension: {e:#}"),
+        }
     }
     // Likewise for the Claude Code plugin, without which notices and requests still arrive, framed
     // as another session's messages.

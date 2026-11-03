@@ -23,8 +23,8 @@ struct OwnerRecord {
     notices: Vec<(String, String)>,
 }
 
-/// Marks notices the owner's conversation has taken in, from its own record. Pi's extension
-/// renaming a notice to `.accepted` shows only that Pi holds it.
+/// Marks notices the owner's conversation has taken in, from its own record. The Pi or omp
+/// extension renaming a notice to `.accepted` shows only that the runtime holds it.
 pub(in crate::task) fn settle(
     store: &mut Store,
     receipts: &mut HashMap<PathBuf, Receipt>,
@@ -79,7 +79,7 @@ pub(in crate::task) fn settle(
                 receipts.remove(&path);
             }
         }
-        if record.runtime == Runtime::Pi {
+        if matches!(record.runtime, Runtime::Pi | Runtime::Omp) {
             interest
                 .files
                 .insert(pi::inbox(store.dir(), &record.native_id));

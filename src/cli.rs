@@ -74,11 +74,12 @@ impl Server {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Install the hooks, the Claude Code plugin, the Pi extension, and the daemon's job
+    /// Install the hooks, the Claude Code plugin, the Pi and omp extensions, and the daemon's job
     ///
     /// Writes Claude Code's SessionStart, UserPromptSubmit, Stop, and StopFailure hooks into
-    /// `~/.claude/settings.json`, a SessionStart hook into `~/.codex/hooks.json`, the
-    /// extension into `~/.pi/agent/extensions/rexume.ts`, and the job: the LaunchAgent
+    /// `~/.claude/settings.json`, a SessionStart hook into `~/.codex/hooks.json`, the Pi
+    /// extension into `~/.pi/agent/extensions/rexume.ts`, the omp extension into
+    /// `~/.omp/agent/extensions/rexume.ts`, and the job: the LaunchAgent
     /// `io.github.entwining.rexume` on macOS, the systemd user service `rexume.service` on Linux.
     /// Then writes the Claude Code plugin to `~/.local/share/rexume/claude-plugin` and registers it
     /// through the `claude` on `PATH`. Prints what changed as JSON. A runtime whose directory does
@@ -86,7 +87,7 @@ enum Command {
     Install(Server),
     /// Remove what install wrote, keeping the state directory and this executable
     ///
-    /// Removes the hooks, the Pi extension when install wrote it, and the job, which stops the
+    /// Removes the hooks, each extension install wrote, and the job, which stops the
     /// daemon, then the Claude Code plugin, through the `claude` on `PATH`. `~/.local/state/rexume`
     /// keeps the recorded panes, conversations, and task results; delete it to remove them too.
     Uninstall,

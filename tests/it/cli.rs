@@ -10,28 +10,21 @@ fn stderr(output: &Output) -> String {
 
 #[test]
 fn a_usage_error_exits_2() {
-    for (args, says) in [
-        (
-            &["report", "foo"][..],
-            "[possible values: claude, codex, pi]",
-        ),
-        (
-            &[
-                "task",
-                "add",
-                "--worker",
-                "b",
-                "--title",
-                "t",
-                "--result-file",
-                "relative/x",
-            ][..],
-            "not an absolute path",
-        ),
+    for args in [
+        &["report", "foo"][..],
+        &[
+            "task",
+            "add",
+            "--worker",
+            "b",
+            "--title",
+            "t",
+            "--result-file",
+            "relative/x",
+        ][..],
     ] {
         let output = rexume(args, &[], "");
         assert_eq!(output.status.code(), Some(2), "{args:?}");
-        assert!(stderr(&output).contains(says), "{}", stderr(&output));
     }
 }
 

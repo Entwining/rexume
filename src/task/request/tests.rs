@@ -8,19 +8,25 @@ use crate::task::notice::orphaned_sends;
 use crate::task::register::{Kind, start_round};
 use crate::task::tests::{record, task_world};
 
-/// Task `t` with a Pi worker `w` in pane `b` whose first round has finished, and a request round
-/// asking it to "go". Returns the request's ID.
-fn request_world(dir: &Path, transcript: &Path) -> Result<(Store, String)> {
+/// Task `t` with an inbox worker `w` in pane `b` whose first round has finished, and a request
+/// round asking it to "go". Returns the request's ID.
+fn request_world(dir: &Path, transcript: &Path, runtime: Runtime) -> Result<(Store, String)> {
     let mut store = task_world(dir, transcript, None)?;
     store.conn().execute(
         "INSERT INTO conversation (runtime, native_id, transcript, resumable, reported_at)
-         VALUES ('pi', 'w', ?1, 1, 50)",
-        params![transcript.to_string_lossy()],
+         VALUES (?1, 'w', ?2, 1, 50)",
+        params![runtime.as_str(), transcript.to_string_lossy()],
+    )?;
+    store.conn().execute(
+        "UPDATE occupant SET runtime = ?1, native_id = 'w' WHERE block_lineage = 'b'",
+        params![runtime.as_str()],
+    )?;
+    store.conn().execute(
+        "UPDATE task SET worker_runtime = ?1, worker_native_id = 'w'",
+        params![runtime.as_str()],
     )?;
     store.conn().execute_batch(
-        "UPDATE occupant SET runtime = 'pi', native_id = 'w' WHERE block_lineage = 'b';
-         UPDATE task SET worker_runtime = 'pi', worker_native_id = 'w';
-         UPDATE task_round SET state = 'completed', result = 'Done.', result_ref = 'a0', finished_at = 1;",
+        "UPDATE task_round SET state = 'completed', result = 'Done.', result_ref = 'a0', finished_at = 1;",
     )?;
     let tx = store.write()?;
     start_round(&tx, "t", &Kind::Request("go"))?;
@@ -39,11 +45,10 @@ fn request(store: &Store) -> Result<(String, Option<String>)> {
         })?)
 }
 
-#[test]
-fn a_request_is_sent_once_its_worker_is_idle_in_its_pane_and_settled_by_its_record() -> Result<()> {
+fn request_lifecycle(runtime: Runtime) -> Result<()> {
     let dir = tempfile::tempdir()?;
     let mut transcript = record(&[])?;
-    let (mut store, id) = request_world(dir.path(), transcript.path())?;
+    let (mut store, id) = request_world(dir.path(), transcript.path(), runtime)?;
     let inbox = pi::inbox(store.dir(), "w");
     let mut interest = Interest::default();
     send_due(&mut store, &mut interest)?;
@@ -113,10 +118,18 @@ fn a_request_is_sent_once_its_worker_is_idle_in_its_pane_and_settled_by_its_reco
 }
 
 #[test]
+fn a_request_is_sent_once_its_worker_is_idle_in_its_pane_and_settled_by_its_record() -> Result<()> {
+    for runtime in [Runtime::Pi, Runtime::Omp] {
+        request_lifecycle(runtime)?;
+    }
+    Ok(())
+}
+
+#[test]
 fn a_request_left_mid_send_becomes_unknown_and_is_not_sent_again() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = record(&[])?;
-    let (mut store, id) = request_world(dir.path(), transcript.path())?;
+    let (mut store, id) = request_world(dir.path(), transcript.path(), Runtime::Pi)?;
     store.conn().execute_batch(
         "UPDATE request SET state = 'sending';
          UPDATE block SET status = 'idle' WHERE lineage = 'b';",
@@ -134,7 +147,7 @@ fn a_request_left_mid_send_becomes_unknown_and_is_not_sent_again() -> Result<()>
 fn a_request_whose_round_ended_is_never_sent() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = record(&[])?;
-    let (mut store, id) = request_world(dir.path(), transcript.path())?;
+    let (mut store, id) = request_world(dir.path(), transcript.path(), Runtime::Pi)?;
     let tx = store.write()?;
     block_gone(&tx, "b")?;
     tx.commit()?;
@@ -157,7 +170,7 @@ fn a_request_whose_round_ended_is_never_sent() -> Result<()> {
 fn a_failed_send_drops_a_request_whose_round_ended() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = record(&[])?;
-    let (mut store, id) = request_world(dir.path(), transcript.path())?;
+    let (mut store, id) = request_world(dir.path(), transcript.path(), Runtime::Pi)?;
     let tx = store.write()?;
     assert_eq!(tx.execute(&CLAIM, params![id])?, 1);
     crate::task::outcome::end(&tx, "t", 2, "abandoned", None, None)?;

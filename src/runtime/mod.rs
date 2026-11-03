@@ -5,6 +5,7 @@
 pub mod claude;
 mod codex;
 mod lines;
+pub mod omp;
 pub mod pi;
 mod receipt;
 #[cfg(test)]
@@ -30,6 +31,8 @@ pub enum Runtime {
     Codex,
     /// Pi
     Pi,
+    /// oh-my-pi
+    Omp,
 }
 
 impl Runtime {
@@ -38,6 +41,7 @@ impl Runtime {
             Self::Claude => "claude",
             Self::Codex => "codex",
             Self::Pi => "pi",
+            Self::Omp => "omp",
         }
     }
 
@@ -49,6 +53,7 @@ impl Runtime {
             Self::Claude => claude::resume_argv(conversation),
             Self::Codex => codex::resume_argv(conversation),
             Self::Pi => pi::resume_argv(conversation),
+            Self::Omp => omp::resume_argv(conversation),
         }
     }
 
@@ -56,7 +61,7 @@ impl Runtime {
     pub fn resume_env(self, conversation: &Conversation) -> Vec<(String, String)> {
         match self {
             Self::Claude => claude::resume_env(conversation),
-            Self::Codex | Self::Pi => Vec::new(),
+            Self::Codex | Self::Pi | Self::Omp => Vec::new(),
         }
     }
 
@@ -65,7 +70,7 @@ impl Runtime {
     pub fn launch_settings(self, pid: u32) -> Map<String, Value> {
         match self {
             Self::Claude => claude::launch::settings(pid),
-            Self::Codex | Self::Pi => Map::new(),
+            Self::Codex | Self::Pi | Self::Omp => Map::new(),
         }
     }
 
@@ -80,16 +85,16 @@ impl Runtime {
     ) -> Option<PathBuf> {
         match self {
             Self::Claude => Some(claude::record(state_dir, native_id)),
-            Self::Codex | Self::Pi => transcript.map(PathBuf::from),
+            Self::Codex | Self::Pi | Self::Omp => transcript.map(PathBuf::from),
         }
     }
 
-    /// Whether the conversation can be reopened. Claude Code and Codex write a conversation's
-    /// record only with its first prompt and refuse to resume one without it; Pi opens a session
-    /// file that does not exist yet as a new session.
+    /// Whether the conversation can be reopened. Claude Code, Codex, and omp write a
+    /// conversation's record only with its first answer or prompt and refuse to resume one without
+    /// it; Pi opens a session file that does not exist yet as a new session.
     pub fn can_reopen(self, conversation: &Conversation) -> bool {
         match self {
-            Self::Claude | Self::Codex => conversation
+            Self::Claude | Self::Codex | Self::Omp => conversation
                 .transcript
                 .as_deref()
                 .is_none_or(|transcript| Path::new(transcript).exists()),
@@ -110,6 +115,8 @@ impl Runtime {
                 pi::settings(Path::new(&transcript), conversation);
                 Ok(())
             }
+            // omp restores the session's own model and thinking level from its file.
+            Self::Omp => Ok(()),
         }
     }
 
@@ -119,7 +126,7 @@ impl Runtime {
         match self {
             Self::Claude => claude::send(target, text),
             Self::Codex => codex::send(target, text),
-            Self::Pi => pi::send(target, state_dir, id, text),
+            Self::Pi | Self::Omp => pi::send(target, state_dir, id, text),
         }
     }
 
@@ -131,7 +138,7 @@ impl Runtime {
         match self {
             Self::Claude => false,
             Self::Codex => codex::received(record),
-            Self::Pi => pi::received(record),
+            Self::Pi | Self::Omp => pi::received(record),
         }
     }
 
@@ -145,7 +152,7 @@ impl Runtime {
         match self {
             Self::Claude => Parser::Claude(claude::Parser::default()),
             Self::Codex => Parser::Codex(codex::Parser::default()),
-            Self::Pi => Parser::Pi(pi::Parser::default()),
+            Self::Pi | Self::Omp => Parser::Pi(pi::Parser::default()),
         }
     }
 }
@@ -158,6 +165,7 @@ impl FromStr for Runtime {
             "claude" => Self::Claude,
             "codex" => Self::Codex,
             "pi" => Self::Pi,
+            "omp" => Self::Omp,
             _ => bail!("unknown runtime {name}"),
         })
     }

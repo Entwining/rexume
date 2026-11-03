@@ -2,7 +2,7 @@
 
 ![Rexume: Pick up where you left off. Worker results, returned.](https://github.com/user-attachments/assets/87e5b8a8-ec76-4532-b353-7384ea249325)
 
-Rexume reopens the Claude Code, Codex, or Pi conversations in your [Rex](https://www.superlogical.com/rex) sessions once the Rex server restores them after it stops. Only a turn cut off by that stop continues once. Finished, cancelled, or waiting conversations reopen without a new turn; panes you closed stay closed.
+Rexume reopens the Claude Code, Codex, Pi, or omp conversations in your [Rex](https://www.superlogical.com/rex) sessions once the Rex server restores them after it stops. Only a turn cut off by that stop continues once. Finished, cancelled, or waiting conversations reopen without a new turn; panes you closed stay closed.
 
 It also saves worker results and notifies the orchestrator conversation that registered the worker, even while the orchestrator is idle.
 
@@ -12,17 +12,17 @@ Rexume runs on macOS and Linux.
 
 Rex restores its own sessions after its server stops: their tabs, panes, and labels come back under the same IDs, with a new login shell in each pane. Rexume needs that: the Rex app 0.1.0-preview.23 or later on macOS, or the Rex server 0.1.0-preview.11 or later on Linux. The first restart after upgrading Rex brings nothing back, because the earlier server saved nothing.
 
-In each restored pane that ran a Claude Code, Codex, or Pi conversation, Rexume reopens that conversation once the pane shows its shell's prompt with nothing typed at it:
+In each restored pane that ran a Claude Code, Codex, Pi, or omp conversation, Rexume reopens that conversation once the pane shows its shell's prompt with nothing typed at it:
 
 - **An interrupted conversation continues once.** When the conversation was working and its own record shows a turn that had not ended, it reopens with one prompt to continue.
 - **A conversation reopens without a new turn** when it was still the pane's program, or when the pane was created to run it and it had exited.
-- **The shell stays** in every other pane, including one whose conversation had already left it, one whose conversation another pane reopens, a Claude Code or Codex conversation that had no prompt yet, and a run its runtime keeps no record of to reopen, such as an ephemeral `codex exec` or `pi -p`. Other programs are not restarted.
+- **The shell stays** in every other pane, including one whose conversation had already left it, one whose conversation another pane reopens, a Claude Code, Codex, or omp conversation that had no session record yet, and a run its runtime keeps no record of to reopen, such as an ephemeral `codex exec`, `pi -p`, or `omp -p`. Other programs are not restarted.
 
 Rexume reopens a conversation by typing a short `rexume gate` line into the pane's shell, which then runs the conversation the way you would, through your alias or shell function for the agent's command. A line that starts with a space, as this one does, stays out of a shell history that ignores such lines. Rexume types nothing into a pane where you started typing, or where another program runs, and stops waiting after 30 seconds, so the pane is yours. It does not reopen the same conversation in two panes.
 
 Rex does not bring back a pane's earlier output yet, so a restored pane starts with an empty screen.
 
-Conversations reopen with the model and effort they last used. Claude Code also keeps the provider and the [launch flags](docs/cli.md#report) it was started with, such as `--remote-control`. A reopened conversation keeps its permission mode: a Claude Code conversation reopens in the mode its record last shows, including bypass mode, which Claude Code's own resume does not bring back; Codex restores its approval policy and permissions itself; Pi has no permission modes.
+Conversations reopen with the model and effort they last used. Claude Code also keeps the provider and the [launch flags](docs/cli.md#report) it was started with, such as `--remote-control`. A reopened conversation keeps its permission mode: a Claude Code conversation reopens in the mode its record last shows, including bypass mode, which Claude Code's own resume does not bring back; Codex restores its approval policy and permissions itself; Pi has no permission modes. omp takes its approval mode from its launch flags and settings rather than its session, so an omp conversation started with `--approval-mode` or `--yolo` reopens in the mode its settings give.
 
 ## Install
 
@@ -70,10 +70,11 @@ rexume install
 | Claude Code plugin `rexume`, which turns notices and requests into your own prompts, registered through the `claude` on your `PATH` | `~/.local/share/rexume/claude-plugin` |
 | Codex `SessionStart` hook | `~/.codex/hooks.json` |
 | Pi extension | `~/.pi/agent/extensions/rexume.ts` |
+| omp extension | `~/.omp/agent/extensions/rexume.ts` |
 | On macOS, LaunchAgent `io.github.entwining.rexume`, which runs `rexume daemon` | `~/Library/LaunchAgents/io.github.entwining.rexume.plist` |
 | On Linux, systemd user service `rexume.service`, which runs `rexume daemon` | `~/.config/systemd/user/rexume.service` |
 
-A runtime whose directory does not exist is skipped, and the JSON says so; if you install Claude Code, Codex, or Pi later, run `rexume install` again once it is set up. Running it again leaves one copy of each entry and keeps your other hooks and settings; [docs/cli.md](docs/cli.md#how-install-recognizes-its-entries) describes how it recognizes its entries.
+A runtime whose directory does not exist is skipped, and the JSON says so: Pi needs `~/.pi/agent` and omp needs `~/.omp/agent`, and install creates neither. If you install Claude Code, Codex, Pi, or omp later, run `rexume install` again once it is set up. Running it again leaves one copy of each entry and keeps your other hooks and settings; [docs/cli.md](docs/cli.md#how-install-recognizes-its-entries) describes how it recognizes its entries.
 
 Codex runs a new hook only after you approve it: open `/hooks` in Codex and trust the `rexume report codex` entry.
 
@@ -93,7 +94,7 @@ Agents started before `install` are recorded from their next session start. Seei
 
 ### Upgrade
 
-Upgrading the program, with `brew upgrade` or by installing over it, is enough: the daemon notices that its executable was replaced, its job starts the new one, and it replaces the Pi extension `install` wrote when the new version's differs, and adds the Claude Code hooks a new version needs beside the `SessionStart` hook `install` wrote. It never creates the extension, or a Claude Code hook without that `SessionStart` hook, so a removed extension stays removed, and so does a Claude Code turn hook once you remove the `SessionStart` hook with it. It likewise rewrites the Claude Code plugin's files but never creates their directory, so an installation from before the plugin gets it only when you run `rexume install` again; a running Claude Code session picks up a new plugin when it starts again or on `/reload-plugins`.
+Upgrading the program, with `brew upgrade` or by installing over it, is enough: the daemon notices that its executable was replaced, its job starts the new one, and it replaces the Pi and omp extensions `install` wrote when the new version's differ, and adds the Claude Code hooks a new version needs beside the `SessionStart` hook `install` wrote. It never creates an extension, or a Claude Code hook without that `SessionStart` hook, so a removed extension stays removed, and so does a Claude Code turn hook once you remove the `SessionStart` hook with it. It likewise rewrites the Claude Code plugin's files but never creates their directory, so an installation from before the plugin gets it only when you run `rexume install` again; a running Claude Code session picks up a new plugin when it starts again or on `/reload-plugins`. An installation from before omp support gets the omp extension only when you run `rexume install` again.
 
 ## Check a restore
 
@@ -151,7 +152,7 @@ These are Rexume's own trade-offs:
 rexume uninstall
 ```
 
-This removes Rexume's hooks (and any hook group left empty), the Claude Code plugin, through the `claude` on your `PATH`, the Pi extension if `install` wrote it, and the LaunchAgent or systemd service, which stops the daemon. It keeps `~/.local/state/rexume`, which holds recorded panes, conversations, and task results; delete that directory to remove them too. Then remove the program with `brew uninstall rexume`, or delete `~/.local/bin/rexume`.
+This removes Rexume's hooks (and any hook group left empty), the Claude Code plugin, through the `claude` on your `PATH`, the Pi and omp extensions if `install` wrote them, and the LaunchAgent or systemd service, which stops the daemon. It keeps `~/.local/state/rexume`, which holds recorded panes, conversations, and task results; delete that directory to remove them too. Then remove the program with `brew uninstall rexume`, or delete `~/.local/bin/rexume`.
 
 ## Contributing
 

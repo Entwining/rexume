@@ -1,11 +1,12 @@
 //! `rexume install` and `rexume uninstall`: the hooks of Claude Code and Codex, the Claude Code
-//! plugin, the Pi extension, and the job that runs the daemon, a LaunchAgent on macOS and a
-//! systemd user service on Linux. The daemon also refreshes the plugin and the Pi extension and
+//! plugin, the Pi and omp extensions, and the job that runs the daemon, a LaunchAgent on macOS and
+//! a systemd user service on Linux. The daemon also refreshes the plugin and the extensions and
 //! adds Claude Code's turn hooks. Each entry is recognized by its identity (the hook's command, the
-//! plugin's name, the extension's and the job's paths), so install changes only what is missing or
+//! plugin's name, the extensions' and the job's paths), so install changes only what is missing or
 //! different, and uninstall removes only these entries.
 
 mod claude_plugin;
+mod extension;
 #[cfg(target_os = "macos")]
 mod launch_agent;
 #[cfg(target_os = "linux")]
@@ -23,8 +24,8 @@ use serde_json::{Value, json};
 use systemd_unit as job;
 
 pub use claude_plugin::refresh as refresh_claude_plugin;
-
-use crate::runtime::pi;
+pub use extension::refresh_extensions;
+use extension::{OMP_EXTENSION, PI_EXTENSION};
 
 /// What the job runs.
 pub struct Install {
@@ -39,7 +40,6 @@ pub struct Install {
 struct Targets {
     claude: PathBuf,
     codex: PathBuf,
-    pi: PathBuf,
 }
 
 impl Targets {
@@ -47,7 +47,6 @@ impl Targets {
         Self {
             claude: home.join(".claude/settings.json"),
             codex: home.join(".codex/hooks.json"),
-            pi: home.join(".pi/agent/extensions/rexume.ts"),
         }
     }
 }
@@ -104,10 +103,8 @@ pub fn install(home: &Path, install: &Install) -> Result<Value> {
         &CODEX_EVENTS,
         &json!({ "command": "rexume report codex", "timeout": 5, "type": "command" }),
     )?;
-    let extension = match targets.pi.parent().and_then(Path::parent) {
-        Some(agent) if agent.is_dir() => (write(&targets.pi, pi::EXTENSION.as_bytes())?, None),
-        _ => ("skipped", Some("`~/.pi/agent` does not exist".to_owned())),
-    };
+    let pi = PI_EXTENSION.install(home)?;
+    let omp = OMP_EXTENSION.install(home)?;
     let daemon = job::install(install, home)?;
     // Last: notices and requests reach Claude Code without the plugin, so a failing `claude`
     // leaves only the plugin for the next install.
@@ -116,7 +113,8 @@ pub fn install(home: &Path, install: &Install) -> Result<Value> {
         ("claude_hook", claude),
         (claude_plugin::KEY, plugin),
         ("codex_hook", codex),
-        ("pi_extension", extension),
+        ("pi_extension", pi),
+        ("omp_extension", omp),
         (job::KEY, (daemon, None)),
     ]);
     out[job::NAME_KEY] = json!(job::NAME);
@@ -126,12 +124,13 @@ pub fn install(home: &Path, install: &Install) -> Result<Value> {
 /// `path` is the `PATH` through which uninstall finds `claude`.
 pub fn uninstall(home: &Path, path: &str) -> Result<Value> {
     let targets = Targets::new(home);
-    // The daemon rewrites the plugin and the Pi extension when it starts, so it is stopped before
+    // The daemon rewrites the plugin and the extensions when it starts, so it is stopped before
     // they are removed.
     job::unload(home)?;
     let claude = remove_hook(&targets.claude, "claude", &CLAUDE_EVENTS)?;
     let codex = remove_hook(&targets.codex, "codex", &CODEX_EVENTS)?;
-    let extension = remove_file(&targets.pi, |text| text.starts_with(pi::WRITTEN_BY))?;
+    let pi = PI_EXTENSION.uninstall(home)?;
+    let omp = OMP_EXTENSION.uninstall(home)?;
     let daemon = job::remove(home)?;
     // Last, so that a missing or failing `claude` leaves only the plugin for the next uninstall.
     let plugin = claude_plugin::uninstall(home, path)?;
@@ -139,23 +138,10 @@ pub fn uninstall(home: &Path, path: &str) -> Result<Value> {
         ("claude_hook", (claude, None)),
         (claude_plugin::KEY, (plugin, None)),
         ("codex_hook", (codex, None)),
-        ("pi_extension", extension),
+        ("pi_extension", pi),
+        ("omp_extension", omp),
         (job::KEY, daemon),
     ]))
-}
-
-/// Rewrites the Pi extension install wrote when it differs from this version's, so that an
-/// upgrade reaches Pi without another install. A missing file stays missing, so that uninstall
-/// stays final, and a file install did not write is left as it is. Returns `updated`,
-/// `unchanged`, `absent`, or `kept`.
-pub fn refresh_pi_extension(home: &Path) -> Result<&'static str> {
-    let path = Targets::new(home).pi;
-    match std::fs::read_to_string(&path) {
-        Ok(text) if text.starts_with(pi::WRITTEN_BY) => write(&path, pi::EXTENSION.as_bytes()),
-        Ok(_) => Ok("kept"),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok("absent"),
-        Err(e) => Err(e).with_context(|| format!("failed to read `{}`", path.display())),
-    }
 }
 
 /// Adds the Claude Code turn hooks an earlier install did not write, once Rexume's session-start

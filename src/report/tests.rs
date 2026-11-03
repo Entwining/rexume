@@ -10,6 +10,19 @@ fn a_pi_session_without_a_file_is_recorded_but_not_resumable() -> Result<()> {
 }
 
 #[test]
+fn an_omp_report_names_its_session_file_and_no_settings() -> Result<()> {
+    let input = json!({"session_id": "s", "session_file": "/o/s.jsonl", "session_file_size": 7,
+                       "mode": "tui", "agent": "main", "model": "m"});
+    let report = parse(Runtime::Omp, &input)?;
+    assert!(report.resumable && report.role == Role::Own && report.settings.is_empty());
+    assert_eq!(
+        (report.transcript.as_deref(), report.record_length),
+        (Some("/o/s.jsonl"), Some(7))
+    );
+    Ok(())
+}
+
+#[test]
 fn a_resumed_claude_conversation_keeps_its_launch_model() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let mut store = Store::open(dir.path())?;
@@ -191,6 +204,17 @@ fn an_agents_inner_sessions_do_not_replace_the_pane_conversation() -> Result<()>
                 .map(|mode| json!({"session_id": "inner", "mode": mode, "model": "small"}))
                 .to_vec(),
         ),
+        (
+            Runtime::Omp,
+            json!({"session_id": "main", "session_file": "/o/main.jsonl", "mode": "tui",
+                   "agent": "main"}),
+            vec![
+                json!({"session_id": "inner", "session_file": "/o/inner.jsonl", "mode": "print",
+                       "agent": "sub"}),
+                json!({"session_id": "inner", "session_file": "/o/inner.jsonl", "mode": "tui",
+                       "agent": "sub"}),
+            ],
+        ),
     ];
     for (runtime, main, inner) in cases {
         let inputs: Vec<_> = std::iter::once(&main)
@@ -229,6 +253,14 @@ fn a_new_process_takes_the_pane_even_without_the_runtimes_mark() -> Result<()> {
             Runtime::Pi,
             json!({"session_id": "old", "session_file": "/p/old.jsonl", "mode": "tui"}),
             json!({"session_id": "new", "session_file": "/p/new.jsonl", "mode": "print"}),
+            false,
+        ),
+        (
+            Runtime::Omp,
+            json!({"session_id": "old", "session_file": "/o/old.jsonl", "mode": "tui",
+                   "agent": "main"}),
+            json!({"session_id": "new", "session_file": "/o/new.jsonl", "mode": "print",
+                   "agent": "main"}),
             false,
         ),
     ];

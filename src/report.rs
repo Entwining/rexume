@@ -36,13 +36,14 @@ pub struct Report {
     /// it sets to `null` is removed.
     pub settings: Map<String, Value>,
     /// The record's length when the session started, from a runtime that measures it itself: the
-    /// Pi extension, which goes on with the session while its report runs. A hook holds the
+    /// Pi and omp extensions, which go on with the session while their report runs. A hook holds the
     /// session until the report ends, so the report measures it for Claude Code and Codex.
     pub record_length: Option<u64>,
 }
 
 /// Reads the hook's JSON input. Claude Code and Codex send their hook input; the Pi extension sends
-/// `session_id`, `session_file`, `session_file_size`, `mode`, `provider`, `model`, and `thinking`.
+/// `session_id`, `session_file`, `session_file_size`, `mode`, `provider`, `model`, and `thinking`,
+/// and the omp extension `session_id`, `session_file`, `session_file_size`, `mode`, and `agent`.
 pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
     let text = |key: &str| {
         input
@@ -56,11 +57,13 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
     // with `agent_id`. Codex records every interactive conversation, and none of its guardian
     // reviews or side conversations, nor an ephemeral `codex exec` run. Pi runs the pane's
     // interactive session in `tui` mode, and an SDK session an extension creates starts in
-    // `print` mode, as `pi -p` does.
+    // `print` mode, as `pi -p` does. omp runs its extensions in each subagent session too, which
+    // it marks with `agent` `sub`.
     let role = match runtime {
         Runtime::Claude if input.get("agent_id").is_some_and(|v| !v.is_null()) => Role::Inner,
         Runtime::Codex if text("transcript_path").is_none() => Role::Unmarked,
-        Runtime::Pi if text("mode").as_deref() != Some("tui") => Role::Unmarked,
+        Runtime::Omp if text("agent").as_deref() == Some("sub") => Role::Inner,
+        Runtime::Pi | Runtime::Omp if text("mode").as_deref() != Some("tui") => Role::Unmarked,
         _ => Role::Own,
     };
     // Each runtime's resume command reads these keys (`runtime::*::resume_argv`).
@@ -79,7 +82,7 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
             settings: settings_from(&[("model", "model"), ("effort", "effort")]),
             record_length: None,
         },
-        Runtime::Pi => {
+        Runtime::Pi | Runtime::Omp => {
             let file = text("session_file");
             Report {
                 native_id: text("session_id")
@@ -88,11 +91,15 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
                 role,
                 resumable: role == Role::Own && file.is_some(),
                 transcript: file,
-                settings: settings_from(&[
-                    ("provider", "provider"),
-                    ("model", "model"),
-                    ("thinking", "effort"),
-                ]),
+                // omp takes the model and thinking level from the session file it resumes.
+                settings: match runtime {
+                    Runtime::Pi => settings_from(&[
+                        ("provider", "provider"),
+                        ("model", "model"),
+                        ("thinking", "effort"),
+                    ]),
+                    _ => Map::new(),
+                },
                 record_length: input.get("session_file_size").and_then(Value::as_u64),
             }
         }
