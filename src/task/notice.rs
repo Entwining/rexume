@@ -138,11 +138,11 @@ struct Due {
 /// `task wait` will take it, and returns when the next notice comes due.
 ///
 /// An owner gets one notice at a time: the next waits until the owner's record shows the last one
-/// or its pane reports a status after the send, and the owner is between turns again. Codex and Pi
-/// run one queued message per turn and Claude Code holds what arrives during a turn, so sending the
-/// rest at once saves no turn; it only moves them from this outbox, where `task wait`, `task ack`,
-/// and `task release` can still drop them, into the runtime's queue, where Codex replays them on
-/// resume and Pi loses them on exit.
+/// or its pane reports a status after the send, and the owner is between turns again. Codex, Pi,
+/// and omp run one queued message per turn and Claude Code holds what arrives during a turn, so
+/// sending the rest at once saves no turn; it only moves them from this outbox, where `task wait`,
+/// `task ack`, and `task release` can still drop them, into the runtime's queue, where Codex
+/// replays them on resume and Pi and omp lose them on exit.
 pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Option<Instant>> {
     let pending: Vec<Due> = store
         .conn()
