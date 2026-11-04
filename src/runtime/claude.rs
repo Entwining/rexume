@@ -18,12 +18,12 @@ use crate::store::new_id;
 /// `send` writes and submits them as the user's own prompts.
 pub const PLUGIN: &str = include_str!("claude/plugin.ts");
 
-/// Claude Code takes the model and effort of a resumed session from the command line; its session
-/// start leaves them out on resume, so the reported launch settings are what reopen it. Its resume
-/// starts a session that was bypassing permissions in a new session's mode, and a Manual one in a
-/// settings `defaultMode`, so the mode the record shows is passed too. Launch flags go before
-/// `--resume`, so a continuation prompt the gate appends stays positional after an optional or
-/// variadic value.
+/// Claude Code's resume does not bring back the effort a session ran at, nor the model on a
+/// provider with its own deployment IDs, so the model and effort its record last shows
+/// (`settings`) are passed. Its resume starts a session that was bypassing permissions in a new
+/// session's mode, and a Manual one in a settings `defaultMode`, so the mode the record shows is
+/// passed too. Launch flags go before `--resume`, so a continuation prompt the gate appends stays
+/// positional after an optional or variadic value.
 pub fn resume_argv(c: &Conversation) -> Vec<String> {
     let mut argv = vec!["claude"];
     argv.extend(c.setting_strings("launch_flags"));
@@ -48,12 +48,42 @@ pub fn resume_env(c: &Conversation) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The permission mode the conversation was last in. Claude Code writes it on each prompt and in
-/// a `permission-mode` entry when a turn ends and when the session exits, so a mode changed after
-/// the last prompt is there too.
+/// The model, effort, and permission mode the conversation last used.
+///
+/// Each answer records the model as it was requested, which keeps a context-window suffix such
+/// as `[1m]` that the response's model drops, and the effort when the request had one; the last
+/// answer counts, so a model switched to after the session started, or one without effort levels,
+/// is what reopens. A synthetic answer, which Claude Code writes itself, as for an API error, ran
+/// no model. An answer in a turn that invoked a skill names it in `attributionSkill` and may run
+/// at the model and effort the skill sets for that turn alone, so the answer before such turns
+/// counts.
+///
+/// Claude Code writes the permission mode on each prompt and in a `permission-mode` entry when a
+/// turn ends and when the session exits, so a mode changed after the last prompt is there too.
 pub fn settings(transcript: &Path, conversation: &mut Conversation) -> Result<()> {
+    let main_chain =
+        |record: &Value| record.get("isSidechain").and_then(Value::as_bool) != Some(true);
+    let used = last_record(transcript, "\"type\":\"assistant\"", |record| {
+        if record.get("type").and_then(Value::as_str) != Some("assistant")
+            || !main_chain(record)
+            || record.pointer("/message/model").and_then(Value::as_str) == Some("<synthetic>")
+            || record.get("attributionSkill").is_some()
+        {
+            return None;
+        }
+        let text = |field: &str| record.get(field).and_then(Value::as_str).map(str::to_owned);
+        Some([
+            ("model", text("requestedModel")),
+            ("effort", text("effort")),
+        ])
+    })?;
+    for (key, value) in used.into_iter().flatten() {
+        if let Some(value) = value {
+            conversation.settings.insert(key.to_owned(), value.into());
+        }
+    }
     let mode = last_record(transcript, "\"permissionMode\"", |record| {
-        if record.get("isSidechain").and_then(Value::as_bool) == Some(true) {
+        if !main_chain(record) {
             return None;
         }
         record.get("permissionMode")?.as_str().map(str::to_owned)

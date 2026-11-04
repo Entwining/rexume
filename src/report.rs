@@ -78,7 +78,8 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
             role,
             transcript: text("transcript_path"),
             resumable: role == Role::Own,
-            settings: settings_from(&[("model", "model"), ("effort", "effort")]),
+            // Neither runtime's session start carries the effort; plan time reads it from each record.
+            settings: settings_from(&[("model", "model")]),
             record_length: None,
         },
         Runtime::Pi => {
