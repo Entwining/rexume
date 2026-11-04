@@ -129,6 +129,7 @@ Most of these come from what Rex and the agents expose; the others are trade-off
 - A startup file that reads from the terminal, such as one that asks a question, takes the line the terminal holds for the first prompt, so the gate does not run and the restore ends `unknown`.
 - Rex saves its sessions about a second after a change, so a change within that second before a crash is not restored.
 - `rex` calls outside the adapter and `codex queue` have no deadline, so a server or Codex that never answers holds up the daemon or the task command that called it.
+- The adapter's script makes one server call at a time and the daemon waits for each answer, so a call the server holds delays everything the daemon does after it, such as the remaining restores. The daemon gives up on a call after 30 seconds, but until the server answers it, each later call through the same adapter waits behind it. The daemon's log warns of a slow call when it ends ([cli.md](cli.md#daemon)).
 - A notice or request whose send failed before anything left is tried again only on the daemon's next pass, which a change on the server or in the database starts; no timer retries it.
 - A restore step that fails on a database or server error leaves the restore in the state it reached, and it is followed again only when the daemon next connects to the server.
 - A non-interactive run's exit is attributed to its task by the pane's foreground program at `task add`, so `add` belongs right after the worker starts, and an interactive worker is prompted again only through `task send`.
@@ -152,12 +153,14 @@ Most of these come from what Rex and the agents expose; the others are trade-off
 
 ## Measurements
 
-`cargo test --release --test it bench -- --ignored --nocapture` starts its own server with 20 sessions of three panes each, runs the daemon against it, and prints one JSON report. It runs only on macOS, whose accounting of memory and wakeups it reads. It asserts nothing: read the report against the goals in [AGENTS.md](../AGENTS.md), and a change's report against the baseline commit's from the same machine. `REXUME_BENCH_GOGC` sets `GOGC` for the daemon's `rex do`.
+`cargo test --release --test it bench -- --ignored --nocapture` starts its own server with 20 sessions of three panes each, runs the daemon against it, and prints one JSON report. It runs only on macOS, whose accounting of memory and wakeups it reads. It asserts nothing: read the report against the goals in [AGENTS.md](../AGENTS.md), and a change's report against the baseline commit's from the same machine and Rex server version. `REXUME_BENCH_GOGC` sets `GOGC` for the daemon's `rex do`.
 
 | Key | What it measures |
 | --- | --- |
+| `rex_version` | The version of the Rex server the bench ran against. |
 | `idle_30s` | The daemon's CPU seconds and the idle wakeups `top` counts over 30 seconds with nothing happening; both should be 0. |
 | `memory_kib` | The daemon, `rex do`, and the relay, each the median of three samples a second apart. `rss` (`ps -o rss`) counts shared and clean file pages in every process that maps them; `phys_footprint` (`top`'s `MEM`) counts what the kernel charges to the process, including compressed pages. `rex do` is Rex's own client and Go runtime. |
 | `title_changes_50_calls` | Server calls the daemon made while a pane changed its title 50 times; should be 0. |
 | `daemon_children` | The daemon's child processes seen through the title changes and the restore; only `rex do`, one per server instance, is expected, since no process starts per event. |
 | `resume_20_conversations_ms` | The time from the new server's start, which restores the sessions itself, until each session's conversation has been claimed by its gate. |
+| `resume_slowest_call` | The server call the daemon waited on longest during that restore, and for how many milliseconds. Since the daemon makes one call at a time, a restore that took far longer than usual and whose slowest call took most of that time waited on that call, not on the daemon's own work. |

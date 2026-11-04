@@ -15,6 +15,10 @@ use super::{CallError, classify};
 /// A call the server leaves unanswered this long is treated as lost.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
+/// A call that takes this long alone uses up the second that restoring 20 sessions should take,
+/// while the bench's calls take tens of milliseconds.
+const SLOW_CALL: Duration = Duration::from_secs(1);
+
 pub struct Pipe {
     stream: UnixStream,
     unread: Vec<u8>,
@@ -40,7 +44,27 @@ impl Pipe {
     }
 
     pub fn call(&mut self, method: &str, params: &Value) -> Result<Value, CallError> {
-        log::debug!("call {method}");
+        let started = Instant::now();
+        let result = self.exchange(method, params);
+        let took = started.elapsed();
+        log::log!(
+            if took >= SLOW_CALL {
+                log::Level::Warn
+            } else {
+                log::Level::Debug
+            },
+            "call {method}{} took {} ms",
+            params
+                .get("method")
+                .and_then(Value::as_str)
+                .map(|inner| format!(" {inner}"))
+                .unwrap_or_default(),
+            took.as_millis()
+        );
+        result
+    }
+
+    fn exchange(&mut self, method: &str, params: &Value) -> Result<Value, CallError> {
         self.next_id += 1;
         let id = self.next_id;
         let line = json!({ "id": id, "method": method, "params": params }).to_string() + "\n";

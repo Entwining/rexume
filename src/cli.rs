@@ -94,8 +94,8 @@ enum Command {
     /// Follow the Rex server and reopen the conversations of the panes it restores
     ///
     /// The job install writes runs this. It runs until stopped, logs to stderr, and exits at once
-    /// when another daemon holds the same state directory. Set `RUST_LOG=rexume=debug` to log
-    /// every call it makes through its adapter.
+    /// when another daemon holds the same state directory. A call through its adapter that took
+    /// a second or longer is logged as a warning; set `RUST_LOG=rexume=debug` to log every call.
     Daemon {
         #[command(flatten)]
         server: Server,

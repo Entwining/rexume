@@ -138,6 +138,17 @@ fn calls(daemon: &Daemon, method: &str) -> usize {
     daemon.log().matches(&format!("call {method}")).count()
 }
 
+/// The server call among the daemon's log `lines` that took longest, and its milliseconds.
+fn slowest_call<'a>(lines: impl Iterator<Item = &'a str>) -> Option<(&'a str, u64)> {
+    lines
+        .filter_map(|line| {
+            let (_, call) = line.split_once("] call ")?;
+            let (name, took) = call.rsplit_once(" took ")?;
+            Some((name, took.strip_suffix(" ms")?.parse().ok()?))
+        })
+        .max_by_key(|(_, ms)| *ms)
+}
+
 #[test]
 #[ignore = "measurement; needs a Rex server"]
 #[expect(
@@ -241,6 +252,7 @@ fn bench() {
             "SELECT end_reason FROM epoch WHERE end_reason IS NOT NULL",
         )
     });
+    let logged = daemon.log().lines().count();
     let started = Instant::now();
     server = Server::start(dir.path(), Some(&bin));
     let instance = server.instance();
@@ -250,20 +262,26 @@ fn bench() {
         .then_some(())
     });
     let restore = started.elapsed();
+    let log = daemon.log();
     stop.store(true, Ordering::Relaxed);
     sampler.join().unwrap();
+    let (slowest, slowest_ms) =
+        slowest_call(log.lines().skip(logged)).expect("the restore's calls in the daemon's log");
+    let rex_version = server.call("server.version", &json!({}))["rex_version"].clone();
 
     let totals = |measure: fn(&(u64, u64)) -> u64| {
         let [daemon, rex_do, relay] = [0, 1, 2].map(|i| measure(&memory[i]));
         json!({ "daemon": daemon, "rex_do": rex_do, "relay": relay, "total": daemon + rex_do + relay })
     };
     let report = json!({
+        "rex_version": rex_version,
         "gogc": gogc,
         "idle_30s": { "daemon_cpu_seconds": idle_cpu, "daemon_idle_wakeups": wakeups },
         "memory_kib": { "rss": totals(|m| m.0), "phys_footprint": totals(|m| m.1) },
         "title_changes_50_calls": title_calls,
         "daemon_children": seen.lock().unwrap().iter().map(|(pid, name)| format!("{pid} {name}")).collect::<Vec<_>>(),
         "resume_20_conversations_ms": restore.as_millis(),
+        "resume_slowest_call": { "call": slowest, "ms": slowest_ms },
     });
     println!("{}", serde_json::to_string_pretty(&report).unwrap());
 }
