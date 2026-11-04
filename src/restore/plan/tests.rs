@@ -296,4 +296,5 @@ fn a_conversation_without_a_record_yet_reopens_only_in_pi() -> Result<()> {
 }
 
 mod mode;
+mod model;
 mod two_panes;
