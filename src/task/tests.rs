@@ -249,7 +249,7 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
         Some("notice_finished"),
         Some("notice_blocked_unsent"),
     );
-    let statements: [(&str, &str, Option<&str>); 26] = [
+    let statements: [(&str, &str, Option<&str>); 28] = [
         ("OPEN_ROUNDS", &OPEN_ROUNDS, open),
         ("outcome::ROUND", &outcome::ROUND, None),
         ("evidence::PANE", evidence::PANE, None),
@@ -263,6 +263,7 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
         ("notice::receipt::SENT", notice::receipt::SENT, None),
         ("notice::READY_OWNER", notice::READY_OWNER, None),
         ("notice::CLAIM", notice::CLAIM, None),
+        ("notice::STILL_WANTED", &notice::STILL_WANTED, None),
         (
             "notice::SUPERSEDE_FINISHED",
             &notice::SUPERSEDE_FINISHED,
@@ -280,6 +281,7 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
         ("request::PENDING", &request::PENDING, open),
         ("request::WORKER", request::WORKER, None),
         ("request::CLAIM", &request::CLAIM, None),
+        ("request::ROUND_OPEN", &request::ROUND_OPEN, None),
         ("request::SENT_TO_PI", &request::SENT_TO_PI, open),
         ("restore::OPEN_RESTORES", restore::OPEN_RESTORES, None),
         ("restore::OPENED_ELSEWHERE", restore::OPENED_ELSEWHERE, None),

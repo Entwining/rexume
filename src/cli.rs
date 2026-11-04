@@ -101,9 +101,9 @@ enum Command {
         #[command(flatten)]
         state: StateDir,
     },
-    /// Show restores that did not finish and notices not yet confirmed
+    /// Show unfinished restores, unconfirmed notices still needed, and missing Claude Code hooks
     ///
-    /// Reads the state database without changing it.
+    /// Reads the state database and the Claude Code settings without changing them.
     Status(StateDir),
     /// Record the conversation starting in this pane, or a Claude Code turn; the hooks run this
     ///
@@ -218,7 +218,9 @@ fn run(command: Command) -> Result<Option<(Value, u8)>> {
             };
             daemon::run(&options).map(|()| None)
         }
-        Command::Status(state) => status::run(&state.resolve()?).map(|value| Some((value, 0))),
+        Command::Status(state) => {
+            status::run(&state.resolve()?, &home()?).map(|value| Some((value, 0)))
+        }
         Command::Task { command, state } => task::run(command, &state.resolve()?).map(Some),
         Command::Relay { socket, token } => rex::relay::run(&socket, &token).map(|()| None),
         Command::Report { .. } | Command::Gate { .. } => unreachable!("handled in main"),

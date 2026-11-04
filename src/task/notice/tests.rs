@@ -203,6 +203,43 @@ fn a_failed_send_stays_pending_and_is_listed_with_its_reason() -> Result<()> {
     Ok(())
 }
 
+/// The owner's acknowledgement makes a notice moot without being a receipt: the notice leaves the
+/// list and stays `sent`.
+#[test]
+fn a_notice_of_an_acknowledged_round_is_not_listed() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = tempfile::NamedTempFile::new()?;
+    let (mut store, _listener) = notice_world(dir.path(), transcript.path(), "sent")?;
+    let owner = Some((Runtime::Claude, "owner"));
+    assert_eq!(undelivered(store.conn(), owner)?.len(), 1);
+    let tx = store.write()?;
+    crate::task::register::acknowledge(&tx, "t", 1, "taken by task ack")?;
+    tx.commit()?;
+    assert!(undelivered(store.conn(), owner)?.is_empty());
+    assert!(undelivered(store.conn(), None)?.is_empty());
+    assert_eq!(notice(&store)?.0, "sent");
+    Ok(())
+}
+
+/// Acknowledgement leaves a `sending` notice unchanged. If the send then fails before anything
+/// leaves, recording that failure supersedes the notice instead of returning it to `pending`.
+#[test]
+fn a_failed_send_drops_a_notice_of_a_round_acknowledged_meanwhile() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = tempfile::NamedTempFile::new()?;
+    let (mut store, _listener) = notice_world(dir.path(), transcript.path(), "pending")?;
+    let tx = store.write()?;
+    assert!(claim(&tx, "d", None)?);
+    crate::task::register::acknowledge(&tx, "t", 1, "taken by task ack")?;
+    record_send(&tx, "d", ("pending", Some("failed to connect".to_owned())))?;
+    tx.commit()?;
+    assert_eq!(
+        notice(&store)?,
+        ("superseded".to_owned(), Some(ACKED.to_owned()))
+    );
+    Ok(())
+}
+
 #[test]
 fn a_registered_waiter_keeps_the_notice_from_the_daemon() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -227,69 +264,5 @@ fn a_registered_waiter_keeps_the_notice_from_the_daemon() -> Result<()> {
     Ok(())
 }
 
-/// `notice_world` with round 1 blocked since long ago and `d` its blocked notice, the worker's pane
-/// `b` known on the observed instance as `block:w`.
-fn blocked_world(dir: &Path, transcript: &Path, state: &str) -> Result<(Store, UnixListener)> {
-    let (store, listener) = notice_world(dir, transcript, state)?;
-    store.conn().execute_batch(
-        "UPDATE task_round SET state = 'blocked', blocked_at = 0, result = NULL, result_ref = NULL,
-           finished_at = NULL;
-         UPDATE notice SET kind = 'blocked';
-         INSERT INTO live (instance_id, live_id, lineage) VALUES ('i1', 'block:w', 'b');",
-    )?;
-    Ok((store, listener))
-}
-
-#[test]
-fn a_blocked_notice_waits_for_a_live_waiter_and_goes_once_otherwise() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let transcript = tempfile::NamedTempFile::new()?;
-    let (mut store, listener) = blocked_world(dir.path(), transcript.path(), "pending")?;
-    store.conn().execute_batch(
-        "INSERT INTO request (id, task_id, round, text) VALUES ('q', 't', 1, 'go')",
-    )?;
-    let alive = i64::from(std::process::id());
-    store
-        .conn()
-        .execute("UPDATE task_round SET waiter_pid = ?1", params![alive])?;
-    let mut interest = Interest::default();
-    send_due(&mut store, &mut interest)?;
-    assert!(interest.pids.contains(&alive));
-    assert!(listener.accept().is_err(), "sent past a live waiter");
-
-    store
-        .conn()
-        .execute_batch("UPDATE task_round SET waiter_pid = NULL")?;
-    send_due(&mut store, &mut interest)?;
-    send_due(&mut store, &mut interest)?;
-    assert_eq!(notice(&store)?.0, "sent");
-    let mut line = String::new();
-    std::io::Read::read_to_string(&mut listener.accept()?.0, &mut line)?;
-    assert!(listener.accept().is_err(), "the notice was sent twice");
-    let message = serde_json::from_str::<Value>(&line)?;
-    let sent = message["message"]["content"].as_str().unwrap_or_default();
-    for part in [
-        runtime::token("d").as_str(),
-        "\"count\" is blocked in round 1",
-        "in pane block:w",
-        "may have been answered since",
-        "`rexume task show t --round 1`",
-        "request is still pending",
-    ] {
-        assert!(sent.contains(part), "{part}: {sent}");
-    }
-    assert!(!sent.contains("task ack"), "{sent}");
-    Ok(())
-}
-
-#[test]
-fn a_blocked_notice_left_mid_send_stays_unknown_and_unsent() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let transcript = tempfile::NamedTempFile::new()?;
-    let (mut store, listener) = blocked_world(dir.path(), transcript.path(), "sending")?;
-    assert_eq!(restart_daemon(&mut store)?.0, "unknown");
-    assert!(listener.accept().is_err(), "the notice was sent again");
-    Ok(())
-}
-
+mod blocked;
 mod pacing;

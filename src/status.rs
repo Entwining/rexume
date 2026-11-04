@@ -6,10 +6,11 @@ use anyhow::Result;
 use rusqlite::OptionalExtension;
 use serde_json::{Value, json};
 
+use crate::install;
 use crate::store::Store;
 use crate::task;
 
-pub fn run(state_dir: &Path) -> Result<Value> {
+pub fn run(state_dir: &Path, home: &Path) -> Result<Value> {
     let conn = Store::open_read_only(state_dir)?;
     let restores: Vec<Value> = conn
         .prepare(
@@ -42,11 +43,16 @@ pub fn run(state_dir: &Path) -> Result<Value> {
             },
         )
         .optional()?;
+    // Unreadable Claude Code settings must not hide restore and notice diagnostics.
+    let claude_hooks_missing = install::missing_claude_hooks(home)
+        .inspect_err(|e| log::warn!("{e:#}"))
+        .ok();
     Ok(json!({
         "version": 2,
         "restores": restores,
         "undelivered_notices": notices,
         "epoch_error": epoch_error,
+        "claude_hooks_missing": claude_hooks_missing,
     }))
 }
 

@@ -307,8 +307,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS task_round_turn ON task_round (task_id, turn_s
 -- worker: 'pending' until sent, with `note` saying why it still waits or why a send failed before
 -- anything left; 'sending' as the daemon's claim; 'sent', 'accepted', or 'unknown' after the send,
 -- never sent again; 'delivered' once the worker's record shows it received; 'superseded' when its
--- round ended before it was sent, so it is never sent. `id` is the token the request's text
--- carries and the worker's record is searched for. `text` is the message, last.
+-- round ended before it was sent, or during a send that failed before anything left, so it is never
+-- sent. `id` is the token the request's text carries and the worker's record is searched for.
+-- `text` is the message, last.
 CREATE TABLE IF NOT EXISTS request (
   id      TEXT    PRIMARY KEY,
   task_id TEXT    NOT NULL,
@@ -335,10 +336,11 @@ CREATE TABLE IF NOT EXISTS request (
 -- one whose send failed before anything left. `id` is the token the notice text carries and the
 -- owner's record is searched for. `sent_at`: when the daemon claimed the notice for a send that may
 -- have left, kept through every state after 'sending'. A send that failed before anything left
--- returns the notice to 'pending' without it, so a 'pending' or 'superseded' notice has none, and
--- neither has one sent before version 5. An owner gets its next notice only once none is still on
--- its way ('sending', 'sent', or 'accepted') that was sent after the owner's pane last reported
--- a status (`block.status_at`).
+-- clears `sent_at` and returns the notice to 'pending', or to 'superseded' if the round was
+-- acknowledged or the episode ended during the send. A 'pending' or 'superseded' notice therefore
+-- has no `sent_at`; neither does one sent before version 5. An owner gets its next notice only once
+-- none is still on its way ('sending', 'sent', or 'accepted') that was sent after the owner's pane
+-- last reported a status (`block.status_at`).
 CREATE TABLE IF NOT EXISTS notice (
   id         TEXT    PRIMARY KEY,
   task_id    TEXT    NOT NULL,

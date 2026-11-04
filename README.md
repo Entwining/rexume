@@ -87,6 +87,8 @@ On Linux, systemd runs your user services only while you are logged in. If your 
 
 `launchctl print gui/$(id -u)/io.github.entwining.rexume` on macOS, or `systemctl --user status rexume` on Linux, shows whether the daemon runs. Its log, `~/Library/Logs/rexume.log` on macOS and the journal on Linux (`journalctl --user -u rexume`), shows each restore and why each pane reopened its conversation or kept its shell.
 
+If a configuration manager writes `~/.claude/settings.json`, declare all four Rexume hooks for Claude Code in its source. The daemon adds missing turn hooks only when it starts; `rexume status` lists them in `claude_hooks_missing` until then.
+
 Agents started before `install` are recorded from their next session start. Seeing a restore happen means stopping the Rex server, which ends every terminal it runs, so it is not part of checking an install.
 
 ### Upgrade
@@ -95,7 +97,7 @@ Upgrading the program, with `brew upgrade` or by installing over it, is enough: 
 
 ## Check a restore
 
-`rexume status` lists the restored panes where Rexume set out to reopen a conversation that has not reopened, and notices not yet confirmed as delivered; a reopened conversation is not listed, and the daemon's log records it. When the daemon's latest observation of the server ended with an error, `epoch_error` gives it: the daemon records nothing until it connects again without one. A pane is listed in one of these states, and its `note` says why:
+`rexume status` lists restored panes whose conversation Rexume tried to reopen but has not reopened; successful restores appear in the daemon's log. It also lists notices sent, or that failed to send, whose delivery is unconfirmed and whose round still needs them: a finished round the orchestrator has not acknowledged, or a blocked episode that has not ended. When the daemon's latest observation of the server ended with an error, `epoch_error` gives it: the daemon records nothing until it connects again without one. A pane is listed in one of these states, and its `note` says why:
 
 - `planned`: Rexume waits for the pane's shell to read its startup files or show its prompt with nothing typed at it; a prompt that does not end in a space keeps it waiting.
 - `typed`, `unknown`: the line was typed, and the conversation has not started yet; after 5 seconds it is `unknown`. Rexume does not type it again, because the line may still be running.

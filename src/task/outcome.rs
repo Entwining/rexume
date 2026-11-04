@@ -9,7 +9,7 @@ use rusqlite::{OptionalExtension, Transaction, params};
 use super::evidence::{Evidence, Pane, Reading, RunProcess, Take};
 use super::notice::{self, Kind};
 use super::queue::{self, Queued};
-use super::{OPEN, blocked};
+use super::{OPEN, blocked, request};
 use crate::runtime::Turn;
 use crate::store::now_ms;
 
@@ -263,9 +263,9 @@ pub(super) fn end(
     notice::write(tx, Kind::Finished, id, round, now)?;
     blocked::end(tx, id, round)?;
     tx.execute(
-        "UPDATE request SET state = 'superseded', note = 'the round ended before it was sent'
+        "UPDATE request SET state = 'superseded', note = ?3
          WHERE task_id = ?1 AND round = ?2 AND state = 'pending'",
-        params![id, round],
+        params![id, round, request::ENDED],
     )?;
     Ok(())
 }

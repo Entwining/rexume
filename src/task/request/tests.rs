@@ -150,3 +150,19 @@ fn a_request_whose_round_ended_is_never_sent() -> Result<()> {
     assert_eq!(tx.execute(&CLAIM, params![id])?, 0);
     Ok(())
 }
+
+/// Ending a round leaves its `sending` request unchanged. If the send then fails before anything
+/// leaves, recording that failure supersedes the request instead of returning it to `pending`.
+#[test]
+fn a_failed_send_drops_a_request_whose_round_ended() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = record(&[])?;
+    let (mut store, id) = request_world(dir.path(), transcript.path())?;
+    let tx = store.write()?;
+    assert_eq!(tx.execute(&CLAIM, params![id])?, 1);
+    crate::task::outcome::end(&tx, "t", 2, "abandoned", None, None)?;
+    record_send(&tx, &id, ("pending", Some("failed to connect".to_owned())))?;
+    tx.commit()?;
+    assert_eq!(request(&store)?, ("superseded".into(), Some(ENDED.into())));
+    Ok(())
+}

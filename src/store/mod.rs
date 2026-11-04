@@ -294,9 +294,9 @@ pub fn sweep_records(store: &Store) -> Result<()> {
     Ok(())
 }
 
-/// Deletes what no restore, task, or notice can read any more: rows of earlier instances that
-/// nothing names, and finished records older than `RETENTION`. Run by the daemon once the
-/// current instance's baseline is saved. The order follows the foreign keys.
+/// Deletes unreferenced rows of earlier instances and finished records older than `RETENTION`.
+/// A task's notices do not extend its retention (`docs/design.md`, "What is saved"). Run by the
+/// daemon once the current instance's baseline is saved. The order follows the foreign keys.
 pub fn sweep(tx: &Transaction, instance: &str, now: i64) -> Result<()> {
     let cutoff = now - i64::try_from(RETENTION.as_millis())?;
     tx.execute(
@@ -324,9 +324,7 @@ pub fn sweep(tx: &Transaction, instance: &str, now: i64) -> Result<()> {
         "DELETE FROM task
           WHERE id IN (SELECT task_id FROM task_round GROUP BY task_id
                        HAVING COUNT(finished_at) = COUNT(*)
-                         AND MAX(COALESCE(acked_at, finished_at)) < ?1)
-            AND NOT EXISTS (SELECT 1 FROM notice n WHERE n.task_id = task.id
-                            AND n.state IN ('pending', 'sending', 'sent', 'accepted', 'unknown'))",
+                         AND MAX(COALESCE(acked_at, finished_at)) < ?1)",
         params![cutoff],
     )?;
     tx.execute(

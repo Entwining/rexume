@@ -38,6 +38,15 @@ const FINISHED: &str = "n.kind = 'finished'";
 /// `notice_blocked_unsent`.
 const UNSENT_BLOCKED: &str = "n.kind = 'blocked' AND n.state IN ('pending', 'sending')";
 
+/// Whether round `r` still needs notice `n`: a finished notice until acknowledgement, a blocked
+/// notice while its episode lasts. Matching `r.blocked_at` to `n.created_at` excludes notices from
+/// earlier episodes of the same round. Once unneeded, a notice is neither sent nor listed,
+/// regardless of its state: the owner has the result, or the dialog is over.
+const WANTED: &str =
+    "CASE n.kind WHEN 'finished' THEN r.acked_at IS NULL ELSE r.blocked_at IS n.created_at END";
+
+const ACKED: &str = "the round was acknowledged during a send that failed";
+
 /// Drops a round's pending finished notice, with `?3` saying why.
 pub(super) static SUPERSEDE_FINISHED: LazyLock<String> = LazyLock::new(|| {
     format!(
@@ -189,19 +198,53 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
             native_id: &owner.native_id,
             transport: &owner.transport,
         };
-        let (state, note) =
-            Sent::recorded(owner.runtime.send(&target, store.dir(), &due.notice, &text));
-        log::info!("notice {} for task {}: {state}", due.notice, due.task);
+        let sent = Sent::recorded(owner.runtime.send(&target, store.dir(), &due.notice, &text));
+        log::info!("notice {} for task {}: {}", due.notice, due.task, sent.0);
         let tx = store.write()?;
-        tx.execute(
-            "UPDATE notice SET state = ?1, note = ?2,
-               sent_at = CASE ?1 WHEN 'pending' THEN NULL ELSE sent_at END
-             WHERE id = ?3",
-            params![state, note, due.notice],
-        )?;
+        record_send(&tx, &due.notice, sent)?;
         tx.commit()?;
     }
     Ok(next)
+}
+
+/// Whether a notice's round still needs it, and whether it is a blocked notice.
+pub(super) static STILL_WANTED: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT {WANTED}, n.kind = 'blocked'
+         FROM notice n JOIN task_round r ON r.task_id = n.task_id AND r.round = n.round
+         WHERE n.id = ?1"
+    )
+});
+
+/// Records a claimed notice's send result. If nothing left, the notice returns to `pending` unless
+/// its round was acknowledged or its episode ended during the send. Those transitions drop only
+/// pending notices, so a notice still `sending` then must be superseded here.
+fn record_send(tx: &Transaction, notice: &str, sent: (&str, Option<String>)) -> Result<()> {
+    let (mut state, mut note) = sent;
+    if state == "pending" {
+        let (wanted, blocked): (bool, bool) =
+            tx.query_row(&STILL_WANTED, params![notice], |row| {
+                Ok((row.get(0)?, row.get(1)?))
+            })?;
+        if !wanted {
+            state = "superseded";
+            note = Some(
+                if blocked {
+                    super::blocked::ENDED
+                } else {
+                    ACKED
+                }
+                .to_owned(),
+            );
+        }
+    }
+    tx.execute(
+        "UPDATE notice SET state = ?1, note = ?2,
+           sent_at = CASE WHEN ?1 IN ('pending', 'superseded') THEN NULL ELSE sent_at END
+         WHERE id = ?3",
+        params![state, note, notice],
+    )?;
+    Ok(())
 }
 
 /// Claims a pending notice for sending at `?3`, unless a `task wait` registered since `?2`, the
@@ -287,15 +330,20 @@ fn ready_owner(conn: &Connection, task: &str) -> Result<Option<Owner>> {
         .optional()?)
 }
 
-/// Notices not yet confirmed as delivered, with the round each tells of. A `pending` notice
-/// with a note is one whose send failed, which keeps failing until its cause is fixed.
-const UNDELIVERED: &str = "SELECT n.id, n.kind, n.task_id, n.round, r.state, n.state, n.note
-  FROM notice n JOIN task t ON t.id = n.task_id
-  JOIN task_round r ON r.task_id = n.task_id AND r.round = n.round
-  WHERE (n.state IN ('unknown', 'sending', 'sent', 'accepted')
-         OR (n.state = 'pending' AND n.note IS NOT NULL))";
+/// Unconfirmed notices their rounds still need, with each round's state. A `pending` notice with
+/// a note has failed to send; other pending notices are still waiting for their first attempt.
+static UNDELIVERED: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT n.id, n.kind, n.task_id, n.round, r.state, n.state, n.note
+         FROM notice n JOIN task t ON t.id = n.task_id
+         JOIN task_round r ON r.task_id = n.task_id AND r.round = n.round
+         WHERE {WANTED}
+           AND (n.state IN ('unknown', 'sending', 'sent', 'accepted')
+                OR (n.state = 'pending' AND n.note IS NOT NULL))"
+    )
+});
 
-/// The NOTICE objects of `docs/cli.md` not yet confirmed as delivered: one owner's, or all.
+/// The NOTICE objects of `docs/cli.md` that `UNDELIVERED` selects: one owner's, or all.
 pub fn undelivered(conn: &Connection, owner: Option<(Runtime, &str)>) -> Result<Vec<Value>> {
     let notice = |row: &rusqlite::Row| -> rusqlite::Result<Value> {
         Ok(serde_json::json!({
@@ -311,12 +359,13 @@ pub fn undelivered(conn: &Connection, owner: Option<(Runtime, &str)>) -> Result<
     Ok(match owner {
         Some((runtime, native_id)) => conn
             .prepare(&format!(
-                "{UNDELIVERED} AND t.owner_runtime = ?1 AND t.owner_native_id = ?2"
+                "{} AND t.owner_runtime = ?1 AND t.owner_native_id = ?2",
+                *UNDELIVERED
             ))?
             .query_map(params![runtime.as_str(), native_id], notice)?
             .collect::<rusqlite::Result<_>>()?,
         None => conn
-            .prepare(UNDELIVERED)?
+            .prepare(&UNDELIVERED)?
             .query_map([], notice)?
             .collect::<rusqlite::Result<_>>()?,
     })

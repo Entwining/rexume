@@ -165,8 +165,9 @@ fn sweep_keeps_what_an_open_task_or_a_recent_restore_still_names() -> Result<()>
     Ok(())
 }
 
-/// A task goes once every round finished and was acknowledged, or finished unacknowledged, before
-/// the retention period; a later round dropped long ago does not stand for an earlier one.
+/// A task and its unconfirmed notice are deleted only when every round is old enough: acknowledged
+/// before the retention cutoff, or finished before it if never acknowledged. An old dropped round
+/// does not let the task go while an earlier round is open or recently acknowledged.
 #[test]
 fn sweep_deletes_a_task_only_once_all_its_rounds_are_old() -> Result<()> {
     let (_dir, mut store) = store();
@@ -183,7 +184,9 @@ fn sweep_deletes_a_task_only_once_all_its_rounds_are_old() -> Result<()> {
          INSERT INTO task_round (task_id, round, state, finished_at, acked_at, created_at)
            VALUES ('old', 1, 'cancelled', {old}, {old}, 0), ('old', 2, 'dropped', {old}, NULL, 0),
              ('open', 1, 'running', NULL, NULL, 0), ('open', 2, 'dropped', {old}, {old}, 0),
-             ('recent', 1, 'failed', {old}, {now}, 0), ('recent', 2, 'dropped', {old}, {old}, 0);",
+             ('recent', 1, 'failed', {old}, {now}, 0), ('recent', 2, 'dropped', {old}, {old}, 0);
+         INSERT INTO notice (id, task_id, round, kind, state, created_at, sent_at)
+           VALUES ('n', 'old', 1, 'finished', 'accepted', {old}, {old});",
         now = now_ms()
     ))?;
     sweep(&tx, "i2", now_ms())?;
@@ -225,21 +228,17 @@ fn sweep_forgets_the_occupant_of_a_pane_it_forgets() -> Result<()> {
     Ok(())
 }
 
-/// The sweep reaches a task's notices through an index, both its own check for notices that may
-/// still reach their owner and the foreign key's lookup when a deleted task takes its rounds along.
+/// The foreign key reaches the notices of a round the sweep deletes through an index.
 #[test]
 fn notices_are_found_by_task_and_round_through_an_index() -> Result<()> {
     let (_dir, store) = store();
-    for sql in [
-        "SELECT 1 FROM notice n WHERE n.task_id = ?1 AND n.state IN ('pending', 'sent')",
-        "SELECT 1 FROM notice WHERE task_id = ?1 AND round = ?2",
-    ] {
-        let mut plan = store.conn().prepare(&format!("EXPLAIN QUERY PLAN {sql}"))?;
-        let mut rows = plan.raw_query();
-        while let Some(row) = rows.next()? {
-            let detail: String = row.get(3)?;
-            assert!(!detail.starts_with("SCAN"), "{sql}: {detail}");
-        }
+    let mut plan = store
+        .conn()
+        .prepare("EXPLAIN QUERY PLAN SELECT 1 FROM notice WHERE task_id = ?1 AND round = ?2")?;
+    let mut rows = plan.raw_query();
+    while let Some(row) = rows.next()? {
+        let detail: String = row.get(3)?;
+        assert!(!detail.starts_with("SCAN"), "{detail}");
     }
     Ok(())
 }

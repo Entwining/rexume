@@ -166,19 +166,37 @@ pub fn refresh_pi_extension(home: &Path) -> Result<&'static str> {
 pub fn refresh_claude_hooks(home: &Path) -> Result<&'static str> {
     let path = Targets::new(home).claude;
     let settings = read_json(&path)?;
-    let installed = settings
-        .pointer("/hooks/SessionStart")
-        .and_then(Value::as_array)
-        .into_iter()
-        .flatten()
-        .filter_map(|group| group.get("hooks").and_then(Value::as_array))
-        .flatten()
-        .find(|h| is_ours(h, "claude"));
-    let Some(hook) = installed else {
+    let Some(hook) = ours(&settings, "SessionStart", "claude") else {
         return Ok("absent");
     };
     let hook = json!({ "type": "command", "command": hook["command"], "timeout": 5 });
     Ok(add_hook(&path, "claude", &CLAUDE_EVENTS[1..], &hook)?.0)
+}
+
+/// Claude Code turn events missing Rexume's hook, but only when its session-start hook is present:
+/// uninstall removes that hook too, so its absence is not an incomplete installation.
+pub fn missing_claude_hooks(home: &Path) -> Result<Vec<&'static str>> {
+    let settings = read_json(&Targets::new(home).claude)?;
+    if ours(&settings, "SessionStart", "claude").is_none() {
+        return Ok(Vec::new());
+    }
+    Ok(CLAUDE_EVENTS[1..]
+        .iter()
+        .copied()
+        .filter(|event| ours(&settings, event, "claude").is_none())
+        .collect())
+}
+
+/// Rexume's hook for `runtime` in any group of `event`.
+fn ours<'a>(settings: &'a Value, event: &str, runtime: &str) -> Option<&'a Value> {
+    settings
+        .get("hooks")?
+        .get(event)?
+        .as_array()?
+        .iter()
+        .filter_map(|group| group.get("hooks").and_then(Value::as_array))
+        .flatten()
+        .find(|h| is_ours(h, runtime))
 }
 
 /// Whether a hook runs `rexume report <runtime>`, by whatever path to rexume.
@@ -208,15 +226,10 @@ fn add_hook(path: &Path, runtime: &str, events: &[&str], hook: &Value) -> Result
     let mut settings = read_json(path)?;
     let mut added = false;
     for event in events {
-        let groups = groups(&mut settings, event)
-            .with_context(|| format!("failed to update `{}`", path.display()))?;
-        let present = groups
-            .iter()
-            .filter_map(|group| group.get("hooks").and_then(Value::as_array))
-            .flatten()
-            .any(|h| is_ours(h, runtime));
-        if !present {
-            groups.push(json!({ "hooks": [hook] }));
+        if ours(&settings, event, runtime).is_none() {
+            groups(&mut settings, event)
+                .with_context(|| format!("failed to update `{}`", path.display()))?
+                .push(json!({ "hooks": [hook] }));
             added = true;
         }
     }

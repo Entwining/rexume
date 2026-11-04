@@ -29,8 +29,9 @@ fn another_path_to_rexume_is_the_same_hook() -> Result<()> {
     Ok(())
 }
 
-/// An earlier install wrote only the session-start hook; the daemon adds the turn hooks with the
-/// same command, once, and adds nothing to settings without Rexume's hook.
+/// An earlier install or a configuration manager left only the session-start hook. The missing
+/// turn hooks are reported, then added once with the same command. Without the session-start hook,
+/// no hooks are reported missing or added.
 #[test]
 fn the_daemon_adds_the_turn_hooks_an_earlier_install_left_out() -> Result<()> {
     let home = tempfile::tempdir()?;
@@ -39,6 +40,7 @@ fn the_daemon_adds_the_turn_hooks_an_earlier_install_left_out() -> Result<()> {
     std::fs::create_dir_all(path.parent().unwrap())?;
     let other = json!({ "hooks": [{ "type": "command", "command": "other" }] });
     std::fs::write(&path, json!({ "hooks": { "Stop": [other] } }).to_string())?;
+    assert!(missing_claude_hooks(home.path())?.is_empty());
     assert_eq!(refresh_claude_hooks(home.path())?, "absent");
     let command = "/opt/homebrew/bin/rexume report claude";
     let hook = json!({ "type": "command", "command": command, "timeout": 5 });
@@ -48,7 +50,12 @@ fn the_daemon_adds_the_turn_hooks_an_earlier_install_left_out() -> Result<()> {
             "Stop": [other] } })
         .to_string(),
     )?;
+    assert_eq!(
+        missing_claude_hooks(home.path())?,
+        ["UserPromptSubmit", "Stop", "StopFailure"]
+    );
     assert_eq!(refresh_claude_hooks(home.path())?, "created");
+    assert!(missing_claude_hooks(home.path())?.is_empty());
     assert_eq!(refresh_claude_hooks(home.path())?, "unchanged");
     let ours = json!({ "hooks": [hook] });
     assert_eq!(

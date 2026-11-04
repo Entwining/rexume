@@ -7,7 +7,7 @@ use rusqlite::params;
 use serde_json::{Value, json};
 
 use crate::common::{
-    Daemon, REXUME, SHELL, Server, claude, db, query, shell_block, shell_pids, wait_until,
+    Daemon, REXUME, SHELL, Server, claude, db, query, rexume, shell_block, shell_pids, wait_until,
 };
 
 const WAIT: Duration = Duration::from_secs(20);
@@ -291,11 +291,12 @@ fn status_shows_the_error_that_ended_the_latest_epoch() {
         )
         .unwrap();
     let epoch_error = || {
-        let output = std::process::Command::new(REXUME)
-            .args(["status", "--state-dir"])
-            .arg(&state)
-            .output()
-            .unwrap();
+        let home = dir.path().join("home");
+        let output = rexume(
+            &["status", "--state-dir", state.to_str().unwrap()],
+            &[("HOME", home.to_str().unwrap())],
+            "",
+        );
         serde_json::from_slice::<Value>(&output.stdout).unwrap()["epoch_error"].clone()
     };
     restart(&mut server, &state, &bin, 1, false);

@@ -90,17 +90,13 @@ fn resume(tx: &Transaction, id: &str, round: i64) -> Result<()> {
     end(tx, id, round)
 }
 
+pub(super) const ENDED: &str = "the block ended before it was sent";
+
 /// Ends the round's episode, if it has one, as the round goes on or finishes: a blocked notice not
 /// yet sent no longer tells the owner anything true, so it is never sent. One that may have been
 /// sent stays as it is.
 pub(super) fn end(tx: &Transaction, id: &str, round: i64) -> Result<()> {
-    notice::supersede(
-        tx,
-        Kind::Blocked,
-        id,
-        round,
-        "the block ended before it was sent",
-    )?;
+    notice::supersede(tx, Kind::Blocked, id, round, ENDED)?;
     Ok(())
 }
 

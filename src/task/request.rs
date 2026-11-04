@@ -5,7 +5,7 @@
 use std::sync::LazyLock;
 
 use anyhow::Result;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Map, Value};
 
 use super::{Interest, OPEN};
@@ -45,6 +45,16 @@ pub(super) static CLAIM: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
+pub(super) const ENDED: &str = "the round ended before it was sent";
+
+/// Whether a request's round is still open, so that it still needs the request.
+pub(super) static ROUND_OPEN: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT {OPEN} FROM request q
+         JOIN task_round r ON r.task_id = q.task_id AND r.round = q.round WHERE q.id = ?1"
+    )
+});
+
 struct Worker {
     runtime: Runtime,
     native_id: String,
@@ -69,6 +79,22 @@ fn worker(conn: &Connection, task: &str) -> Result<Option<Worker>> {
             })
         })
         .optional()?)
+}
+
+/// Records a claimed request's send result. If nothing left, it returns to `pending` unless
+/// its round ended during the send. Ending a round drops only pending requests, so a request still
+/// `sending` then must be superseded here.
+fn record_send(tx: &Transaction, id: &str, sent: (&str, Option<String>)) -> Result<()> {
+    let (mut state, mut note) = sent;
+    if state == "pending" && !tx.query_row(&ROUND_OPEN, params![id], |row| row.get::<_, bool>(0))? {
+        state = "superseded";
+        note = Some(ENDED.to_owned());
+    }
+    tx.execute(
+        "UPDATE request SET state = ?1, note = ?2 WHERE id = ?3 AND state = 'sending'",
+        params![state, note, id],
+    )?;
+    Ok(())
 }
 
 /// Sends each pending request once the worker's conversation is the foreground program of its pane
@@ -111,14 +137,10 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<()>
             transport: &worker.transport,
         };
         let message = format!("{} {text}", runtime::token(&id));
-        let (state, note) =
-            Sent::recorded(worker.runtime.send(&target, store.dir(), &id, &message));
-        log::info!("request {id} for task {task}: {state}");
+        let sent = Sent::recorded(worker.runtime.send(&target, store.dir(), &id, &message));
+        log::info!("request {id} for task {task}: {}", sent.0);
         let tx = store.write()?;
-        tx.execute(
-            "UPDATE request SET state = ?1, note = ?2 WHERE id = ?3 AND state = 'sending'",
-            params![state, note, id],
-        )?;
+        record_send(&tx, &id, sent)?;
         tx.commit()?;
         if worker.runtime == Runtime::Pi {
             interest
