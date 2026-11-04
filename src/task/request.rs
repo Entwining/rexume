@@ -9,7 +9,7 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Map, Value};
 
 use super::{Interest, OPEN};
-use crate::runtime::{self, Runtime, Sent, Target, pi};
+use crate::runtime::{self, Runtime, Sent, Target, inbox};
 use crate::store::Store;
 
 /// The pending requests of open rounds, reached through the rounds so that the request table
@@ -142,37 +142,39 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<()>
         let tx = store.write()?;
         record_send(&tx, &id, sent)?;
         tx.commit()?;
-        if matches!(worker.runtime, Runtime::Pi | Runtime::Omp) {
-            interest
-                .files
-                .insert(pi::inbox(store.dir(), &worker.native_id));
+        if let Some(inbox) = worker.runtime.inbox(store.dir(), &worker.native_id) {
+            interest.files.insert(inbox);
         }
     }
     settle_inbox(store, interest)
 }
 
-/// The requests of open rounds sent to Pi or omp workers that their extension has not yet been
-/// seen to hold, reached through the rounds as in `PENDING`.
-pub(super) static SENT_TO_INBOX: LazyLock<String> = LazyLock::new(|| {
+/// The requests of open rounds that no runtime has been seen to hold yet, reached through the
+/// rounds as in `PENDING`.
+pub(super) static SENT: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "SELECT q.id, t.worker_native_id FROM task_round r
+        "SELECT q.id, t.worker_runtime, t.worker_native_id FROM task_round r
          JOIN task t ON t.id = r.task_id
          CROSS JOIN request q ON q.task_id = r.task_id AND q.round = r.round
-         WHERE {OPEN} AND t.worker_runtime IN ('pi', 'omp') AND q.state IN ('sent', 'unknown')"
+         WHERE {OPEN} AND q.state IN ('sent', 'unknown')"
     )
 });
 
 /// Marks requests the extension took from the worker's inbox as `accepted`: the runtime holds
 /// them, but the conversation may not have taken them in yet.
 fn settle_inbox(store: &mut Store, interest: &mut Interest) -> Result<()> {
-    let sent: Vec<(String, String)> = store
+    let sent: Vec<(String, Runtime, String)> = store
         .conn()
-        .prepare_cached(&SENT_TO_INBOX)?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .prepare_cached(&SENT)?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    for (id, native_id) in sent {
-        interest.files.insert(pi::inbox(store.dir(), &native_id));
-        if pi::accepted(store.dir(), &native_id, &id) {
+    for (id, runtime, native_id) in sent {
+        let Some(inbox) = runtime.inbox(store.dir(), &native_id) else {
+            continue;
+        };
+        let accepted = inbox::accepted(&inbox, &id);
+        interest.files.insert(inbox);
+        if accepted {
             let tx = store.write()?;
             tx.execute(
                 "UPDATE request SET state = 'accepted' WHERE id = ?1 AND state IN ('sent', 'unknown')",

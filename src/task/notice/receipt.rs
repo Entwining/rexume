@@ -6,7 +6,7 @@ use std::path::PathBuf;
 use anyhow::Result;
 use rusqlite::params;
 
-use crate::runtime::{Receipt, Runtime, pi};
+use crate::runtime::{Receipt, Runtime, inbox};
 use crate::store::Store;
 use crate::task::Interest;
 
@@ -23,8 +23,8 @@ struct OwnerRecord {
     notices: Vec<(String, String)>,
 }
 
-/// Marks notices the owner's conversation has taken in, from its own record. The Pi or omp
-/// extension renaming a notice to `.accepted` shows only that the runtime holds it.
+/// Marks notices the owner's conversation has taken in, from its own record. An extension renaming
+/// a notice to `.accepted` in its inbox shows only that the runtime holds it.
 pub(in crate::task) fn settle(
     store: &mut Store,
     receipts: &mut HashMap<PathBuf, Receipt>,
@@ -79,15 +79,11 @@ pub(in crate::task) fn settle(
                 receipts.remove(&path);
             }
         }
-        if matches!(record.runtime, Runtime::Pi | Runtime::Omp) {
-            interest
-                .files
-                .insert(pi::inbox(store.dir(), &record.native_id));
+        if let Some(inbox) = record.runtime.inbox(store.dir(), &record.native_id) {
             accepted.extend(record.notices.into_iter().filter(|(id, state)| {
-                state != "accepted"
-                    && !delivered.contains(id)
-                    && pi::accepted(store.dir(), &record.native_id, id)
+                state != "accepted" && !delivered.contains(id) && inbox::accepted(&inbox, id)
             }));
+            interest.files.insert(inbox);
         }
     }
     if delivered.is_empty() && accepted.is_empty() {

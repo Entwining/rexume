@@ -4,12 +4,13 @@
 
 pub mod claude;
 mod codex;
+pub mod inbox;
 mod lines;
 pub mod omp;
 pub mod pi;
 mod receipt;
 #[cfg(test)]
-mod tests;
+pub(crate) mod tests;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -75,8 +76,8 @@ impl Runtime {
     }
 
     /// The record this tool reads the conversation's turns from, and the notices and requests it
-    /// took in: the runtime's own record, except for Claude Code, whose own names no turn, so its
-    /// turn hooks write one in the state directory.
+    /// took in: the runtime's own record, except where that cannot serve and this tool keeps one
+    /// in the state directory (`records`).
     pub fn record(
         self,
         state_dir: &Path,
@@ -85,13 +86,36 @@ impl Runtime {
     ) -> Option<PathBuf> {
         match self {
             Self::Claude => Some(claude::record(state_dir, native_id)),
-            Self::Codex | Self::Pi | Self::Omp => transcript.map(PathBuf::from),
+            Self::Omp => Some(omp::record(state_dir, native_id)),
+            Self::Codex | Self::Pi => transcript.map(PathBuf::from),
         }
     }
 
-    /// Whether the conversation can be reopened. Claude Code, Codex, and omp write a
-    /// conversation's record only with its first answer or prompt and refuse to resume one without
-    /// it; Pi opens a session file that does not exist yet as a new session.
+    /// The directory of the records this tool keeps for a runtime whose own record cannot serve:
+    /// Claude Code's names no turn, so its turn hooks write one, and omp replaces its own when it
+    /// rewrites it, so its extension writes one.
+    pub fn records(self, state_dir: &Path) -> Option<PathBuf> {
+        match self {
+            Self::Claude => Some(claude::records(state_dir)),
+            Self::Omp => Some(omp::records(state_dir)),
+            Self::Codex | Self::Pi => None,
+        }
+    }
+
+    /// The inbox the runtime's extension takes the conversation's notices and requests from, for
+    /// a runtime reached through one. Each runtime has its own, since omp opens a Pi session file,
+    /// and Pi an omp one, under the ID the file records.
+    pub fn inbox(self, state_dir: &Path, native_id: &str) -> Option<PathBuf> {
+        match self {
+            Self::Pi => Some(pi::inbox(state_dir, native_id)),
+            Self::Omp => Some(omp::inbox(state_dir, native_id)),
+            Self::Claude | Self::Codex => None,
+        }
+    }
+
+    /// Whether the conversation can be reopened. Claude Code, Codex, and omp refuse to resume a
+    /// conversation whose file does not exist yet, which Claude Code and Codex write only with its
+    /// first prompt; Pi opens a session file that does not exist yet as a new session.
     pub fn can_reopen(self, conversation: &Conversation) -> bool {
         match self {
             Self::Claude | Self::Codex | Self::Omp => conversation
@@ -115,7 +139,7 @@ impl Runtime {
                 pi::settings(Path::new(&transcript), conversation);
                 Ok(())
             }
-            // omp restores the session's own model and thinking level from its file.
+            // omp restores them from the session file it reopens.
             Self::Omp => Ok(()),
         }
     }
@@ -126,7 +150,8 @@ impl Runtime {
         match self {
             Self::Claude => claude::send(target, text),
             Self::Codex => codex::send(target, text),
-            Self::Pi | Self::Omp => pi::send(target, state_dir, id, text),
+            Self::Pi => inbox::send(&pi::inbox(state_dir, target.native_id), id, text),
+            Self::Omp => inbox::send(&omp::inbox(state_dir, target.native_id), id, text),
         }
     }
 
@@ -138,7 +163,8 @@ impl Runtime {
         match self {
             Self::Claude => false,
             Self::Codex => codex::received(record),
-            Self::Pi | Self::Omp => pi::received(record),
+            Self::Pi => pi::received(record),
+            Self::Omp => omp::received(record),
         }
     }
 
@@ -152,7 +178,8 @@ impl Runtime {
         match self {
             Self::Claude => Parser::Claude(claude::Parser::default()),
             Self::Codex => Parser::Codex(codex::Parser::default()),
-            Self::Pi | Self::Omp => Parser::Pi(pi::Parser::default()),
+            Self::Pi => Parser::Pi(pi::Parser::default()),
+            Self::Omp => Parser::Omp(omp::Parser::default()),
         }
     }
 }
@@ -302,6 +329,7 @@ enum Parser {
     Claude(claude::Parser),
     Codex(codex::Parser),
     Pi(pi::Parser),
+    Omp(omp::Parser),
 }
 
 /// Each runtime's parser keeps how the last turn stands and yields each turn as it finishes. A
@@ -313,6 +341,7 @@ impl Parser {
             Self::Claude(p) => p.feed(record, span, sealed),
             Self::Codex(p) => p.feed(record, span, sealed),
             Self::Pi(p) => p.feed(record, span, sealed),
+            Self::Omp(p) => p.feed(record, span, sealed),
         }
     }
 
@@ -321,6 +350,7 @@ impl Parser {
             Self::Claude(p) => p.turn(),
             Self::Codex(p) => p.turn(),
             Self::Pi(p) => p.turn(),
+            Self::Omp(p) => p.turn(),
         }
     }
 }

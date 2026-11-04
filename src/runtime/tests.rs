@@ -3,6 +3,7 @@ use std::io::Write;
 use std::path::Path;
 
 use anyhow::Context;
+use serde_json::json;
 
 use super::lines::last_record;
 use super::*;
@@ -20,6 +21,53 @@ pub(super) fn transcript(lines: &[&str]) -> tempfile::NamedTempFile {
         writeln!(file, "{line}").unwrap();
     }
     file
+}
+
+/// How the record of `runtime`, a runtime reached through an inbox, shows the conversation taking
+/// in the notice or request whose token is `token`.
+pub(crate) fn receipt_line(runtime: Runtime, token: &str) -> Value {
+    match runtime {
+        Runtime::Pi => json!({"type": "custom_message", "id": "n1", "customType": "rexume",
+                              "content": format!("{token} go"), "display": true}),
+        Runtime::Omp => json!({"event": "received", "token": token}),
+        _ => unimplemented!("{runtime} takes no notice through an inbox"),
+    }
+}
+
+/// How the record of `runtime`, a runtime reached through an inbox, shows a turn ending with the
+/// answer `text`, which `id` names.
+pub(crate) fn answer_line(runtime: Runtime, id: &str, text: &str) -> Value {
+    match runtime {
+        Runtime::Pi => json!({"type": "message", "id": id, "message": {"role": "assistant",
+                              "stopReason": "stop", "content": [{"type": "text", "text": text}]}}),
+        Runtime::Omp => json!({"event": "end", "id": id, "stop_reason": "stop", "answer": text}),
+        _ => unimplemented!("{runtime} takes no notice through an inbox"),
+    }
+}
+
+/// Appends `lines` to the record of `runtime`, a runtime reached through an inbox, where the
+/// runtime writes it: Pi's session file `transcript`, or the file the omp extension appends to.
+pub(crate) fn append_to_record(
+    runtime: Runtime,
+    state_dir: &Path,
+    native_id: &str,
+    transcript: &Path,
+    lines: &[Value],
+) -> Result<()> {
+    let path = match runtime {
+        Runtime::Pi => transcript.to_owned(),
+        Runtime::Omp => omp::record(state_dir, native_id),
+        _ => unimplemented!("{runtime} takes no notice through an inbox"),
+    };
+    std::fs::create_dir_all(path.parent().context("no directory")?)?;
+    let mut file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&path)?;
+    for line in lines {
+        writeln!(file, "{line}")?;
+    }
+    Ok(())
 }
 
 /// A version manager's `node` may be a shim that needs the `PATH` a harness replaces.
@@ -128,6 +176,21 @@ fn only_input_a_finished_turn_took_counts_as_a_receipt() -> Result<()> {
     file.flush()?;
     assert_eq!(receipt.found(&pending)?, HashSet::from(["d1".to_owned()]));
     Ok(())
+}
+
+/// Pi's inbox stays where every released extension watches it, and omp's is apart from it, since
+/// either opens the other's session file under the ID the file records.
+#[test]
+fn pi_and_omp_take_a_shared_id_from_different_inboxes() {
+    let state = Path::new("/state");
+    assert_eq!(
+        Runtime::Pi.inbox(state, "a/b"),
+        Some(state.join("inbox/a_b"))
+    );
+    assert_eq!(
+        Runtime::Omp.inbox(state, "a/b"),
+        Some(state.join("omp/inbox/a_b"))
+    );
 }
 
 #[test]

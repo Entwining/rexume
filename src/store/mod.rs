@@ -12,11 +12,12 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
+use clap::ValueEnum as _;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
 
-use crate::runtime::claude;
+use crate::runtime::Runtime;
 
 const SCHEMA: &str = include_str!("schema.sql");
 /// The `user_version` that `schema.sql` sets.
@@ -32,9 +33,9 @@ pub fn default_dir() -> Result<PathBuf> {
 }
 
 /// Creates `dir` and each missing parent for its user alone; an existing directory keeps its mode.
-/// Rexume creates every directory in the state directory here, and the Pi extension with the same
-/// mode, whichever needs it first, so none is ever open to other users (`docs/design.md`, "What is
-/// saved").
+/// Rexume creates every directory in the state directory here, and the Pi and omp extensions with
+/// the same mode, whichever needs it first, so none is ever open to other users (`docs/design.md`,
+/// "What is saved").
 pub fn create_private_dir(dir: &Path) -> Result<()> {
     DirBuilder::new()
         .recursive(true)
@@ -259,36 +260,40 @@ pub fn forget_block(tx: &Transaction, lineage: &str) -> Result<()> {
     Ok(())
 }
 
-/// Deletes the Claude Code turn records of conversations the sweep forgot, once their hooks have
-/// written nothing for `RETENTION`; a record whose conversation never reported is one too. Run
-/// after the sweep commits, since no file is changed inside a transaction. A file that cannot be
-/// deleted stays for the next sweep.
+/// Deletes the turn records this tool keeps (`Runtime::records`) of conversations the sweep
+/// forgot, once nothing has written to them for `RETENTION`; a record whose conversation never
+/// reported is one too. Run after the sweep commits, since no file is changed inside a
+/// transaction. A file that cannot be deleted stays for the next sweep.
 pub fn sweep_records(store: &Store) -> Result<()> {
-    let dir = claude::records(store.dir());
-    let entries = match std::fs::read_dir(&dir) {
-        Ok(entries) => entries,
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => return Ok(()),
-        Err(e) => return Err(e).with_context(|| format!("failed to read `{}`", dir.display())),
-    };
     let cutoff = SystemTime::now() - RETENTION;
     let mut known = store.conn().prepare(
-        "SELECT EXISTS (SELECT 1 FROM conversation WHERE runtime = 'claude' AND native_id = ?1)",
+        "SELECT EXISTS (SELECT 1 FROM conversation WHERE runtime = ?1 AND native_id = ?2)",
     )?;
-    for entry in entries {
-        let path = entry?.path();
-        let Some(native_id) = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .and_then(|name| name.strip_suffix(".jsonl"))
-        else {
+    for runtime in Runtime::value_variants() {
+        let Some(dir) = runtime.records(store.dir()) else {
             continue;
         };
-        let written = std::fs::metadata(&path).and_then(|meta| meta.modified());
-        if written.is_ok_and(|at| at < cutoff)
-            && !known.query_row(params![native_id], |row| row.get(0))?
-            && let Err(e) = std::fs::remove_file(&path)
-        {
-            log::warn!("failed to delete `{}`: {e}", path.display());
+        let entries = match std::fs::read_dir(&dir) {
+            Ok(entries) => entries,
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(e) => return Err(e).with_context(|| format!("failed to read `{}`", dir.display())),
+        };
+        for entry in entries {
+            let path = entry?.path();
+            let Some(native_id) = path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .and_then(|name| name.strip_suffix(".jsonl"))
+            else {
+                continue;
+            };
+            let written = std::fs::metadata(&path).and_then(|meta| meta.modified());
+            if written.is_ok_and(|at| at < cutoff)
+                && !known.query_row(params![runtime.as_str(), native_id], |row| row.get(0))?
+                && let Err(e) = std::fs::remove_file(&path)
+            {
+                log::warn!("failed to delete `{}`: {e}", path.display());
+            }
         }
     }
     Ok(())

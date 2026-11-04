@@ -1,22 +1,22 @@
 //! Pi, through the extension `rexume install` writes and the daemon keeps current.
 
-use std::io::Write;
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
-use serde_json::{Value, json};
+use serde_json::Value;
 
-use super::{Conversation, Sealed, Sent, Span, Target, Turn, content_texts, text_at};
+use super::{Conversation, Sealed, Span, Turn, content_texts, inbox, text_at};
 
 /// The extension `rexume install` writes into Pi's extensions directory.
 pub const EXTENSION: &str = include_str!("pi/extension.ts");
 
-/// How the extension starts in every version, so that a file install wrote is recognized after
-/// the rest of its first line changes.
-pub const WRITTEN_BY: &str = "// Written by `rexume install`";
-
 /// The `customType` of the notices and requests the extension passes to Pi.
 const NOTICE: &str = "rexume";
+
+/// The conversation's inbox. Every released extension watches it here, and a running Pi keeps the
+/// extension it loaded, so it cannot move.
+pub fn inbox(state_dir: &Path, native_id: &str) -> PathBuf {
+    inbox::dir(&state_dir.join("inbox"), native_id)
+}
 
 /// Pi reopens a session from its file; before its first message it has written none, and then the
 /// reported settings are all there is.
@@ -49,30 +49,7 @@ pub fn settings(transcript: &Path, conversation: &mut Conversation) {
     }
 }
 
-pub fn inbox(state_dir: &Path, native_id: &str) -> PathBuf {
-    state_dir.join("inbox").join(native_id.replace('/', "_"))
-}
-
-/// The extension takes each message from the conversation's inbox, renames it to `.accepted`, and
-/// passes it to Pi, which records it as a `custom_message`.
-pub fn send(target: &Target, state_dir: &Path, id: &str, text: &str) -> Result<Sent> {
-    let dir = inbox(state_dir, target.native_id);
-    crate::store::create_private_dir(&dir)?;
-    // Written whole under a name the extension ignores, then renamed into view.
-    let mut file = tempfile::NamedTempFile::with_prefix_in(".", &dir)?;
-    file.write_all(json!({ "text": text }).to_string().as_bytes())?;
-    file.persist(dir.join(format!("{id}.json")))?;
-    Ok(Sent::Handed)
-}
-
-/// Whether the extension took the message from the inbox: Pi holds it, but the conversation may
-/// not have taken it in yet.
-pub fn accepted(state_dir: &Path, native_id: &str, id: &str) -> bool {
-    inbox(state_dir, native_id)
-        .join(format!("{id}.accepted"))
-        .exists()
-}
-
+/// Pi records a notice or request the extension passes it as a `custom_message`.
 pub fn received(record: &Value) -> bool {
     record.get("type").and_then(Value::as_str) == Some("custom_message")
         && record.get("customType").and_then(Value::as_str) == Some(NOTICE)
@@ -142,6 +119,8 @@ impl Parser {
 #[cfg(test)]
 mod tests {
     use std::os::unix::fs::PermissionsExt;
+
+    use anyhow::Result;
 
     use super::super::tests::{node, settings, transcript};
     use super::super::{Runtime, last_turn};

@@ -1,7 +1,10 @@
-use std::io::Write as _;
 use std::path::Path;
 
+use anyhow::Context as _;
+
 use super::*;
+use crate::runtime::pi;
+use crate::runtime::tests::{answer_line, append_to_record, receipt_line};
 use crate::task::follow::Follow;
 use crate::task::gone::block_gone;
 use crate::task::notice::orphaned_sends;
@@ -47,9 +50,9 @@ fn request(store: &Store) -> Result<(String, Option<String>)> {
 
 fn request_lifecycle(runtime: Runtime) -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let mut transcript = record(&[])?;
+    let transcript = record(&[])?;
     let (mut store, id) = request_world(dir.path(), transcript.path(), runtime)?;
-    let inbox = pi::inbox(store.dir(), "w");
+    let inbox = runtime.inbox(store.dir(), "w").context("no inbox")?;
     let mut interest = Interest::default();
     send_due(&mut store, &mut interest)?;
     assert_eq!(
@@ -95,16 +98,16 @@ fn request_lifecycle(runtime: Runtime) -> Result<()> {
     )?;
     send_due(&mut store, &mut interest)?;
     assert_eq!(request(&store)?.0, "accepted");
-    writeln!(
-        transcript,
-        r#"{{"type":"custom_message","id":"n1","customType":"rexume","content":"{} go","display":true}}"#,
-        runtime::token(&id)
+    append_to_record(
+        runtime,
+        store.dir(),
+        "w",
+        transcript.path(),
+        &[
+            receipt_line(runtime, &runtime::token(&id)),
+            answer_line(runtime, "a1", "Here."),
+        ],
     )?;
-    writeln!(
-        transcript,
-        r#"{{"type":"message","id":"a1","message":{{"role":"assistant","stopReason":"stop","content":[{{"type":"text","text":"Here."}}]}}}}"#
-    )?;
-    transcript.flush()?;
     Follow::default().pass(&mut store, None)?;
     assert_eq!(request(&store)?.0, "delivered");
     let result: Option<String> =

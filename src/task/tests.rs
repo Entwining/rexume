@@ -282,7 +282,7 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
         ("request::WORKER", request::WORKER, None),
         ("request::CLAIM", &request::CLAIM, None),
         ("request::ROUND_OPEN", &request::ROUND_OPEN, None),
-        ("request::SENT_TO_INBOX", &request::SENT_TO_INBOX, open),
+        ("request::SENT", &request::SENT, open),
         ("restore::OPEN_RESTORES", restore::OPEN_RESTORES, None),
         ("restore::OPENED_ELSEWHERE", restore::OPENED_ELSEWHERE, None),
         ("restore::FOREGROUND", restore::FOREGROUND, None),

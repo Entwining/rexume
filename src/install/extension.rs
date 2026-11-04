@@ -9,6 +9,10 @@ use anyhow::{Context, Result};
 use super::{Outcome, remove_file, write};
 use crate::runtime::{omp, pi};
 
+/// How every version of either extension starts, so that a file install wrote is recognized after
+/// the rest of its first line changes.
+const WRITTEN_BY: &str = "// Written by `rexume install`";
+
 /// A runtime's extension, which install writes into the runtime's agent directory under home.
 pub(super) struct Extension {
     /// The runtime's name, for the daemon's log.
@@ -29,7 +33,7 @@ pub(super) const OMP_EXTENSION: Extension = Extension {
 };
 
 impl Extension {
-    pub(super) fn path(&self, home: &Path) -> PathBuf {
+    fn path(&self, home: &Path) -> PathBuf {
         home.join(self.agent).join("extensions/rexume.ts")
     }
 
@@ -46,7 +50,7 @@ impl Extension {
 
     /// Removes the extension when install wrote it, in this version or an earlier one.
     pub(super) fn uninstall(&self, home: &Path) -> Result<Outcome> {
-        remove_file(&self.path(home), |text| text.starts_with(pi::WRITTEN_BY))
+        remove_file(&self.path(home), |text| text.starts_with(WRITTEN_BY))
     }
 
     /// Rewrites the extension install wrote when it differs from this version's, so that an
@@ -56,7 +60,7 @@ impl Extension {
     fn refresh(&self, home: &Path) -> Result<&'static str> {
         let path = self.path(home);
         match std::fs::read_to_string(&path) {
-            Ok(text) if text.starts_with(pi::WRITTEN_BY) => write(&path, self.text.as_bytes()),
+            Ok(text) if text.starts_with(WRITTEN_BY) => write(&path, self.text.as_bytes()),
             Ok(_) => Ok("kept"),
             Err(e) if e.kind() == ErrorKind::NotFound => Ok("absent"),
             Err(e) => Err(e).with_context(|| format!("failed to read `{}`", path.display())),
@@ -98,18 +102,12 @@ mod tests {
         for path in [&pi_path, &omp_path] {
             std::fs::create_dir_all(path.parent().unwrap())?;
         }
-        std::fs::write(
-            &pi_path,
-            format!("{}, by an older version\n", pi::WRITTEN_BY),
-        )?;
+        std::fs::write(&pi_path, format!("{}, by an older version\n", WRITTEN_BY))?;
         assert_eq!(refresh()?, ["updated", "absent"]);
         assert_eq!(std::fs::read_to_string(&pi_path)?, pi::EXTENSION);
         assert!(!omp_path.exists());
 
-        std::fs::write(
-            &omp_path,
-            format!("{}, by an older version\n", pi::WRITTEN_BY),
-        )?;
+        std::fs::write(&omp_path, format!("{}, by an older version\n", WRITTEN_BY))?;
         let inode = std::fs::metadata(&pi_path)?.ino();
         assert_eq!(refresh()?, ["unchanged", "updated"]);
         assert_eq!(std::fs::read_to_string(&omp_path)?, omp::EXTENSION);

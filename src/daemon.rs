@@ -15,16 +15,17 @@ use std::fs::{File, Permissions, TryLockError};
 use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result, bail};
+use clap::ValueEnum as _;
 use nix::sys::signal::{SigSet, Signal};
 use rusqlite::params;
 
 use crate::event::{Queue, Token};
 use crate::install;
 use crate::rex::Cli;
-use crate::runtime::claude;
+use crate::runtime::Runtime;
 use crate::store::{self, Store, now_ms};
 use crate::task;
 
@@ -59,10 +60,13 @@ pub fn run(options: &Options) -> Result<()> {
         stop.add(signal);
     }
     stop.thread_block()?;
-    // With the directory of Claude Code's turn records, a record not written yet is followed
-    // through it until it appears.
-    let records = claude::records(&options.state_dir);
-    store::create_private_dir(&records)?;
+    // With the directory of the turn records this tool keeps, a record not written yet is
+    // followed through it until it appears.
+    for runtime in Runtime::value_variants() {
+        if let Some(records) = runtime.records(&options.state_dir) {
+            store::create_private_dir(&records)?;
+        }
+    }
     // A daemon starts after every upgrade, so this closes a state directory an earlier version
     // created open to other users. The daemon works the same either way, so a failure is no reason
     // to stop restoring.
@@ -91,28 +95,7 @@ pub fn run(options: &Options) -> Result<()> {
             });
         }
     }
-    // A daemon starts after every upgrade, so this is where a new extension reaches Pi and omp; a
-    // runtime without it only misses reports and notices, which is no reason to stop restoring.
-    for (runtime, refreshed) in install::refresh_extensions(&options.home) {
-        match refreshed {
-            Ok("updated") => log::info!("updated the {runtime} extension"),
-            Ok(_) => {}
-            Err(e) => log::warn!("failed to refresh the {runtime} extension: {e:#}"),
-        }
-    }
-    // Likewise for the Claude Code plugin, without which notices and requests still arrive, framed
-    // as another session's messages.
-    match install::refresh_claude_plugin(&options.home) {
-        Ok("updated") => log::info!("updated the Claude Code plugin"),
-        Ok(_) => {}
-        Err(e) => log::warn!("failed to refresh the Claude Code plugin: {e:#}"),
-    }
-    // Claude Code rounds finish only from the turn record its turn hooks write.
-    match install::refresh_claude_hooks(&options.home) {
-        Ok("created") => log::info!("added the Claude Code turn hooks"),
-        Ok(_) => {}
-        Err(e) => log::warn!("failed to add the Claude Code turn hooks: {e:#}"),
-    }
+    refresh_integrations(&options.home);
     let mut store = Store::open(&options.state_dir)?;
     // Holding the lock, an epoch still open belongs to a daemon that died. Whether its server
     // stopped afterwards is unknown, so nothing it saw counts as the server's final state. A pane
@@ -166,6 +149,32 @@ pub fn run(options: &Options) -> Result<()> {
             None => Err(e),
         },
         Ok(never) => match never {},
+    }
+}
+
+/// A daemon starts after every upgrade, so this is where a new version of what install writes
+/// reaches each runtime. What each one lacks without it is no reason to stop restoring.
+fn refresh_integrations(home: &Path) {
+    // Without its extension, Pi or omp reports no session and takes no notice.
+    for (runtime, refreshed) in install::refresh_extensions(home) {
+        match refreshed {
+            Ok("updated") => log::info!("updated the {runtime} extension"),
+            Ok(_) => {}
+            Err(e) => log::warn!("failed to refresh the {runtime} extension: {e:#}"),
+        }
+    }
+    // Without the plugin, notices and requests still reach Claude Code, framed as another
+    // session's messages.
+    match install::refresh_claude_plugin(home) {
+        Ok("updated") => log::info!("updated the Claude Code plugin"),
+        Ok(_) => {}
+        Err(e) => log::warn!("failed to refresh the Claude Code plugin: {e:#}"),
+    }
+    // Claude Code rounds finish only from the turn record its turn hooks write.
+    match install::refresh_claude_hooks(home) {
+        Ok("created") => log::info!("added the Claude Code turn hooks"),
+        Ok(_) => {}
+        Err(e) => log::warn!("failed to add the Claude Code turn hooks: {e:#}"),
     }
 }
 

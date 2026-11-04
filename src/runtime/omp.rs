@@ -1,170 +1,136 @@
 //! oh-my-pi (omp), a fork of Pi, through the extension `rexume install` writes and the daemon keeps
-//! current. Its session record, notices, and inbox are Pi's (`super::pi`).
+//! current. omp replaces its session file when it rewrites it, which a record followed by offset
+//! cannot follow, so the extension writes the conversation's turns to a record of this tool's.
 
-use super::Conversation;
+use std::path::{Path, PathBuf};
 
-/// The extension `rexume install` writes into omp's extensions directory. It starts with
-/// `pi::WRITTEN_BY` too.
+use serde_json::Value;
+
+use super::{Conversation, Sealed, Span, Turn, inbox, text_at};
+
+/// The extension `rexume install` writes into omp's extensions directory.
 pub const EXTENSION: &str = include_str!("omp/extension.ts");
 
-/// omp reopens a session from its file with the model and thinking level of the session's current
-/// branch; a setting given on the command line would override those. `--session` is omp's alias
-/// of `--resume`.
+/// omp reopens a session from its file with the model and thinking level the session last used; a
+/// setting given on the command line would override those.
 pub fn resume_argv(c: &Conversation) -> Vec<String> {
     vec![
         "omp".to_owned(),
-        "--session".to_owned(),
+        "--resume".to_owned(),
         c.transcript.clone().unwrap_or_else(|| c.native_id.clone()),
     ]
 }
 
-#[cfg(test)]
-mod tests {
-    use std::collections::HashSet;
-    use std::os::unix::fs::PermissionsExt;
+/// The directory of the turn records the extension writes, which also holds the inboxes.
+pub fn records(state_dir: &Path) -> PathBuf {
+    state_dir.join("omp")
+}
 
-    use anyhow::Result;
-    use serde_json::Value;
+pub fn inbox(state_dir: &Path, native_id: &str) -> PathBuf {
+    inbox::dir(&records(state_dir).join("inbox"), native_id)
+}
 
-    use super::super::tests::{node, settings, transcript};
-    use super::super::{Receipt, Runtime, Turn, last_turn, pi};
-    use super::*;
+pub fn record(state_dir: &Path, native_id: &str) -> PathBuf {
+    records(state_dir).join(format!("{native_id}.jsonl"))
+}
 
-    #[test]
-    fn a_session_reopens_from_its_file_only_once_it_exists() -> Result<()> {
-        let dir = tempfile::tempdir()?;
-        let session = dir.path().join("session.jsonl");
-        let path = session.to_string_lossy().into_owned();
-        let mut c = Conversation {
-            native_id: "s".into(),
-            transcript: Some(path.clone()),
-            settings: settings(&[("model", "fast"), ("effort", "low"), ("provider", "gw")]),
+pub fn received(record: &Value) -> bool {
+    record.get("event").and_then(Value::as_str) == Some("received")
+}
+
+/// omp's turns as the extension records them: `session` when a process takes the session up,
+/// `start` when omp starts a run, `prompt` for input from the user or the command line, `received`
+/// for a notice or request in the conversation, and `end` when a run ends. A turn ends at an `end`
+/// after which omp waits for input, or only for background work whose result starts another; within
+/// one process, every run that starts before then carries the turn on, as omp's retries,
+/// compactions, and recoveries do. A process that ended without that `end`, as the server's end
+/// cuts one off, leaves the turn open: the next process's first run carries it on with the
+/// continuation prompt or no input, and with any other input starts a new turn, after which the
+/// cut-off one ends as cancelled, as Claude Code's does.
+#[derive(Default)]
+pub struct Parser {
+    turn: Option<Turn>,
+    /// Where the turn not yet yielded starts.
+    open: Option<u64>,
+    /// A process took the session up while the turn was open, and has started no run since.
+    resumed: bool,
+    /// Where that process's first run started, until its input or its end tells whose it is.
+    restart: Option<u64>,
+}
+
+impl Parser {
+    pub fn feed(&mut self, record: &Value, span: Span, sealed: &mut Vec<Sealed>) {
+        let text = |key: &str| record.get(key).and_then(Value::as_str);
+        let flag = |key: &str| record.get(key).and_then(Value::as_bool) == Some(true);
+        let ended = match text("event") {
+            Some("session") => {
+                self.resumed = self.open.is_some();
+                return;
+            }
+            Some("start") => {
+                if self.open.is_none() {
+                    self.open = Some(span.start);
+                } else if self.resumed {
+                    self.restart = Some(span.start);
+                }
+                self.resumed = false;
+                self.turn = Some(Turn::Open);
+                return;
+            }
+            Some("prompt" | "received") => {
+                if let Some(start) = self.restart.take()
+                    && !text("token").is_some_and(super::is_continuation)
+                {
+                    self.seal(Turn::Cancelled, start, sealed);
+                    self.open = Some(start);
+                }
+                return;
+            }
+            Some("end") if flag("will_continue") && !flag("awaiting_async_work") => {
+                self.restart = None;
+                return;
+            }
+            Some("end") => match text("stop_reason") {
+                // `length` cut the answer short; `toolUse`, a tool such as `yield` ended the run.
+                Some("stop" | "length" | "toolUse") => Turn::Completed {
+                    reference: text_at(record, "/id"),
+                    text: text_at(record, "/answer"),
+                },
+                Some("aborted") => Turn::Cancelled,
+                Some("error") => Turn::Failed {
+                    text: text_at(record, "/error"),
+                },
+                Some(reason) => Turn::Failed {
+                    text: format!("the run ended with stop reason `{reason}`"),
+                },
+                None => Turn::Failed {
+                    text: "the run ended without an answer".to_owned(),
+                },
+            },
+            _ => return,
         };
-        // omp writes the file with its first answer and refuses to resume a missing one.
-        assert!(!Runtime::Omp.can_reopen(&c));
-        std::fs::write(&session, "")?;
-        assert!(Runtime::Omp.can_reopen(&c));
-        Runtime::Omp.settings(&mut c)?;
-        assert_eq!(Runtime::Omp.resume_argv(&c), ["omp", "--session", &path]);
-        assert_eq!(Runtime::Omp.to_string(), "omp");
-        assert_eq!("omp".parse::<Runtime>()?, Runtime::Omp);
-        Ok(())
+        self.open.get_or_insert(span.start);
+        self.seal(ended.clone(), span.end, sealed);
+        self.turn = Some(ended);
     }
 
-    #[test]
-    fn turns_and_receipts_follow_the_session_record() -> Result<()> {
-        let header = r#"{"type":"session","version":3,"id":"s","timestamp":"2026-01-01T00:00:00.000Z","cwd":"/w"}"#;
-        let user = r#"{"type":"message","id":"u1","parentId":null,"message":{"role":"user","content":"go"}}"#;
-        let stop = r#"{"type":"message","id":"a1","parentId":"u1","message":{"role":"assistant","stopReason":"stop","content":[{"type":"text","text":"ok"}]}}"#;
-        let error = r#"{"type":"message","id":"a2","parentId":"u1","message":{"role":"assistant","stopReason":"error","errorMessage":"overloaded","content":[]}}"#;
-        let aborted = r#"{"type":"message","id":"a3","parentId":"u1","message":{"role":"assistant","stopReason":"aborted","content":[]}}"#;
-        let notice = r#"{"type":"custom_message","id":"n1","parentId":"a1","customType":"rexume","content":"[rexume d1] done","display":true}"#;
-        let other = r#"{"type":"custom_message","id":"n2","parentId":"a1","customType":"other","content":"[rexume d2] quoted","display":true}"#;
-        let turn = |lines: &[&str]| last_turn(Runtime::Omp, transcript(lines).path(), 0);
-        assert_eq!(turn(&[header])?, Some(Turn::None));
-        assert_eq!(turn(&[header, user])?, Some(Turn::Open));
-        assert_eq!(
-            turn(&[header, user, stop])?,
-            Some(Turn::Completed {
-                reference: "a1".into(),
-                text: "ok".into()
-            })
-        );
-        assert_eq!(
-            turn(&[header, user, error])?,
-            Some(Turn::Failed {
-                text: "overloaded".into()
-            })
-        );
-        assert_eq!(turn(&[header, user, aborted])?, Some(Turn::Cancelled));
-        assert_eq!(turn(&[header, user, stop, notice])?, Some(Turn::Open));
-        let record = transcript(&[header, user, stop, other, notice]);
-        let pending = ["d1".to_owned(), "d2".to_owned()];
-        assert_eq!(
-            Receipt::new(Runtime::Omp, record.path()).found(&pending)?,
-            HashSet::from(["d1".to_owned()])
-        );
-        Ok(())
-    }
-
-    /// Loads the extension in Node and runs its handlers with a fake omp: `session_start` for the
-    /// pane's session in `tui` mode, a subagent's start, and a switch to another session. Each
-    /// report's input is printed, then whether each handler watched the inbox.
-    const HARNESS: &str = r#"
-        import { mkdirSync, writeFileSync } from "node:fs";
-        import { join } from "node:path";
-        const [extension, home] = process.argv.slice(1);
-        const handlers = {};
-        const sent = [];
-        const api = { on: (event, handler) => (handlers[event] = handler), sendMessage: (m) => sent.push(m.content) };
-        (await import(extension)).default(api);
-        const ctx = (id, kind, mode) => ({
-          mode, hasUI: false, agent: { kind },
-          sessionManager: { getSessionId: () => id, getSessionFile: () => join(home, `${id}.jsonl`) },
-        });
-        const inbox = join(home, ".local/state/rexume/inbox");
-        for (const id of ["main", "sub", "next"]) {
-          mkdirSync(join(inbox, id), { recursive: true });
-          writeFileSync(join(inbox, id, "d.json"), JSON.stringify({ text: `[rexume d] to ${id}` }));
+    /// Yields the open turn as `turn`, ending at `end`.
+    fn seal(&mut self, turn: Turn, end: u64, sealed: &mut Vec<Sealed>) {
+        if let Some(start) = self.open.take() {
+            sealed.push(Sealed {
+                turn,
+                span: Span { start, end },
+                took: Vec::new(),
+            });
         }
-        handlers.session_start({ type: "session_start" }, ctx("sub", "sub", "print"));
-        handlers.session_start({ type: "session_start" }, ctx("main", "main", "tui"));
-        handlers.session_switch({ type: "session_switch", reason: "new" }, ctx("next", "main", "tui"));
-        handlers.session_shutdown({ type: "session_shutdown" }, ctx("next", "main", "tui"));
-        process.once("beforeExit", () => console.log(JSON.stringify(sent)));
-    "#;
+        self.resumed = false;
+        self.restart = None;
+    }
 
-    /// The extension reports every session it starts or switches to, and takes notices only for
-    /// the pane's own session, in `tui` mode.
-    #[test]
-    fn the_extension_reports_each_session_and_delivers_only_to_the_panes() -> Result<()> {
-        assert!(EXTENSION.starts_with(pi::WRITTEN_BY));
-        let node = node()?;
-        let dir = tempfile::tempdir()?;
-        let extension = dir.path().join("rexume.ts");
-        std::fs::write(&extension, EXTENSION)?;
-        let (bin, reports) = (dir.path().join("bin"), dir.path().join("reports"));
-        std::fs::create_dir(&bin)?;
-        std::fs::create_dir(&reports)?;
-        let fake = bin.join("rexume");
-        std::fs::write(
-            &fake,
-            format!(
-                "#!/bin/sh\n[ \"$*\" = 'report omp' ] || exit 2\n/bin/cat > \"$(/usr/bin/mktemp '{}/r.XXXXXX')\"\n",
-                reports.display()
-            ),
-        )?;
-        std::fs::set_permissions(&fake, PermissionsExt::from_mode(0o755))?;
-        let out = std::process::Command::new(&node)
-            .args(["--input-type=module", "-e", HARNESS])
-            .arg(&extension)
-            .arg(dir.path())
-            .env("PATH", &bin)
-            .env("HOME", dir.path())
-            .output()?;
-        let stderr = String::from_utf8_lossy(&out.stderr);
-        anyhow::ensure!(out.status.success(), "omp ended: {stderr}");
-        let sent: Vec<String> = serde_json::from_slice(&out.stdout)?;
-        assert_eq!(sent, ["[rexume d] to main", "[rexume d] to next"]);
-        let mut reported = std::fs::read_dir(&reports)?
-            .map(|entry| -> Result<(String, String, String)> {
-                let r: Value = serde_json::from_slice(&std::fs::read(entry?.path())?)?;
-                let at = |k: &str| r[k].as_str().unwrap_or_default().to_owned();
-                Ok((at("session_id"), at("mode"), at("agent")))
-            })
-            .collect::<Result<Vec<_>>>()?;
-        reported.sort();
-        assert_eq!(
-            reported,
-            [
-                ("main".into(), "tui".into(), "main".into()),
-                ("next".into(), "tui".into(), "main".into()),
-                ("sub".into(), "print".into(), "sub".into()),
-            ]
-        );
-        let inbox = dir.path().join(".local/state/rexume/inbox");
-        assert!(inbox.join("sub/d.json").exists());
-        assert!(inbox.join("main/d.accepted").exists());
-        Ok(())
+    pub fn turn(&self) -> Turn {
+        self.turn.clone().unwrap_or(Turn::None)
     }
 }
+
+#[cfg(test)]
+mod tests;

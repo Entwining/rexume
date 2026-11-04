@@ -1,4 +1,5 @@
 use super::*;
+use crate::runtime::claude;
 
 fn store() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
@@ -264,8 +265,8 @@ fn settle_returns_after_another_connections_commit() -> Result<()> {
     writer.join().unwrap()
 }
 
-/// A Claude Code turn record goes once its hooks have written nothing for the retention period
-/// and no conversation row names it.
+/// A turn record this tool keeps goes once nothing has written to it for the retention period
+/// and no conversation of its runtime names it.
 #[test]
 fn sweep_records_deletes_only_old_records_of_forgotten_conversations() -> Result<()> {
     let (dir, store) = store();
@@ -274,19 +275,28 @@ fn sweep_records_deletes_only_old_records_of_forgotten_conversations() -> Result
            VALUES ('claude', 'known', 1, 0);",
     )?;
     let old = SystemTime::now() - RETENTION - Duration::from_secs(60);
-    std::fs::create_dir_all(claude::records(dir.path()))?;
-    for (native_id, modified) in [
-        ("known", old),
-        ("forgotten", old),
-        ("recent", SystemTime::now()),
-    ] {
-        std::fs::File::create(claude::record(dir.path(), native_id))?.set_modified(modified)?;
+    let left = |runtime: Runtime| -> Result<Vec<String>> {
+        let records = runtime.records(dir.path()).context("no records")?;
+        let mut left: Vec<String> = std::fs::read_dir(records)?
+            .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
+            .collect::<Result<_>>()?;
+        left.sort();
+        Ok(left)
+    };
+    for runtime in [Runtime::Claude, Runtime::Omp] {
+        std::fs::create_dir_all(runtime.records(dir.path()).context("no records")?)?;
+        for (native_id, modified) in [
+            ("known", old),
+            ("forgotten", old),
+            ("recent", SystemTime::now()),
+        ] {
+            let record = runtime.record(dir.path(), native_id, None);
+            std::fs::File::create(record.context("no record")?)?.set_modified(modified)?;
+        }
     }
     sweep_records(&store)?;
-    let mut left: Vec<String> = std::fs::read_dir(claude::records(dir.path()))?
-        .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
-        .collect::<Result<_>>()?;
-    left.sort();
-    assert_eq!(left, ["known.jsonl", "recent.jsonl"]);
+    assert_eq!(left(Runtime::Claude)?, ["known.jsonl", "recent.jsonl"]);
+    // A Claude Code conversation of the same ID keeps no omp record.
+    assert_eq!(left(Runtime::Omp)?, ["recent.jsonl"]);
     Ok(())
 }

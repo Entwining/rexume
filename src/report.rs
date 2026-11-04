@@ -35,15 +35,15 @@ pub struct Report {
     /// A merge patch (RFC 7396) over the recorded settings: a key it leaves out is kept, and one
     /// it sets to `null` is removed.
     pub settings: Map<String, Value>,
-    /// The record's length when the session started, from a runtime that measures it itself: the
-    /// Pi and omp extensions, which go on with the session while their report runs. A hook holds the
-    /// session until the report ends, so the report measures it for Claude Code and Codex.
+    /// The record's length when the runtime reported, from a runtime that measures it itself: the
+    /// Pi and omp extensions, which go on with the session while their report runs. A hook holds
+    /// the session until the report ends, so the report measures it for Claude Code and Codex.
     pub record_length: Option<u64>,
 }
 
 /// Reads the hook's JSON input. Claude Code and Codex send their hook input; the Pi extension sends
 /// `session_id`, `session_file`, `session_file_size`, `mode`, `provider`, `model`, and `thinking`,
-/// and the omp extension `session_id`, `session_file`, `session_file_size`, `mode`, and `agent`.
+/// and the omp extension `session_id`, `session_file`, `record_length`, and `mode`.
 pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
     let text = |key: &str| {
         input
@@ -57,12 +57,11 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
     // with `agent_id`. Codex records every interactive conversation, and none of its guardian
     // reviews or side conversations, nor an ephemeral `codex exec` run. Pi runs the pane's
     // interactive session in `tui` mode, and an SDK session an extension creates starts in
-    // `print` mode, as `pi -p` does. omp runs its extensions in each subagent session too, which
-    // it marks with `agent` `sub`.
+    // `print` mode, as `pi -p` does. omp runs its extensions in each subagent session too, and
+    // its extension reports only the session omp was started for.
     let role = match runtime {
         Runtime::Claude if input.get("agent_id").is_some_and(|v| !v.is_null()) => Role::Inner,
         Runtime::Codex if text("transcript_path").is_none() => Role::Unmarked,
-        Runtime::Omp if text("agent").as_deref() == Some("sub") => Role::Inner,
         Runtime::Pi | Runtime::Omp if text("mode").as_deref() != Some("tui") => Role::Unmarked,
         _ => Role::Own,
     };
@@ -82,7 +81,7 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
             settings: settings_from(&[("model", "model"), ("effort", "effort")]),
             record_length: None,
         },
-        Runtime::Pi | Runtime::Omp => {
+        Runtime::Pi => {
             let file = text("session_file");
             Report {
                 native_id: text("session_id")
@@ -91,16 +90,24 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
                 role,
                 resumable: role == Role::Own && file.is_some(),
                 transcript: file,
-                // omp takes the model and thinking level from the session file it resumes.
-                settings: match runtime {
-                    Runtime::Pi => settings_from(&[
-                        ("provider", "provider"),
-                        ("model", "model"),
-                        ("thinking", "effort"),
-                    ]),
-                    _ => Map::new(),
-                },
+                settings: settings_from(&[
+                    ("provider", "provider"),
+                    ("model", "model"),
+                    ("thinking", "effort"),
+                ]),
                 record_length: input.get("session_file_size").and_then(Value::as_u64),
+            }
+        }
+        Runtime::Omp => {
+            let file = text("session_file");
+            Report {
+                native_id: text("session_id").context("hook input without session_id")?,
+                role,
+                resumable: role == Role::Own && file.is_some(),
+                transcript: file,
+                // omp takes the model and thinking level from the session file it resumes.
+                settings: Map::new(),
+                record_length: input.get("record_length").and_then(Value::as_u64),
             }
         }
     })

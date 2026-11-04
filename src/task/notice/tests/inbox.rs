@@ -1,11 +1,14 @@
+use anyhow::Context as _;
+
 use super::*;
-use crate::runtime::{Runtime, pi};
+use crate::runtime::Runtime;
+use crate::runtime::tests::{answer_line, append_to_record, receipt_line};
 
 #[test]
 fn inbox_notices_are_accepted_once_and_delivered_only_from_the_owners_record() -> Result<()> {
     for runtime in [Runtime::Pi, Runtime::Omp] {
         let dir = tempfile::tempdir()?;
-        let mut transcript = tempfile::NamedTempFile::new()?;
+        let transcript = tempfile::NamedTempFile::new()?;
         let (mut store, _listener) = notice_world(dir.path(), transcript.path(), "pending")?;
         store.conn().execute(
             "INSERT INTO conversation (runtime, native_id, transcript, resumable, reported_at)
@@ -24,7 +27,9 @@ fn inbox_notices_are_accepted_once_and_delivered_only_from_the_owners_record() -
         let mut receipts = HashMap::new();
         send_due(&mut store, &mut interest)?;
         assert_eq!(notice(&store)?.0, "sent");
-        let inbox = pi::inbox(store.dir(), "inbox-owner");
+        let inbox = runtime
+            .inbox(store.dir(), "inbox-owner")
+            .context("no inbox")?;
         let pending = inbox.join("d.json");
         let accepted = inbox.join("d.accepted");
         std::fs::rename(&pending, &accepted)?;
@@ -33,33 +38,24 @@ fn inbox_notices_are_accepted_once_and_delivered_only_from_the_owners_record() -
         assert!(interest.files.contains(&inbox));
         send_due(&mut store, &mut interest)?;
         assert!(!pending.exists(), "accepted notices must not be sent twice");
-        writeln!(
-            transcript,
-            "{}",
-            json!({
-                "type": "message", "id": "a1", "message": {
-                    "role": "assistant", "stopReason": "stop", "content": [{
-                        "type": "text", "text": runtime::token("d")
-                    }]
-                }
-            })
-        )?;
-        transcript.flush()?;
+        // The owner's answer mentions the token, then the record shows the notice taken in.
+        let token = runtime::token("d");
+        let (mention, receipt) = (
+            answer_line(runtime, "a1", &token),
+            receipt_line(runtime, &token),
+        );
+        let state = store.dir().to_owned();
+        let append = |line: Value| {
+            append_to_record(runtime, &state, "inbox-owner", transcript.path(), &[line])
+        };
+        append(mention)?;
         settle(&mut store, &mut receipts, &mut interest)?;
         assert_eq!(
             notice(&store)?.0,
             "accepted",
             "mentioning a token is no receipt"
         );
-        writeln!(
-            transcript,
-            "{}",
-            json!({
-                "type": "custom_message", "id": "n1", "customType": "rexume",
-                "content": format!("{} Done.", runtime::token("d")), "display": true
-            })
-        )?;
-        transcript.flush()?;
+        append(receipt)?;
         settle(&mut store, &mut receipts, &mut interest)?;
         assert_eq!(notice(&store)?.0, "delivered");
     }

@@ -74,7 +74,7 @@ rexume install
 | On macOS, LaunchAgent `io.github.entwining.rexume`, which runs `rexume daemon` | `~/Library/LaunchAgents/io.github.entwining.rexume.plist` |
 | On Linux, systemd user service `rexume.service`, which runs `rexume daemon` | `~/.config/systemd/user/rexume.service` |
 
-A runtime whose directory does not exist is skipped, and the JSON says so: Pi needs `~/.pi/agent` and omp needs `~/.omp/agent`, and install creates neither. If you install Claude Code, Codex, Pi, or omp later, run `rexume install` again once it is set up. Running it again leaves one copy of each entry and keeps your other hooks and settings; [docs/cli.md](docs/cli.md#how-install-recognizes-its-entries) describes how it recognizes its entries.
+A runtime whose directory does not exist is skipped, and the JSON says so: Pi needs `~/.pi/agent` and omp needs `~/.omp/agent`, and install creates neither. An omp profile's agent directory, or one that `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR` names, gets no extension, so its sessions report nothing and take no notices. If you install Claude Code, Codex, Pi, or omp later, run `rexume install` again once it is set up. Running it again leaves one copy of each entry and keeps your other hooks and settings; [docs/cli.md](docs/cli.md#how-install-recognizes-its-entries) describes how it recognizes its entries.
 
 Codex runs a new hook only after you approve it: open `/hooks` in Codex and trust the `rexume report codex` entry.
 
