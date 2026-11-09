@@ -6,6 +6,7 @@ use std::time::Duration;
 
 use anyhow::{Context, Result};
 use clap::Subcommand;
+use clap::builder::NonEmptyStringValueParser;
 use serde_json::Value;
 
 use crate::task;
@@ -49,7 +50,7 @@ pub(super) enum Command {
     /// only through `task send`. Fails while another task that is not released has the pane.
     Add {
         /// The Rex block ID of the worker's pane, as REX_BLOCK gives it there
-        #[arg(long, value_name = "BLOCK")]
+        #[arg(long, value_name = "BLOCK", value_parser = NonEmptyStringValueParser::new())]
         worker: String,
         /// A short name for the task, shown in notices and in `task list`
         #[arg(long, value_name = "TEXT")]

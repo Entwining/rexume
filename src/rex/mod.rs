@@ -10,7 +10,7 @@ use std::os::unix::ffi::OsStringExt;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result, anyhow, bail};
 use serde_json::{Value, json};
 
 pub use pipe::Pipe;
@@ -104,10 +104,22 @@ impl Rex {
             "target.resolve",
             &json!({ "kinds": ["block"], "queries": [block] }),
         )?;
-        if str_at(&reply, "/results/0/status") == Some("not_found") {
-            return Ok(None);
+        resolved_session(&reply, block)
+    }
+}
+
+/// The session in a `target.resolve` reply for `block`. An ambiguous query, such as a label several
+/// panes share, carries no target; Rex's schema asks clients to treat a status they don't know as
+/// `not_found`.
+fn resolved_session(reply: &Value, block: &str) -> Result<Option<String>> {
+    match require_str(reply, "/results/0/status")?.as_str() {
+        "resolved" => require_str(reply, "/results/0/target/session_id").map(Some),
+        "ambiguous" => {
+            let reason =
+                str_at(reply, "/results/0/reason").map_or(String::new(), |r| format!(": {r}"));
+            bail!("Rex finds {block:?} ambiguous{reason}, not one pane's block ID")
         }
-        require_str(&reply, "/results/0/target/session_id").map(Some)
+        _ => Ok(None),
     }
 }
 
@@ -248,6 +260,23 @@ mod tests {
             cli.socket_path().unwrap(),
             PathBuf::from("/Users/me/Library/Application Support/rex/server.sock")
         );
+    }
+
+    #[test]
+    fn an_ambiguous_pane_is_refused_with_its_reason_and_an_unknown_status_is_not_found() {
+        // What Rex answers for a blank query while it has several sessions.
+        let ambiguous = json!({ "results": [{
+            "query": " ", "status": "ambiguous", "reason": "multiple sessions are available",
+            "candidates": [{ "kind": "session", "session_id": "session:s" }],
+        }] });
+        let blank = resolved_session(&ambiguous, " ").unwrap_err().to_string();
+        assert!(
+            blank.contains("ambiguous: multiple sessions are available"),
+            "{blank}"
+        );
+        let unknown =
+            json!({ "results": [{ "status": "pending", "target": { "session_id": "s" } }] });
+        assert_eq!(resolved_session(&unknown, "block:b").unwrap(), None);
     }
 
     #[test]

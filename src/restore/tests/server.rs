@@ -58,9 +58,8 @@ fn answer(server: &Mutex<Server>, method: &str, params: &Value) -> Result<Value,
                 "focused_block_id": server.focused, "layers": [{ "blocks": blocks }] }] })
         }
         "target.resolve" => match params["queries"][0].as_str() {
-            Some(b) if shown(b, &server) => {
-                json!({ "results": [{ "status": "ok", "target": { "session_id": "session:1" } }] })
-            }
+            Some(b) if shown(b, &server) => json!({ "results": [{ "status": "resolved",
+                "target": { "session_id": "session:1" } }] }),
             _ => json!({ "results": [{ "status": "not_found" }] }),
         },
         "block.close" => {

@@ -102,3 +102,14 @@ fn the_theme_colors_an_earlier_job_passes_are_accepted() {
         assert!(parsed.is_ok(), "{command}");
     }
 }
+
+/// A shell variable that came out empty is refused before anything reaches the server.
+#[test]
+fn an_empty_worker_is_a_usage_error() {
+    let parsed = Args::command()
+        .try_get_matches_from(["rexume", "task", "add", "--worker", "", "--title", "t"]);
+    assert_eq!(
+        parsed.unwrap_err().kind(),
+        clap::error::ErrorKind::InvalidValue
+    );
+}
