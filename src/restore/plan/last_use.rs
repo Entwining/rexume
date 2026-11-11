@@ -197,6 +197,11 @@ fn reopen(
     if !occupant.runtime.can_reopen(&occupant.conversation) {
         return Ok(shell("the conversation has no record to reopen yet"));
     }
+    if let Some(error) = occupant.runtime.launch_error(&occupant.conversation) {
+        return Ok(shell(&format!(
+            "the conversation's launcher declared no command Rexume can run: {error}"
+        )));
+    }
     // A record that cannot be read leaves the settings the conversation reported, as one that
     // shows none does; its runtime reports the error if it cannot reopen it either.
     let mut read = occupant.conversation.clone();

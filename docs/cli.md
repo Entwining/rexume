@@ -108,6 +108,27 @@ For Claude Code, `report` also reads what the agent process was started with: it
 
 A Claude Code conversation also records `CLAUDE_CODE_MESSAGING_SOCKET`, through which notices reach it.
 
+### A launcher's command
+
+A launcher that makes a choice for Claude Code that its flags and variables do not show, such as which provider or account it uses, declares the command that makes the same choice again. Otherwise a restore runs `claude`, and the launcher chooses by its default at that time. Just before it `exec`s Claude Code, the launcher exports:
+
+| Variable | Value |
+| --- | --- |
+| `REXUME_LAUNCH_PID` | the process that becomes Claude Code, in decimal |
+| `REXUME_LAUNCH` | the command, as a JSON array of strings such as `["claude","--profile","work"]` |
+
+The command states the choice as the launcher resolved it, not as it was asked: one that used its default names that default, so that changing the default later does not change how the conversation reopens. A restore runs the command through the pane's interactive shell with Rexume's arguments after it, as for `claude`, so the launcher passes the arguments after its own on to Claude Code; and without the provider variables `report` otherwise saves, which the launcher sets again. The command is saved in the state database and in each restore's plan, so it must not hold a credential; the launcher can fetch one when it runs.
+
+Children inherit both variables, including the processes Claude Code starts from its own binary, so the declaration counts only for the process `REXUME_LAUNCH_PID` names. An executable that `exec`s Claude Code names itself, as `$$` in a shell script. In a shell function `$$` is the interactive shell, so the function runs the `exec` from a shell of its own:
+
+```sh
+claude-work() {
+  REXUME_LAUNCH='["claude-work"]' sh -c 'export REXUME_LAUNCH_PID=$$ CLAUDE_CONFIG_DIR="$HOME/.claude-work"; exec claude "$@"' sh "$@"
+}
+```
+
+When `REXUME_LAUNCH_PID` names the process but `REXUME_LAUNCH` is missing, is not a JSON array of strings, is empty, holds a NUL, or starts with an empty element or one with `=`, a restore leaves the pane's shell, and the daemon's log says why. Each report replaces what an earlier one saved, so a conversation started again without a declaration reopens as that start did. Only Claude Code's report reads these variables.
+
 ## task
 
 The task commands run from the orchestrator's own Rex pane: they find the calling conversation through `REX_BLOCK` and the conversation last recorded there, and refuse a task another conversation owns.
@@ -158,5 +179,6 @@ A notice's text starts with `[rexume NOTICE_ID]` and names the task, its title, 
 | `REX_BLOCK` | `report`, `task`, `gate` | the calling pane |
 | `REX_SESSION` | `report`, `gate` | the calling pane's session, which `gate` leaves out of a reopened conversation that ran without it |
 | `CLAUDE_CODE_MESSAGING_SOCKET` | `report claude` | where notices to that conversation go |
+| `REXUME_LAUNCH_PID`, `REXUME_LAUNCH` | `report claude`, from the environment Claude Code was started with | [a launcher's command](#a-launchers-command) |
 | `SHELL` | `gate` | the interactive shell that runs a reopened conversation |
 | `RUST_LOG` | every command | log filter; `daemon` logs at `info` by default, the others at `warn` |

@@ -256,8 +256,9 @@ fn a_new_process_takes_the_pane_even_without_the_runtimes_mark() -> Result<()> {
     Ok(())
 }
 
-/// Launch settings are a patch like any other: an array replaces the recorded one, `null` removes
-/// it, and a report that leaves a key out, as one that cannot read its process does, keeps it.
+/// Launch settings are a patch like any other: a report that read its process names every launch
+/// key, so a valid declaration clears an earlier error, a start without one clears the declared
+/// command, and a report that cannot read its process names none and keeps them.
 #[test]
 fn a_report_replaces_or_removes_what_it_names_and_keeps_the_rest() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -273,21 +274,34 @@ fn a_report_replaces_or_removes_what_it_names_and_keeps_the_rest() -> Result<()>
             |row| row.get(0),
         )?)
     };
-    let vertex =
-        json!({"model": "big", "launch_flags": null, "launch_env": ["CLOUD_ML_REGION=global"]});
-    assert_eq!(
-        saved(vertex)?,
-        json!({"model": "big", "launch_env": ["CLOUD_ML_REGION=global"]})
-    );
-    let flags = json!({"launch_flags": ["--rc"]});
-    assert_eq!(
-        saved(flags)?,
-        json!({"model": "big", "launch_flags": ["--rc"], "launch_env": ["CLOUD_ML_REGION=global"]})
-    );
-    let bedrock = json!({"launch_flags": null, "launch_env": ["AWS_REGION=us-east-1"]});
-    assert_eq!(
-        saved(bedrock)?,
-        json!({"model": "big", "launch_env": ["AWS_REGION=us-east-1"]})
-    );
+    let steps = [
+        (
+            json!({"model": "big", "launch_command": null, "launch_error": null,
+                   "launch_flags": null, "launch_env": ["CLOUD_ML_REGION=global"]}),
+            json!({"model": "big", "launch_env": ["CLOUD_ML_REGION=global"]}),
+        ),
+        (
+            json!({"launch_command": null, "launch_error": "unusable", "launch_flags": null,
+                   "launch_env": null}),
+            json!({"model": "big", "launch_error": "unusable"}),
+        ),
+        (
+            json!({"launch_command": ["w", "--a"], "launch_error": null, "launch_flags": ["--rc"],
+                   "launch_env": null}),
+            json!({"model": "big", "launch_command": ["w", "--a"], "launch_flags": ["--rc"]}),
+        ),
+        (
+            json!({"launch_command": null, "launch_error": null, "launch_flags": null,
+                   "launch_env": ["AWS_REGION=us-east-1"]}),
+            json!({"model": "big", "launch_env": ["AWS_REGION=us-east-1"]}),
+        ),
+        (
+            json!({}),
+            json!({"model": "big", "launch_env": ["AWS_REGION=us-east-1"]}),
+        ),
+    ];
+    for (patch, settings) in steps {
+        assert_eq!(saved(patch.clone())?, settings, "{patch}");
+    }
     Ok(())
 }

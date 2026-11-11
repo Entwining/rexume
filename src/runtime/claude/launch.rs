@@ -1,5 +1,6 @@
-//! What Claude Code was started with that reopening it needs again: launch flags and provider
-//! variables, never the launch prompt or a variable that holds a credential.
+//! What Claude Code was started with that reopening it needs again: the command a launcher
+//! declared, launch flags, and provider variables, never the launch prompt or a variable that
+//! holds a credential.
 
 use serde_json::{Map, Value};
 
@@ -65,6 +66,11 @@ const ENV: &[&str] = &[
 /// A Vertex model's region, one variable per model.
 const ENV_FAMILY: &str = "VERTEX_REGION_CLAUDE_";
 
+/// The variables a launcher sets for the process it `exec`s (`docs/cli.md`): that process, and the
+/// command that starts the same launch again.
+const OWNER: &str = "REXUME_LAUNCH_PID";
+const COMMAND: &str = "REXUME_LAUNCH";
+
 /// The launch settings of the process `pid`, as a patch over the recorded settings. The process's
 /// own environment is read rather than the hook's, which also carries the `env` of Claude Code's
 /// settings: Claude Code applies those itself on resume, and saving them would keep one the user
@@ -75,26 +81,64 @@ pub fn settings(pid: u32) -> Map<String, Value> {
             log::warn!("process {pid}: cannot read what it was started with");
             Map::new()
         },
-        |launch| patch(&launch),
+        |launch| patch(&launch, pid),
     )
 }
 
-/// Names both keys, `null` when empty, so that the report replaces or removes them.
-fn patch(launch: &proc::Launch) -> Map<String, Value> {
-    [
-        ("launch_flags", flags(&launch.argv)),
-        ("launch_env", env(&launch.env)),
-    ]
-    .into_iter()
-    .map(|(key, values)| {
-        let value = if values.is_empty() {
+/// Names every key, `null` when empty, so that the report replaces or removes each. A launcher
+/// that declared its command for the process sets the provider again when it runs, so the
+/// provider variables are saved only without one.
+fn patch(launch: &proc::Launch, pid: u32) -> Map<String, Value> {
+    let list = |values: Vec<String>| {
+        if values.is_empty() {
             Value::Null
         } else {
             values.into()
-        };
-        (key.to_owned(), value)
-    })
+        }
+    };
+    let (command, error, env) = match declaration(&launch.env, pid) {
+        None => (Value::Null, Value::Null, list(env(&launch.env))),
+        Some(Ok(argv)) => (argv.into(), Value::Null, Value::Null),
+        Some(Err(reason)) => (Value::Null, reason.into(), Value::Null),
+    };
+    [
+        ("launch_command", command),
+        ("launch_error", error),
+        ("launch_flags", list(flags(&launch.argv))),
+        ("launch_env", env),
+    ]
+    .into_iter()
+    .map(|(key, value)| (key.to_owned(), value))
     .collect()
+}
+
+/// The command a launcher declared for process `pid`, or why it cannot be used; `None` when the
+/// declaration is not this process's. Children inherit their parent's, including a program Claude
+/// Code starts by its own path, so it counts only for the process `REXUME_LAUNCH_PID` names.
+fn declaration(env: &[String], pid: u32) -> Option<Result<Vec<String>, String>> {
+    let var = |name: &str| {
+        env.iter()
+            .find_map(|entry| entry.strip_prefix(name)?.strip_prefix('='))
+    };
+    if var(OWNER)?.parse::<u32>().ok()? != pid {
+        return None;
+    }
+    // The gate claims the restore before its shell runs the command, so a command that cannot run
+    // there stops here: an empty one would reopen as `claude`, a NUL cannot be quoted for the
+    // shell, an empty first element names no program, and one with `=` is a variable assignment.
+    let argv = var(COMMAND)
+        .and_then(|text| serde_json::from_str::<Vec<String>>(text).ok())
+        .filter(|argv| {
+            argv.first()
+                .is_some_and(|program| !program.is_empty() && !program.contains('='))
+                && argv.iter().all(|arg| !arg.contains('\0'))
+        });
+    Some(argv.ok_or_else(|| {
+        format!(
+            "`{COMMAND}` is missing or not a JSON array of strings without NUL whose first element \
+             names a program"
+        )
+    }))
 }
 
 fn flags(argv: &[String]) -> Vec<String> {

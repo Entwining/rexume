@@ -75,6 +75,16 @@ impl Runtime {
         }
     }
 
+    /// Why the conversation cannot reopen as it was launched: its launcher declared the command
+    /// that starts it again in a form Rexume cannot use. Reopening it as plain `claude` would start
+    /// it with whatever the launcher chooses by default instead.
+    pub fn launch_error(self, conversation: &Conversation) -> Option<&str> {
+        match self {
+            Self::Claude => conversation.setting("launch_error"),
+            Self::Codex | Self::Pi | Self::Omp => None,
+        }
+    }
+
     /// The record this tool reads the conversation's turns from, and the notices and requests it
     /// took in: the runtime's own record, except where that cannot serve and this tool keeps one
     /// in the state directory (`records`).

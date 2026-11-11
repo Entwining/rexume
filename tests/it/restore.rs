@@ -10,14 +10,14 @@ use crate::common::{
     Daemon, REXUME, SHELL, Server, claude, db, query, rexume, shell_block, shell_pids, wait_until,
 };
 
-const WAIT: Duration = Duration::from_secs(20);
+pub const WAIT: Duration = Duration::from_secs(20);
 /// Rex saves a change to its sessions about a second later; a server killed sooner restores them
 /// as they were before it.
 const REX_SAVES: Duration = Duration::from_secs(3);
 
 /// A session `agents` of two panes, `writer` and `viewer`, each recorded with its shell as the
 /// foreground; returns the session and the panes.
-fn agents(server: &Server, state: &Path, cwd: &Path) -> (String, Vec<String>, Vec<i64>) {
+pub fn agents(server: &Server, state: &Path, cwd: &Path) -> (String, Vec<String>, Vec<i64>) {
     let created = server.call(
         "session.create",
         &json!({ "label": "agents", "initial_windows": [{ "layout": { "split": { "direction": "horizontal",
@@ -65,7 +65,7 @@ fn report(state: &Path, transcript: &Path, blocks: &[String], fg: &[i64]) {
 
 /// The restores the daemon planned on the server's current instance, by pane, with what each
 /// started.
-fn restores(server: &Server, state: &Path) -> Vec<(String, String, Option<String>)> {
+pub fn restores(server: &Server, state: &Path) -> Vec<(String, String, Option<String>)> {
     db(state)
         .prepare("SELECT block_lineage, state, started FROM restore WHERE instance_id = ?1")
         .unwrap()
@@ -87,7 +87,7 @@ fn screen(server: &Server, session: &str, block: &str) -> String {
         .to_owned()
 }
 
-fn restart(server: &mut Server, state: &Path, bin: &Path, ended: i64, crash: bool) {
+pub fn restart(server: &mut Server, state: &Path, bin: &Path, ended: i64, crash: bool) {
     std::thread::sleep(REX_SAVES);
     if crash {
         server.kill();

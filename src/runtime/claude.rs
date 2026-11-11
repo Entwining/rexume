@@ -22,10 +22,15 @@ pub const PLUGIN: &str = include_str!("claude/plugin.ts");
 /// provider with its own deployment IDs, so the model and effort its record last shows
 /// (`settings`) are passed. Its resume starts a session that was bypassing permissions in a new
 /// session's mode, and a Manual one in a settings `defaultMode`, so the mode the record shows is
-/// passed too. Launch flags go before `--resume`, so a continuation prompt the gate appends stays
+/// passed too. The command a launcher declared (`launch_command`) starts it, in place of
+/// `claude`, so that the launcher makes the choice it made at launch again rather than its current
+/// default. Launch flags go before `--resume`, so a continuation prompt the gate appends stays
 /// positional after an optional or variadic value.
 pub fn resume_argv(c: &Conversation) -> Vec<String> {
-    let mut argv = vec!["claude"];
+    let mut argv: Vec<&str> = c.setting_strings("launch_command").collect();
+    if argv.is_empty() {
+        argv.push("claude");
+    }
     argv.extend(c.setting_strings("launch_flags"));
     argv.extend(["--resume", &c.native_id]);
     for (key, flag) in [

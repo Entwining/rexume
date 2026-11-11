@@ -295,6 +295,28 @@ fn a_conversation_without_a_record_yet_reopens_only_in_pi() -> Result<()> {
     Ok(())
 }
 
+/// A conversation whose launcher declared a command Rexume cannot use keeps the shell.
+#[test]
+fn a_conversation_with_an_unusable_launch_declaration_keeps_the_shell() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = dir.path().join("t.jsonl");
+    std::fs::write(&transcript, format!("{PROMPT}\n"))?;
+    let store = Store::open(dir.path())?;
+    conversation(&store, "b", "claude", &transcript)?;
+    store.conn().execute_batch(
+        r#"UPDATE conversation SET settings = '{"launch_error":"no command"}';
+         INSERT INTO block (lineage, instance_id, fg_pid, status) VALUES ('b', 'i1', 10, 'idle')"#,
+    )?;
+    let planned = candidate(store.conn(), store.dir(), "i2", "b")?;
+    assert_eq!(planned.start, Start::Shell);
+    assert!(
+        planned.plan.reason.ends_with(": no command"),
+        "{}",
+        planned.plan.reason
+    );
+    Ok(())
+}
+
 mod mode;
 mod model;
 mod two_panes;

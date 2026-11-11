@@ -116,14 +116,73 @@ fn env_keeps_provider_variables_sorted_and_nothing_else() {
     );
 }
 
-#[test]
-fn a_patch_names_both_keys_and_nulls_the_empty_one() {
-    let launch = proc::Launch {
+/// What process 7 was started with: a launch flag, a provider variable, and `vars`.
+fn launch(vars: &[&str]) -> proc::Launch {
+    let mut env = strings(&["CLAUDE_CODE_USE_VERTEX=1"]);
+    env.extend(strings(vars));
+    proc::Launch {
         argv: strings(&["claude", "--rc"]),
-        env: strings(&["HOME=/home/user"]),
-    };
+        env,
+    }
+}
+
+/// A declaration counts only for the process `REXUME_LAUNCH_PID` names: without it, the provider
+/// variables are saved as for any launch, and the patch names every key so that the report removes
+/// what an earlier one saved.
+#[test]
+fn a_declaration_not_naming_the_process_leaves_the_provider_variables() {
+    let command = r#"REXUME_LAUNCH=["w","--a"]"#;
+    for vars in [
+        &[][..],
+        &["REXUME_LAUNCH_PID=6", command],
+        &["REXUME_LAUNCH_PID=seven", command],
+    ] {
+        assert_eq!(
+            Value::Object(patch(&launch(vars), 7)),
+            json!({"launch_command": null, "launch_error": null, "launch_flags": ["--rc"],
+                   "launch_env": ["CLAUDE_CODE_USE_VERTEX=1"]}),
+            "{vars:?}"
+        );
+    }
+}
+
+/// The launcher sets the provider again when the declared command runs, so its variables are not
+/// saved beside it.
+#[test]
+fn a_declaration_naming_the_process_gives_the_command_in_place_of_the_provider_variables() {
+    let vars = [
+        "REXUME_LAUNCH_PID=7",
+        r#"REXUME_LAUNCH=["w","--tag","x y;$(z)"]"#,
+    ];
     assert_eq!(
-        Value::Object(patch(&launch)),
-        json!({"launch_flags": ["--rc"], "launch_env": null})
+        Value::Object(patch(&launch(&vars), 7)),
+        json!({"launch_command": ["w", "--tag", "x y;$(z)"], "launch_error": null,
+               "launch_flags": ["--rc"], "launch_env": null})
     );
+}
+
+/// A declaration of the process's own without a command Rexume can run is an error, so the
+/// conversation keeps the shell instead of reopening by the launcher's default.
+#[test]
+fn a_declaration_naming_the_process_without_a_usable_command_is_an_error() {
+    for command in [
+        None,
+        Some("w --a"),
+        Some(r#"["w",1]"#),
+        Some("[]"),
+        Some(r#"[""]"#),
+        Some(r#"["X=1","w"]"#),
+        Some(r#"["w","a\u0000b"]"#),
+    ] {
+        let mut vars = vec!["REXUME_LAUNCH_PID=7".to_owned()];
+        vars.extend(command.map(|command| format!("REXUME_LAUNCH={command}")));
+        let vars: Vec<&str> = vars.iter().map(String::as_str).collect();
+        let patch = patch(&launch(&vars), 7);
+        assert!(patch["launch_error"].is_string(), "{command:?}");
+        assert_eq!(
+            (&patch["launch_command"], &patch["launch_env"]),
+            (&Value::Null, &Value::Null),
+            "{command:?}"
+        );
+    }
 }

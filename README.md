@@ -22,7 +22,7 @@ Rexume reopens a conversation by typing a short `rexume gate` line into the pane
 
 Rex does not bring back a pane's earlier output yet, so a restored pane starts with an empty screen.
 
-Conversations reopen with the model and effort they last used. Claude Code also keeps the provider and the [launch flags](docs/cli.md#report) it was started with, such as `--remote-control`. A reopened conversation keeps its permission mode: a Claude Code conversation reopens in the mode its record last shows, including bypass mode, which Claude Code's own resume does not bring back; Codex restores its approval policy and permissions itself; Pi has no permission modes. omp takes its approval mode from its launch flags and settings rather than its session, so an omp conversation started with `--approval-mode` or `--yolo` reopens in the mode its settings give.
+Conversations reopen with the model and effort they last used. Claude Code also keeps the [launch flags](docs/cli.md#report) it was started with, such as `--remote-control`, and the variables that chose its provider, or the command of a launcher that [declares it](docs/cli.md#a-launchers-command), such as a script that picks the provider or account. A reopened conversation keeps its permission mode: a Claude Code conversation reopens in the mode its record last shows, including bypass mode, which Claude Code's own resume does not bring back; Codex restores its approval policy and permissions itself; Pi has no permission modes. omp takes its approval mode from its launch flags and settings rather than its session, so an omp conversation started with `--approval-mode` or `--yolo` reopens in the mode its settings give.
 
 ## Install
 
@@ -145,6 +145,7 @@ These are Rexume's own trade-offs:
 - While the shell still reads its startup files, Rexume types the line at once, and the terminal holds it for the shell's first prompt. A startup file that reads from the terminal, such as one that asks a question, takes the line instead, and the conversation does not reopen.
 - The Claude Code plugin submits as your own prompt every message on a conversation's messaging socket that starts with a Rexume token, without checking that Rexume wrote it, so another session's model can write one that way too and get past the approval your inbound-message rules would ask for. A session that can run commands could reach the conversation through `rexume task send` anyway.
 - A provider variable your shell exports to every program, such as `AWS_PROFILE` from a shell profile, looks to Rexume like one set for a single `claude` launch, so a Claude Code conversation reopens with the value it was started with even after you change the profile, until you start that conversation again yourself.
+- A launcher that chooses the provider or account itself without [declaring its command](docs/cli.md#a-launchers-command) is run again as `claude`, so a Claude Code conversation started through it reopens with whatever the launcher then chooses by default.
 
 ## Uninstall
 

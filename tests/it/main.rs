@@ -10,6 +10,7 @@ mod bench;
 mod cli;
 mod common;
 mod install;
+mod launch;
 mod relay;
 mod restore;
 mod schema;
