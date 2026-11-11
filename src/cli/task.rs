@@ -267,7 +267,7 @@ mod tests {
         let error = task::send(&state, "t", &"x".repeat(limit + 1))
             .err()
             .map(|e| e.to_string());
-        assert_eq!(error.as_deref(), Some("the message is larger than 256 KiB"));
+        assert_eq!(error.as_deref(), Some("the message is larger than 127 KiB"));
         assert!(!state.exists());
         let file = dir.path().join("message.md");
         std::fs::write(&file, "é".repeat(limit))?;
@@ -278,7 +278,7 @@ mod tests {
         .read()
         .err()
         .map(|e| e.to_string());
-        assert_eq!(error.as_deref(), Some("the message is larger than 256 KiB"));
+        assert_eq!(error.as_deref(), Some("the message is larger than 127 KiB"));
         Ok(())
     }
 }

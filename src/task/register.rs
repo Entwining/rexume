@@ -162,9 +162,10 @@ fn insert_round(tx: &Transaction, id: &str, round: i64, now: i64) -> Result<()> 
     Ok(())
 }
 
-/// Codex receives the message as one argument, and macOS gives a command's arguments and
-/// environment 1 MiB together (`ARG_MAX`).
-pub const MESSAGE_LIMIT: u64 = 256 * 1024;
+/// Codex receives the message after the request's token as one argument of `codex queue`, which
+/// takes it no other way, and Linux takes at most 128 KiB in one argument, its terminating NUL
+/// included (`MAX_ARG_STRLEN` with 4 KiB pages).
+pub const MESSAGE_LIMIT: u64 = 127 * 1024;
 
 pub fn refuse_too_large(len: usize) -> Result<()> {
     if u64::try_from(len)? > MESSAGE_LIMIT {

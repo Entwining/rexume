@@ -177,7 +177,7 @@ The task commands run from the orchestrator's own Rex pane: they find the callin
 
 An interactive task's first round takes the first turn the worker's process finished, also one that finished before `add`, and none of the turns a resumed conversation's record already held; a process that answered other prompts first hands back the first of those. A non-interactive run's result file must hold UTF-8 text, at most 1 MiB and not empty; a run that exits 0 with a file that is missing, unreadable, empty, or larger fails its round, with the reason in `note`.
 
-A message is the text itself or a file's contents, at most 256 KiB, read when the command runs.
+A message is the text itself or a file's contents, at most 127 KiB, read when the command runs.
 
 When the daemon starts observing the server, it archives a task with its results, requests, and notices if all its rounds have finished and none finished or was acknowledged within the last 30 days, whatever its notices' states; `export` still prints it, but the task commands no longer find it.
 

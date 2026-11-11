@@ -136,7 +136,7 @@ mod tests {
     use std::io::Write as _;
 
     use super::super::tests::{settings, transcript};
-    use super::super::{Runtime, last_turn};
+    use super::super::{Runtime, last_turn, token};
     use super::*;
 
     #[test]
@@ -191,6 +191,16 @@ mod tests {
         let mut c = reported;
         Runtime::Codex.settings(&mut c)?;
         assert_eq!(c.setting("effort"), Some("medium"));
+        Ok(())
+    }
+
+    /// The largest message `task send` takes, after its request's token, starts a process as one
+    /// argument, as `send` passes it to `codex queue`.
+    #[test]
+    fn the_largest_message_starts_a_process_as_one_argument() -> Result<()> {
+        let text = "x".repeat(usize::try_from(crate::task::MESSAGE_LIMIT)?);
+        let message = format!("{} {text}", token(&uuid::Uuid::now_v7().to_string()));
+        assert!(Command::new("true").arg(message).status()?.success());
         Ok(())
     }
 }
