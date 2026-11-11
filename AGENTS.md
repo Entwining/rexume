@@ -16,7 +16,9 @@ Rexume reopens, in the panes Rex restores after its server stops, the Claude Cod
 
 | File | Owns |
 | --- | --- |
-| `README.md` | What Rexume is for, installing the program and its hooks, checking a restore, uninstall, and known limits |
+| `README.md` | What Rexume is for, its capabilities, and the shortest path to installing it |
+| `docs/setup.md` | Requirements, installing the program and its hooks, checking the installation, upgrades, and uninstall |
+| `docs/usage.md` | Restore behavior, conversation settings, worker workflows, and user-facing limits |
 | `docs/cli.md` | Commands, JSON outputs, exit codes, and how `install` recognizes its entries: the contract hooks, skills, and configuration managers rely on |
 | `docs/design.md` | Processes, saved state, restore and task states, notices, cleanup, limits, and how to read the bench |
 | `src/store/schema.sql` | The schema; table comments are the only place a column's meaning lives |

@@ -53,7 +53,7 @@ rexume install
 | omp extension | `~/.omp/agent/extensions/rexume.ts` |
 | Rexume skill stub, which has the agent read the guide `rexume skill show` prints | `~/.claude/skills/rexume/SKILL.md` for Claude Code, `~/.agents/skills/rexume/SKILL.md` for Codex and Pi |
 | On macOS, LaunchAgent `io.github.entwining.rexume`, which runs `rexume daemon` | `~/Library/LaunchAgents/io.github.entwining.rexume.plist` |
-| On Linux, systemd user service `rexume.service`, which runs `rexume daemon` | `~/.config/systemd/user/rexume.service` |
+| On Linux, systemd user service `rexume.service`, which runs `rexume daemon` | `$XDG_CONFIG_HOME/systemd/user/rexume.service`, or `~/.config/systemd/user/rexume.service` when the variable is unset or not absolute |
 
 A runtime whose directory does not exist is skipped. The JSON says so. Pi needs `~/.pi/agent` and omp needs `~/.omp/agent`; install creates neither.
 
