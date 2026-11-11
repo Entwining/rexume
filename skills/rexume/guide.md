@@ -26,7 +26,7 @@ What your commands create belongs to this task until the user takes it over. Not
 
 Label by purpose: session = the shared work, tab = the purpose or round, pane = the participant. A helper names its own pane and tabs it creates, even when it launches helpers of its own. The orchestrator, which coordinates the session's overall work, names the session for that work when it first starts or arranges work there, without waiting for a naming request, and maintains the session and caller's tab names as the work changes. Keep a name that already describes the work; preserve a user-chosen name or a resource the user has taken over unless the user asks for a change. When a session has tabs for different purposes, the orchestrator also gives its default-named initial tab a purpose label; a lone tab can keep its default name.
 
-Put one helper in a pane beside the caller, in the same tab and working directory; give a multi-participant round its own tab. Budget every pane, the user's included, against the window's actual width: around 60 columns has proved unreadable to the user and 80 is the usual floor, so use batches or another tab when a round cannot fit, and say so.
+Start a worker that nobody needs to watch in a detached pane of your own session, as "Launch" shows: it runs, answers by its block ID, and comes back after a Rex restart like any pane, but no tab shows it, the Rex app included. Put a worker the user wants to watch, interject in, or take over in a tab instead: one helper in a pane beside the caller, in the same tab and working directory, and a multi-participant round in its own tab. Budget every pane in a tab, the user's included, against the window's actual width: around 60 columns has proved unreadable to the user and 80 is the usual floor, so use batches or another tab when a round cannot fit, and say so.
 
 Open a round's tab together with its first program, `rex window new -s <session> <round> --focus=false --keep-open -- <command>`, and split the other participants beside the block it returns. Label a pane with `--label '<participant>'` on `rex run` or `rex split`, or with `rex block rename -s <session> <block> '<participant>'`; `rex window new` has no `--label`, and the name of the pane it opens labels the tab.
 
@@ -35,6 +35,17 @@ An agent participant's label names its runtime and model, and its role when sibl
 ## Launch
 
 Pass `--focus=false` to `rex run`, `rex split`, and `rex window new` unless the user asks to switch, background work or not: a new tab or pane takes focus, and with it whatever the user is typing. `rex new` has no such option, because a new session is not shown. Pass `--keep-open` whenever you or the user must read the output or exit status afterwards, because a pane created for a program closes with it.
+
+Start a detached pane with `session.new_block`, its program and task in `command`, and add `exit: {on_completion: false}` wherever `--keep-open` would apply:
+
+```sh
+jq -n --arg s "$REX_SESSION" --arg label '<participant>' --arg cwd "$PWD" \
+  '{session_id: $s, flavor: "com.superlogical.terminal.shell", label: $label,
+    options: {cwd: $cwd, command: ["<program>", "<argument>"], exit: {on_completion: false}}}' |
+  rex api call session.new_block -
+```
+
+The reply's `block_id` is the pane, which starts at 80 columns by 24 rows. To show it, as when the user asks to watch the worker or must answer its dialog, `session.move_block` places it beside a pane in a window, given as `anchor_block_id`; `rex move` moves only panes already in windows.
 
 Start the program with its task in the launch command instead of opening a shell and typing into it. Unless a helper's task drives Rex, such as opening its own reviewers, tell it in its task that it is the participant and does the work itself: a brief quoting the user's request to orchestrate otherwise leads it to load this skill and launch agents of its own.
 
@@ -61,6 +72,8 @@ A worker that ends its turn to wait for its own background job, such as CI it fo
 If you choose to stop waiting for an unfinished round, end it with `rexume task abandon <id>`; it leaves the worker alone and does not withdraw a request already sent, so reconcile before resending and take later unread turns with `task next`.
 
 When you need nothing more from the worker, run `rexume task release <id>`, which refuses while a round is unfinished or turns are unread; Rexume then closes a pane registered without `--keep-pane` unless someone used it since.
+
+Release or close every detached worker before you finish. Nothing else closes one: the user cannot see it, and Rex restores it and Rexume reopens its conversation at every restart. `rexume task list` shows your tasks with their `released_at`, and `rex block ls -s <session> --json` each pane's `placement`; report any detached worker you leave running, with its block ID and why.
 
 ### Collect directly
 

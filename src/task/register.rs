@@ -27,6 +27,7 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
         .rex
         .block_session(new.worker)?
         .with_context(|| format!("pane {} is not on the server", new.worker))?;
+    caller.refuse_remote(&session, new.worker)?;
     let process = caller.rex.block_method(&session, new.worker, "process")?;
     let foreground = process.pointer("/foreground/pid").and_then(Value::as_i64);
     // Rex reports only the exit of the program the pane started, so an exit already recorded

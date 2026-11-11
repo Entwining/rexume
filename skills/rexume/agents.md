@@ -34,7 +34,7 @@ A folder trust prompt for the agent's checkout falls under that rule, since acce
 
 Decline optional onboarding or configuration offers, such as `Teach auto mode about your environment?`, with their visible defer option, not a settings-writing option or an assumed Escape binding. Move to the chosen option with `rex send-key`, confirm it, and capture again after each key, because another dialog may follow.
 
-When user input is required, report the agent, pane, and exact dialog and options while unblocked participants continue.
+When user input is required, report the agent, pane, and exact dialog and options while unblocked participants continue; place a detached agent's pane beside yours first, since the user cannot reach it otherwise.
 
 ## Deliver a prompt
 

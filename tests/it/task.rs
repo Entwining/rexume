@@ -10,6 +10,7 @@ use crate::common::{REXUME, Server, claude, db, query, rex_bin, wait_until};
 
 mod abandon;
 mod blocked;
+mod detached;
 mod orchestration;
 mod queue;
 mod run;

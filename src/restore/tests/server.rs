@@ -26,6 +26,8 @@ pub(super) struct Server {
     pub(super) closed: Vec<String>,
     /// The session's focused pane, if any.
     pub(super) focused: Option<&'static str>,
+    /// Panes in no window, which the session's view leaves out.
+    pub(super) detached: Vec<&'static str>,
     /// A pane method the server refuses, if any.
     pub(super) refuse: Option<&'static str>,
 }
@@ -47,11 +49,20 @@ fn answer(server: &Mutex<Server>, method: &str, params: &Value) -> Result<Value,
     };
     Ok(match method {
         "session.list" => json!({ "sessions": [{ "session_id": "session:1", "label": "work" }] }),
-        "session.view" => {
+        "session.list_blocks" => {
             let blocks: Vec<Value> = server
                 .process
                 .keys()
                 .filter(|b| shown(b, &server))
+                .map(|b| json!({ "block_id": b }))
+                .collect();
+            json!({ "blocks": blocks })
+        }
+        "session.view" => {
+            let blocks: Vec<Value> = server
+                .process
+                .keys()
+                .filter(|b| shown(b, &server) && !server.detached.contains(&b.as_str()))
                 .map(|b| json!({ "block_id": b }))
                 .collect();
             json!({ "active_window_id": "window:1", "windows": [{ "window_id": "window:1",

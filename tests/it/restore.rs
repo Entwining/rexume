@@ -37,7 +37,7 @@ pub fn agents(server: &Server, state: &Path, cwd: &Path) -> (String, Vec<String>
 /// What the hooks would have reported: the writer pane runs the conversation mid-turn, started
 /// with a launch flag and a provider; the viewer pane shows the same conversation, as after
 /// resuming it in a second pane.
-fn report(state: &Path, transcript: &Path, blocks: &[String], fg: &[i64]) {
+pub fn report(state: &Path, transcript: &Path, blocks: &[String], fg: &[i64]) {
     let conn = db(state);
     conn.execute(
         "INSERT INTO conversation (runtime, native_id, transcript, resumable, settings, reported_at)
@@ -77,7 +77,7 @@ pub fn restores(server: &Server, state: &Path) -> Vec<(String, String, Option<St
         .collect()
 }
 
-fn screen(server: &Server, session: &str, block: &str) -> String {
+pub fn screen(server: &Server, session: &str, block: &str) -> String {
     server.call(
         "block.method",
         &json!({ "session_id": session, "block_id": block, "method": "format" }),

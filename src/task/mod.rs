@@ -4,6 +4,7 @@
 //! its result. These are the commands the orchestrator runs; `follow` is the daemon's side.
 
 mod blocked;
+mod caller;
 mod cleanup;
 mod evidence;
 mod follow;
@@ -20,14 +21,15 @@ mod wait;
 use std::path::Path;
 use std::sync::LazyLock;
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::{Value, json};
 
-use crate::rex::{Cli, Rex, require_str};
 use crate::runtime::{Runtime, Tracker};
-use crate::store::{Store, lineage_of};
+use crate::store::Store;
+
+use caller::{caller, owned};
 
 pub use blocked::end_blocked_episodes;
 pub use cleanup::{close_unfocused, held, hold, keep, release_held, retired_workers};
@@ -54,47 +56,6 @@ static CURRENT_ROUND: LazyLock<String> = LazyLock::new(|| {
 /// A round of `r` that has started and not finished: the predicate of the partial index
 /// `task_round_open`, written once so that every query matches it.
 const OPEN: &str = "r.state IN ('running', 'blocked')";
-
-struct Caller {
-    rex: Rex,
-    instance: String,
-    block: String,
-    lineage: String,
-    runtime: Runtime,
-    native_id: String,
-}
-
-/// The conversation in the calling pane. Inside an agent's sandbox the process tree cannot be
-/// read, so the pane's recorded conversation is the caller.
-fn caller(store: &Store) -> Result<Caller> {
-    let block = std::env::var_os("REX_BLOCK")
-        .context("REX_BLOCK is not set; run this from the orchestrator's own Rex pane")?
-        .to_string_lossy()
-        .into_owned();
-    let mut rex = Rex::Cli(Cli::from_env()?);
-    let instance = require_str(&rex.call("server.status", &json!({}))?, "/instance_id")?;
-    let conn = store.conn();
-    let recorded = match lineage_of(conn, &instance, &block)? {
-        Some(lineage) => conn
-            .query_row(
-                "SELECT runtime, native_id FROM occupant WHERE block_lineage = ?1",
-                params![lineage],
-                |row| Ok((lineage.clone(), row.get(0)?, row.get(1)?)),
-            )
-            .optional()?,
-        None => None,
-    };
-    let (lineage, runtime, native_id) =
-        recorded.with_context(|| format!("no conversation recorded for pane {block}"))?;
-    Ok(Caller {
-        rex,
-        instance,
-        block,
-        lineage,
-        runtime,
-        native_id,
-    })
-}
 
 const COLUMNS: &str = "t.id, t.title, r.round, r.state, t.result_file IS NULL, t.keep_pane,
   l.live_id, r.result_ref, r.note, r.finished_at, r.acked_at, t.pane_state, t.pane_closed_at,
@@ -248,25 +209,6 @@ pub fn list(state_dir: &Path) -> Result<Value> {
     }
     let notices = notice::undelivered(store.conn(), Some((caller.runtime, &caller.native_id)))?;
     Ok(json!({ "version": VERSION, "tasks": tasks, "undelivered_notices": notices }))
-}
-
-fn owned(conn: &Connection, id: &str, caller: &Caller) -> Result<()> {
-    let owner: Option<(Runtime, String)> = conn
-        .query_row(
-            "SELECT owner_runtime, owner_native_id FROM task WHERE id = ?1",
-            params![id],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .optional()?;
-    match owner {
-        None => bail!("no task {id}"),
-        Some((runtime, native_id))
-            if runtime != caller.runtime || native_id != caller.native_id =>
-        {
-            bail!("task {id} belongs to another conversation")
-        }
-        Some(_) => Ok(()),
-    }
 }
 
 /// The TASK object for one round, the open or latest one when `round` is `None`, with its result.

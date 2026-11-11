@@ -32,8 +32,10 @@ pub enum CallError {
 }
 
 impl CallError {
+    /// Whether the server has no such session or block. Rex refuses a call on a session that does
+    /// not exist with `session_not_found`, and one on a block its session lacks with `not_found`.
     pub fn not_found(&self) -> bool {
-        matches!(self, Self::Rejected { code, .. } if code == "not_found")
+        matches!(self, Self::Rejected { code, .. } if code == "not_found" || code == "session_not_found")
     }
 
     /// What a note says about the failure: the server's own message, or why nothing was sent.
@@ -216,12 +218,11 @@ pub fn items<'a>(value: &'a Value, pointer: &str) -> &'a [Value] {
         .map_or(&[], Vec::as_slice)
 }
 
-/// The live IDs of the blocks a `session.view` reply shows.
-pub fn view_blocks(view: &Value) -> Vec<String> {
-    items(view, "/windows")
+/// The live IDs of the blocks a `session.list_blocks` reply lists, detached ones included, which
+/// `session.view` leaves out.
+pub fn listed_blocks(list: &Value) -> Vec<String> {
+    items(list, "/blocks")
         .iter()
-        .flat_map(|window| items(window, "/layers"))
-        .flat_map(|layer| items(layer, "/blocks"))
         .filter_map(|block| str_at(block, "/block_id").map(str::to_owned))
         .collect()
 }
@@ -246,6 +247,11 @@ mod tests {
             "Error: stream response \"control-2\" failed: block not found: block:x (status=404 code=not_found)\n",
         );
         assert!(matches!(rejected, CallError::Rejected { ref code, .. } if code == "not_found"));
+        assert!(rejected.not_found());
+        let gone = classify(
+            "Error: stream response \"control-1\" failed: session session:x not found (status=404 code=session_not_found)\n",
+        );
+        assert!(gone.not_found());
         let unknown = classify("Error: server went away: reading API control: EOF\n");
         assert!(matches!(unknown, CallError::Unknown(_)));
     }
@@ -285,5 +291,8 @@ mod tests {
         assert!(items(&reply, "/windows").is_empty());
         assert!(items(&reply, "/absent").is_empty());
         assert_eq!(items(&reply, "/sessions").len(), 1);
+        assert!(listed_blocks(&json!({ "blocks": {} })).is_empty());
+        let list = json!({ "blocks": [{ "block_id": "block:a", "placement": "detached" }, {}] });
+        assert_eq!(listed_blocks(&list), ["block:a"]);
     }
 }

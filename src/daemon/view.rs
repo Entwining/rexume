@@ -1,6 +1,6 @@
 //! What the daemon keeps of the server's panes during one epoch: each pane's last reported state,
-//! and the sessions whose views it reads again when they change, for the panes the stream has not
-//! reported yet.
+//! and the sessions whose panes it lists again when their views change, for the panes the stream
+//! has not reported yet.
 
 use std::collections::HashMap;
 use std::time::{Duration, Instant};
@@ -10,21 +10,23 @@ use rusqlite::params;
 use serde_json::{Value, json};
 
 use super::block::{foreground_pid, recorded, set_foreground, set_status, touch_block};
-use crate::rex::{CallError, Rex, is_root, items, root_status, str_at, view_blocks};
+use crate::rex::{CallError, Rex, is_root, items, listed_blocks, root_status, str_at};
 use crate::store::{Store, ensure_lineage, lineage_of, now_ms};
 use crate::{proc, task};
 
-/// The least time between two reads of a session's view: a change soon after a read waits for
-/// the rest of this interval, so a burst of changes is read once more after its first.
+/// The least time between two lists of a session's panes: a change soon after a list waits for
+/// the rest of this interval, so a burst of changes is listed once more after its first.
 const COALESCE: Duration = Duration::from_millis(300);
 
 pub(super) struct View {
     instance: String,
-    /// Sessions whose view changed, by live ID, with when their view is read next.
+    /// Sessions whose view changed, by live ID, with when their panes are listed next.
     dirty: HashMap<String, Instant>,
-    /// When each session's view was last read.
+    /// When each session's panes were last listed.
     read_at: HashMap<String, Instant>,
-    /// The view revision last read for each session.
+    /// The highest view revision a change event has reported for each session. The list of panes
+    /// carries no revision, but it is read after the event, so it shows that revision or a later
+    /// one.
     revisions: HashMap<String, i64>,
 }
 
@@ -45,14 +47,14 @@ impl View {
         }
     }
 
-    /// Reads every pane the server holds now. On the instance it was observed on, the server is
-    /// the authority: panes missing from it were closed while nobody watched. So is a new instance
-    /// for a worker's pane, since the server restores every pane it saved: one it does not show was
-    /// closed before the earlier instance ended, and its rounds end as when its close is seen. That
-    /// holds for a worker registered while no daemon ran, which has no row in `block`, but not for
-    /// one registered after the server listed its sessions, whose pane the list may predate. Only
-    /// a session the server says does not exist counts as missing; any other refusal aborts the
-    /// baseline, since forgetting a pane cannot be undone.
+    /// Reads every pane the server holds now, in a window or detached. On the instance it was
+    /// observed on, the server is the authority: panes missing from it were closed while nobody
+    /// watched. So is a new instance for a worker's pane, since the server restores every pane it
+    /// saved: one it does not list was closed before the earlier instance ended, and its rounds end
+    /// as when its close is seen. That holds for a worker registered while no daemon ran, which has
+    /// no row in `block`, but not for one registered after the server listed its sessions, whose
+    /// pane the list may predate. Only a session the server says does not exist counts as missing;
+    /// any other refusal aborts the baseline, since forgetting a pane cannot be undone.
     pub(super) fn baseline(&mut self, rex: &mut Rex, store: &mut Store) -> Result<()> {
         let listed_at = now_ms();
         let list = rex.call("session.list", &json!({}))?;
@@ -61,13 +63,13 @@ impl View {
             .iter()
             .filter_map(|s| str_at(s, "/session_id"))
         {
-            let view = match rex.call("session.view", &json!({ "session_id": live })) {
-                Ok(view) => view,
+            let list = match rex.call("session.list_blocks", &json!({ "session_id": live })) {
+                Ok(list) => list,
                 Err(e) if e.not_found() => continue,
                 Err(e) => return Err(e.into()),
             };
-            self.read(live, &view);
-            for block in view_blocks(&view) {
+            self.read_at.insert(live.to_owned(), Instant::now());
+            for block in listed_blocks(&list) {
                 self.read_block(rex, store, live, &block)?;
                 blocks.push(block);
             }
@@ -89,13 +91,6 @@ impl View {
         }
         tx.commit()?;
         Ok(())
-    }
-
-    fn read(&mut self, live: &str, view: &Value) {
-        self.read_at.insert(live.to_owned(), Instant::now());
-        if let Some(revision) = view.get("revision").and_then(Value::as_i64) {
-            self.revisions.insert(live.to_owned(), revision);
-        }
     }
 
     fn read_block(
@@ -134,8 +129,8 @@ impl View {
         Ok(())
     }
 
-    /// Schedules a read of the session's view. A change long after the last read is read at once,
-    /// so a crash right after a single change loses nothing.
+    /// Schedules a list of the session's panes. A change long after the last list is listed at
+    /// once, so a crash right after a single change loses nothing.
     fn mark_dirty(&mut self, live: &str) {
         let due = next_read(self.read_at.get(live).copied(), Instant::now());
         self.dirty.entry(live.to_owned()).or_insert(due);
@@ -158,10 +153,13 @@ impl View {
                     return Ok(false);
                 };
                 let revision = payload.get("revision").and_then(Value::as_i64);
-                // A view already read at this revision, such as one this daemon just read, needs
-                // no second read.
+                // Rex can send these events out of revision order, and one at a revision already
+                // reported is covered by the read that one scheduled.
                 if revision.is_none_or(|r| self.revisions.get(live).is_none_or(|saved| r > *saved))
                 {
+                    if let Some(r) = revision {
+                        self.revisions.insert(live.to_owned(), r);
+                    }
                     self.mark_dirty(live);
                 }
                 Ok(true)
@@ -247,9 +245,9 @@ impl View {
         self.dirty.values().min().copied()
     }
 
-    /// Reads the sessions whose next read is due. A session the server says does not exist has
-    /// closed with its panes; another refusal is logged and the session is read again at its next
-    /// change.
+    /// Lists the panes of the sessions whose next list is due. A session the server says does not
+    /// exist has closed with its panes; another refusal is logged and the session is listed again
+    /// at its next change.
     pub(super) fn flush(&mut self, rex: &mut Rex, store: &mut Store) -> Result<()> {
         let now = Instant::now();
         let due: Vec<String> = self
@@ -260,13 +258,13 @@ impl View {
             .collect();
         for live in due {
             self.dirty.remove(&live);
-            match rex.call("session.view", &json!({ "session_id": live })) {
-                Ok(view) => {
-                    self.read(&live, &view);
+            match rex.call("session.list_blocks", &json!({ "session_id": live })) {
+                Ok(list) => {
+                    self.read_at.insert(live.clone(), Instant::now());
                     // A new pane's first report can reach the stream before the stream carries
                     // its session, so a pane with nothing recorded on this instance is read
                     // once, as the baseline reads every pane.
-                    for block in view_blocks(&view) {
+                    for block in listed_blocks(&list) {
                         if !recorded(store.conn(), &self.instance, &block)? {
                             self.read_block(rex, store, &live, &block)?;
                         }
@@ -274,7 +272,7 @@ impl View {
                 }
                 Err(e) if e.not_found() => {}
                 Err(e @ CallError::Rejected { .. }) => {
-                    log::error!("session {live}: failed to read its view: {e}");
+                    log::error!("session {live}: failed to list its panes: {e}");
                 }
                 Err(e) => return Err(e.into()),
             }
@@ -283,7 +281,8 @@ impl View {
     }
 }
 
-/// When a session whose view was last read at `read_at` is read again after a change at `now`.
+/// When a session whose panes were last listed at `read_at` is listed again after a change at
+/// `now`.
 pub(super) fn next_read(read_at: Option<Instant>, now: Instant) -> Instant {
     read_at.map_or(now, |read| (read + COALESCE).max(now))
 }

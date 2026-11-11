@@ -89,6 +89,19 @@ fn the_gate_is_typed_once_when_the_shell_is_ready() -> Result<()> {
     Ok(())
 }
 
+/// A pane in no window, which the server restores too, gets its conversation back like any other.
+#[test]
+fn a_detached_pane_is_restored() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let (mut store, server, mut rex) = restarted(dir.path(), SHELL, SHELL)?;
+    server.lock().unwrap().detached.push("a");
+    let mut restorer = new_restorer();
+    restorer.start(&mut rex, &mut store, "i2")?;
+    restorer.reconcile(&mut rex, &mut store, "i2");
+    assert_eq!(restore_of(&store, "a")?.1, "typed");
+    Ok(())
+}
+
 /// Text at the prompt is the user's: nothing is typed over it, and past the wait the pane keeps it.
 #[test]
 fn a_pane_with_text_at_its_prompt_is_left_to_the_user() -> Result<()> {

@@ -16,7 +16,7 @@ use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::json;
 
-use crate::rex::{CallError, Rex, items, str_at, view_blocks};
+use crate::rex::{CallError, Rex, items, listed_blocks, str_at};
 use crate::store::{Store, ensure_lineage, live_of, now_ms};
 use crate::task;
 use pane::Pane;
@@ -77,12 +77,12 @@ impl Restorer {
         self.deadline
     }
 
-    /// Binds the sessions and panes the server shows, plans a restore for each pane recorded on an
-    /// earlier instance that has none yet on this one, and holds the panes of retired workers for a
-    /// close. A pane an earlier epoch held, which someone may have used since, is let go first and
-    /// held again only by this check. Run before the baseline moves the panes' records to this
-    /// instance; the panes are read once the baseline has recorded them, by the next `reconcile`,
-    /// since the baseline's own writes wake nothing.
+    /// Binds the sessions and panes the server holds, detached ones included, plans a restore for
+    /// each pane recorded on an earlier instance that has none yet on this one, and holds the panes
+    /// of retired workers for a close. A pane an earlier epoch held, which someone may have used
+    /// since, is let go first and held again only by this check. Run before the baseline moves the
+    /// panes' records to this instance; the panes are read once the baseline has recorded them, by
+    /// the next `reconcile`, since the baseline's own writes wake nothing.
     pub fn start(&mut self, rex: &mut Rex, store: &mut Store, instance: &str) -> Result<()> {
         {
             let tx = store.write()?;
@@ -95,15 +95,15 @@ impl Restorer {
             let Some(live) = str_at(session, "/session_id") else {
                 continue;
             };
-            let view = match rex.call("session.view", &json!({ "session_id": live })) {
-                Ok(view) => view,
+            let list = match rex.call("session.list_blocks", &json!({ "session_id": live })) {
+                Ok(list) => list,
                 Err(e) if e.not_found() => continue,
                 Err(e) => return Err(e.into()),
             };
             let label = str_at(session, "/label").map(str::to_owned);
             let tx = store.write()?;
             ensure_lineage(&tx, instance, live)?;
-            for block in view_blocks(&view) {
+            for block in listed_blocks(&list) {
                 let lineage = ensure_lineage(&tx, instance, &block)?;
                 let earlier: Option<String> = tx
                     .query_row(
