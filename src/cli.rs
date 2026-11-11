@@ -35,8 +35,11 @@ struct StateDir {
 }
 
 impl StateDir {
+    /// The state directory as an absolute path, since commands hand paths in it to processes that
+    /// run in another directory: Git in a task's working tree, and the gate in a restored shell.
     fn resolve(self) -> Result<PathBuf> {
-        self.state_dir.map_or_else(store::default_dir, Ok)
+        let dir = self.state_dir.map_or_else(store::default_dir, Ok)?;
+        Ok(std::path::absolute(dir)?)
     }
 }
 

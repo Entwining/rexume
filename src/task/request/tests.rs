@@ -32,7 +32,7 @@ fn request_world(dir: &Path, transcript: &Path, runtime: Runtime) -> Result<(Sto
         "UPDATE task_round SET state = 'completed', result = 'Done.', result_ref = 'a0', finished_at = 1;",
     )?;
     let tx = store.write()?;
-    start_round(&tx, "t", &Kind::Request("go"))?;
+    start_round(&tx, "t", &Kind::Request("go"), None)?;
     tx.commit()?;
     let id = store
         .conn()

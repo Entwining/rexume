@@ -1,5 +1,4 @@
-//! Registering a worker pane for a task, each round after the first, abandoning or acknowledging a
-//! round, and releasing the worker.
+//! Registering a worker pane for a task, and each round after the first.
 
 use std::path::Path;
 
@@ -7,8 +6,9 @@ use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
-use super::queue::{self, Queued};
-use super::{caller, finished, notice, outcome, owned, round_state, shown, unread};
+use super::acknowledge::acknowledge_all;
+use super::queue;
+use super::{caller, finished, owned, round_state, shown, snapshot, unread};
 use crate::runtime::Runtime;
 use crate::store::{Store, ensure_lineage, new_id, now_ms};
 
@@ -41,49 +41,73 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
         bail!("the program in pane {} has already exited", new.worker);
     }
     let id = new_id();
-    let now = now_ms();
-    let tx = store.write()?;
-    let worker = ensure_lineage(&tx, &caller.instance, new.worker)?;
-    if worker == caller.lineage {
-        bail!(
-            "pane {} is the orchestrator's own pane; pass the worker's block ID",
-            caller.block
-        );
+    let (worktree, worktree_note) = snapshot::worktree(&process);
+    let before = worktree
+        .as_deref()
+        .map(|worktree| snapshot::take(&mut store, &id, worktree));
+    let registered = store.write().and_then(|tx| {
+        let now = now_ms();
+        let worker = ensure_lineage(&tx, &caller.instance, new.worker)?;
+        if worker == caller.lineage {
+            bail!(
+                "pane {} is the orchestrator's own pane; pass the worker's block ID",
+                caller.block
+            );
+        }
+        refuse_taken(&tx, &worker, new.worker)?;
+        refuse_stopped(&tx, &caller.instance, asked_at)?;
+        let bound = match foreground {
+            Some(pid) => occupant_of(&tx, &worker, &caller.instance, pid)?,
+            None => None,
+        };
+        let (runtime, native_id, position) = match bound {
+            Some((runtime, native_id, position)) => {
+                (Some(runtime.as_str()), Some(native_id), position)
+            }
+            None => (None, None, 0),
+        };
+        tx.execute(
+            "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage,
+               worker_pid, worker_instance_id, result_file, keep_pane, worker_runtime,
+               worker_native_id, position, created_at, meta, worktree, worktree_note)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16)",
+            params![
+                id,
+                new.title,
+                caller.runtime.as_str(),
+                caller.native_id,
+                worker,
+                foreground,
+                caller.instance,
+                new.result_file.map(|f| f.to_string_lossy().into_owned()),
+                new.keep_pane,
+                runtime,
+                native_id,
+                position,
+                now,
+                new.meta,
+                worktree,
+                worktree_note,
+            ],
+        )?;
+        insert_round(&tx, &id, 1, now)?;
+        if let Some(before) = &before {
+            snapshot::record_before(&tx, &id, 1, before)?;
+        }
+        Ok(tx.commit()?)
+    });
+    if let Err(e) = registered {
+        // Otherwise what the snapshot kept would count against the snapshots' space until the
+        // sweep deletes a directory no task names.
+        if before.is_some()
+            && let Err(cleanup) = snapshot::discard(&mut store, &id)
+        {
+            log::warn!(
+                "task {id}: failed to delete the snapshot of a failed registration: {cleanup:#}"
+            );
+        }
+        return Err(e);
     }
-    refuse_taken(&tx, &worker, new.worker)?;
-    refuse_stopped(&tx, &caller.instance, asked_at)?;
-    let bound = match foreground {
-        Some(pid) => occupant_of(&tx, &worker, &caller.instance, pid)?,
-        None => None,
-    };
-    let (runtime, native_id, position) = match bound {
-        Some((runtime, native_id, position)) => (Some(runtime.as_str()), Some(native_id), position),
-        None => (None, None, 0),
-    };
-    tx.execute(
-        "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, worker_pid,
-           worker_instance_id, result_file, keep_pane, worker_runtime, worker_native_id, position,
-           created_at, meta)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
-        params![
-            id,
-            new.title,
-            caller.runtime.as_str(),
-            caller.native_id,
-            worker,
-            foreground,
-            caller.instance,
-            new.result_file.map(|f| f.to_string_lossy().into_owned()),
-            new.keep_pane,
-            runtime,
-            native_id,
-            position,
-            now,
-            new.meta,
-        ],
-    )?;
-    insert_round(&tx, &id, 1, now)?;
-    tx.commit()?;
     shown(store.conn(), store.dir(), &caller.instance, &id, None)
 }
 
@@ -179,9 +203,7 @@ pub fn next(state_dir: &Path, id: &str) -> Result<Value> {
     let caller = caller(&store)?;
     owned(store.conn(), id, &caller)?;
     let unread = unread(store.conn(), store.dir(), id)?;
-    let tx = store.write()?;
-    let round = start_round(&tx, id, &Kind::Next { unread })?;
-    tx.commit()?;
+    let round = start(&mut store, id, &Kind::Next { unread })?;
     shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
 }
 
@@ -192,108 +214,50 @@ pub fn send(state_dir: &Path, id: &str, message: &str) -> Result<Value> {
     let mut store = Store::open(state_dir)?;
     let caller = caller(&store)?;
     owned(store.conn(), id, &caller)?;
-    let tx = store.write()?;
-    let round = start_round(&tx, id, &Kind::Request(message))?;
-    tx.commit()?;
+    let round = start(&mut store, id, &Kind::Request(message))?;
     shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
 }
 
-/// Ends a round still unfinished, the open one by default, as `abandoned` and acknowledges
-/// it: the owner stops waiting for it, and only the owner. The task is not released, so a turn the
-/// worker finishes later is unread and `task next` takes it, and `task release` still refuses
-/// until then. Abandoning the open round starts the next queued one; abandoning a queued round
-/// drops it, its request never sent.
-pub fn abandon(state_dir: &Path, id: &str, round: Option<i64>) -> Result<Value> {
-    let mut store = Store::open(state_dir)?;
-    let caller = caller(&store)?;
-    let tx = store.write()?;
-    owned(&tx, id, &caller)?;
-    let round = abandon_round(&tx, id, round)?;
-    tx.commit()?;
-    shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
-}
-
-fn abandon_round(tx: &Transaction, id: &str, round: Option<i64>) -> Result<i64> {
-    let (round, state) = round_state(tx, id, round)?;
-    if finished(&state) {
-        bail!("task {id} round {round} has already finished as {state}");
+/// Starts the task's next round and returns its number, taking the snapshot it needs outside any
+/// transaction and starting again with it. Another snapshot is due only when the latest round
+/// finished, or another started and finished, while one was taken.
+fn start(store: &mut Store, id: &str, kind: &Kind) -> Result<i64> {
+    let mut taken = None;
+    loop {
+        let tx = store.write()?;
+        match start_round(&tx, id, kind, taken.as_ref())? {
+            Started::Round(round) => {
+                tx.commit()?;
+                return Ok(round);
+            }
+            Started::SnapshotDue(worktree) => {
+                drop(tx);
+                taken = Some(snapshot::take(store, id, &worktree));
+            }
+        }
     }
-    let (state, note) = if state == "queued" {
-        ("dropped", "the owner abandoned the round before it started")
-    } else {
-        ("abandoned", "the owner abandoned the round")
-    };
-    outcome::finish(tx, id, round, state, None, Some(note), Queued::Start)?;
-    acknowledge(tx, id, round, "taken by task abandon")?;
-    Ok(round)
 }
 
-/// Records that the owner has a finished round's result.
-pub fn ack(state_dir: &Path, id: &str, round: Option<i64>) -> Result<Value> {
-    let mut store = Store::open(state_dir)?;
-    let caller = caller(&store)?;
-    let tx = store.write()?;
-    owned(&tx, id, &caller)?;
-    let (round, state) = round_state(&tx, id, round)?;
-    if !finished(&state) {
-        bail!("task {id} is {state}; ack it once the round has finished");
-    }
-    acknowledge(&tx, id, round, "taken by task ack")?;
-    tx.commit()?;
-    shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
+/// What `start_round` did.
+#[derive(Debug, PartialEq)]
+pub(super) enum Started {
+    /// Started or queued the round with this number.
+    Round(i64),
+    /// Wrote nothing: the round it would start at once needs a snapshot of this working tree.
+    SnapshotDue(String),
 }
 
-/// Records that the orchestrator is done with the worker and acknowledges its rounds; only a
-/// released task's pane is ever closed. Releasing again changes nothing.
-pub fn release(state_dir: &Path, id: &str) -> Result<Value> {
-    let mut store = Store::open(state_dir)?;
-    let caller = caller(&store)?;
-    owned(store.conn(), id, &caller)?;
-    let unread = unread(store.conn(), store.dir(), id)?;
-    let tx = store.write()?;
-    let round = latest_finished(&tx, id)?;
-    if let Some(count @ 1..) = unread {
-        bail!("task {id} has unread turns ({count}); take them with `task next` first");
-    }
-    tx.execute(
-        "UPDATE task SET released_at = COALESCE(released_at, ?1) WHERE id = ?2",
-        params![now_ms(), id],
-    )?;
-    acknowledge_all(&tx, id, "taken by task release")?;
-    tx.commit()?;
-    shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
-}
-
-/// Records the owner's acknowledgement of a finished round; a notice not yet sent for it is
-/// dropped, since the owner has the result.
-pub(super) fn acknowledge(tx: &Transaction, id: &str, round: i64, by: &str) -> Result<()> {
-    let now = now_ms();
-    tx.execute(
-        "UPDATE task_round SET acked_at = COALESCE(acked_at, ?1) WHERE task_id = ?2 AND round = ?3",
-        params![now, id, round],
-    )?;
-    notice::supersede(tx, notice::Kind::Finished, id, round, by, now)?;
-    Ok(())
-}
-
-/// Acknowledges every round of the task its owner has not acknowledged, which must all have
-/// finished. Rounds queued behind an open one start without acknowledging it, so earlier rounds
-/// than the latest can wait for an acknowledgement.
-fn acknowledge_all(tx: &Transaction, id: &str, by: &str) -> Result<()> {
-    let rounds: Vec<i64> = tx
-        .prepare("SELECT round FROM task_round WHERE task_id = ?1 AND acked_at IS NULL")?
-        .query_map(params![id], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    for round in rounds {
-        acknowledge(tx, id, round, by)?;
-    }
-    Ok(())
-}
-
-/// Inserts the task's next round after checking it can take one and returns its number. A request
-/// sent while a round is open is queued behind it and acknowledges nothing; otherwise the rounds
-/// before are acknowledged, since the owner acts after their results.
-pub(super) fn start_round(tx: &Transaction, id: &str, kind: &Kind) -> Result<i64> {
+/// Inserts the task's next round after checking it can take one. A request sent while a round is
+/// open is queued behind it and acknowledges nothing; otherwise the rounds before are
+/// acknowledged, since the owner acts after their results. `taken`, the snapshot the command took
+/// before, is the latest round's `after` and the new round's `before`, and must have begun after
+/// that round finished.
+pub(super) fn start_round(
+    tx: &Transaction,
+    id: &str,
+    kind: &Kind,
+    taken: Option<&snapshot::Taken>,
+) -> Result<Started> {
     // Another task on the same pane may hold it for a close.
     let (interactive, released, closed, closing): (bool, bool, bool, bool) = tx.query_row(
         "SELECT t.result_file IS NULL, t.released_at IS NOT NULL, t.pane_state = 'closed',
@@ -331,27 +295,36 @@ pub(super) fn start_round(tx: &Transaction, id: &str, kind: &Kind) -> Result<i64
         && !finished(&round_state(tx, id, None)?.1)
     {
         queue::add(tx, id, round, message)?;
-        return Ok(round);
+        return Ok(Started::Round(round));
     }
     latest_finished(tx, id)?;
+    if let Some(worktree) = snapshot::due(tx, id, taken)? {
+        return Ok(Started::SnapshotDue(worktree));
+    }
+    if let Some(taken) = taken {
+        snapshot::record_after(tx, id, taken)?;
+    }
     let by = match kind {
         Kind::Next { .. } => "taken by task next",
         Kind::Request(_) => "taken by task send",
     };
     acknowledge_all(tx, id, by)?;
     insert_round(tx, id, round, now_ms())?;
+    if let Some(taken) = taken {
+        snapshot::record_before(tx, id, round, taken)?;
+    }
     if let Kind::Request(message) = kind {
         tx.execute(
             "INSERT INTO request (id, task_id, round, text) VALUES (?1, ?2, ?3, ?4)",
             params![new_id(), id, round, message],
         )?;
     }
-    Ok(round)
+    Ok(Started::Round(round))
 }
 
 /// The task's latest round, which must have finished before another starts or the task is
 /// released.
-fn latest_finished(conn: &Connection, id: &str) -> Result<i64> {
+pub(super) fn latest_finished(conn: &Connection, id: &str) -> Result<i64> {
     let (round, state) = round_state(conn, id, None)?;
     if !finished(&state) {
         bail!("task {id} is {state}; wait until the round has finished");

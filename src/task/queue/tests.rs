@@ -7,7 +7,7 @@ use crate::runtime::Runtime;
 use crate::store::Store;
 use crate::task::follow::Follow;
 use crate::task::gone::block_gone;
-use crate::task::register::{Kind, start_round};
+use crate::task::register::{Kind, Started, start_round};
 use crate::task::tests::{ANSWER, PROMPT, record, task_world};
 use crate::task::{shown, unacknowledged};
 
@@ -37,7 +37,9 @@ fn rounds(store: &Store) -> Result<Vec<Row>> {
 
 fn send(store: &mut Store, message: &str) -> Result<i64> {
     let tx = store.write()?;
-    let round = start_round(&tx, "t", &Kind::Request(message))?;
+    let Started::Round(round) = start_round(&tx, "t", &Kind::Request(message), None)? else {
+        anyhow::bail!("a snapshot is due");
+    };
     tx.commit()?;
     Ok(round)
 }

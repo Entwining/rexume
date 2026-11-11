@@ -3,6 +3,7 @@
 //! the only closer, closes a disposable worker's pane only while nothing has happened in it since
 //! its result. These are the commands the orchestrator runs; `follow` is the daemon's side.
 
+mod acknowledge;
 mod blocked;
 mod caller;
 mod cleanup;
@@ -14,6 +15,7 @@ mod outcome;
 mod queue;
 mod register;
 mod request;
+mod snapshot;
 #[cfg(test)]
 pub(crate) mod tests;
 mod wait;
@@ -31,15 +33,15 @@ use crate::store::Store;
 
 use caller::{caller, owned};
 
+pub use acknowledge::{abandon, ack, release};
 pub use blocked::{EndReason, end_blocked_episodes};
 pub use cleanup::{close_unfocused, held, hold, keep, release_held, retired_workers};
 pub use evidence::is_run;
 pub use follow::{Follow, Interest};
 pub use gone::{block_gone, end_left_to_server};
 pub use notice::{orphaned_sends, undelivered};
-pub use register::{
-    MESSAGE_LIMIT, NewTask, abandon, ack, add, next, refuse_too_large, release, send,
-};
+pub use register::{MESSAGE_LIMIT, NewTask, add, next, refuse_too_large, send};
+pub use snapshot::sweep as sweep_snapshots;
 pub use wait::{Returned, wait};
 
 pub const VERSION: u32 = 1;
@@ -99,6 +101,8 @@ struct Task {
     blocked: Option<Blocked>,
     request: Option<Request>,
     pane: Pane,
+    /// Filled in after the row is read.
+    snapshot: snapshot::Snapshots,
 }
 
 #[derive(Serialize)]
@@ -169,6 +173,7 @@ impl Task {
                 closed_at: row.get(12)?,
                 note: row.get(13)?,
             },
+            snapshot: snapshot::Snapshots::default(),
         })
     }
 }
@@ -232,6 +237,7 @@ pub fn list(state_dir: &Path) -> Result<Value> {
     for task in &mut tasks {
         task.unread = unread(store.conn(), store.dir(), &task.id)?;
         task.queued = queue::rounds(store.conn(), &task.id)?;
+        task.snapshot = snapshot::shown(store.conn(), store.dir(), &task.id, task.round)?;
     }
     let notices = notice::undelivered(store.conn(), Some((caller.runtime, &caller.native_id)))?;
     Ok(json!({ "version": VERSION, "tasks": tasks, "undelivered_notices": notices }))
@@ -267,13 +273,15 @@ fn shown(
         .with_context(|| format!("task {id} has no round {}", round.unwrap_or_default()))?;
     found.task.unread = unread(conn, state_dir, id)?;
     found.task.queued = queue::rounds(conn, id)?;
+    found.task.snapshot = snapshot::shown(conn, state_dir, id, found.task.round)?;
     Ok(serde_json::to_value(found)?)
 }
 
 pub fn show(state_dir: &Path, id: &str, round: Option<i64>) -> Result<Value> {
-    let store = Store::open(state_dir)?;
+    let mut store = Store::open(state_dir)?;
     let caller = caller(&store)?;
     owned(store.conn(), id, &caller)?;
+    snapshot::after(&mut store, id)?;
     shown(store.conn(), store.dir(), &caller.instance, id, round)
 }
 

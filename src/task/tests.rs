@@ -8,7 +8,7 @@ use serde_json::Value;
 use super::follow::{Follow, OPEN_ROUNDS, TAKEN};
 use super::gone::{WORKER_ROUNDS, block_gone};
 use super::outcome;
-use super::register::{Kind, refuse_stopped, start_round};
+use super::register::{Kind, Started, refuse_stopped, start_round};
 use super::{blocked, cleanup, evidence, notice, queue, request, shown, unread};
 use crate::restore;
 use crate::runtime::claude;
@@ -101,7 +101,9 @@ fn a_new_round_needs_a_finished_one_on_an_unreleased_interactive_pane() -> Resul
     let mut attempt = |change: &str, kind: &Kind| -> Result<i64> {
         store.conn().execute_batch(change)?;
         let tx = store.write()?;
-        let round = start_round(&tx, "t", kind)?;
+        let Started::Round(round) = start_round(&tx, "t", kind, None)? else {
+            anyhow::bail!("a snapshot is due");
+        };
         tx.commit()?;
         Ok(round)
     };

@@ -14,6 +14,7 @@ mod detached;
 mod orchestration;
 mod queue;
 mod run;
+mod snapshot;
 
 use orchestration::Orchestration;
 

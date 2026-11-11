@@ -13,7 +13,7 @@ use super::{ADAPTER, Daemon, Exit, FIRST_FILE, PIPE, WAITER_EXIT, WAL};
 use crate::restore::Restorer;
 use crate::rex::{Pipe, Rex, str_at};
 use crate::store::{self, archive, now_ms};
-use crate::task::{Follow, Interest};
+use crate::task::{self, Follow, Interest};
 
 impl Daemon<'_> {
     /// Observes one connection until it ends, and returns how it ended.
@@ -91,6 +91,9 @@ impl Daemon<'_> {
         }
         if let Err(e) = store::sweep_records(&self.store) {
             log::warn!("failed to sweep the turn records: {e:#}");
+        }
+        if let Err(e) = task::sweep_snapshots(&mut self.store) {
+            log::warn!("failed to sweep the snapshots: {e:#}");
         }
         let mut version = self.store.data_version()?;
         let mut follow_due = true;

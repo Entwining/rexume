@@ -11,7 +11,7 @@ use serde_json::{Value, json};
 
 use super::blocked::OPEN_EPISODE;
 use super::notice::{self, Kind};
-use super::{caller, finished, owned, round_state, shown};
+use super::{caller, finished, owned, round_state, shown, snapshot};
 use crate::event::{Queue, Token};
 use crate::proc;
 use crate::store::{Store, now_ms};
@@ -46,6 +46,9 @@ pub fn wait(state_dir: &Path, id: &str, timeout: Duration) -> Result<(Value, Ret
         round,
         until,
     )?;
+    if returned == Returned::Finished {
+        snapshot::after(&mut store, id)?;
+    }
     let mut task = shown(store.conn(), store.dir(), &caller.instance, id, Some(round))?;
     task["timed_out"] = json!(returned == Returned::TimedOut);
     Ok((task, returned))

@@ -6,7 +6,7 @@ use crate::runtime;
 use crate::store::Store;
 use crate::task::follow::Follow;
 use crate::task::gone::block_gone;
-use crate::task::register::{Kind, start_round};
+use crate::task::register::{Kind, Started, start_round};
 use crate::task::tests::{ANSWER, ANSWER_2, PROMPT, PROMPT_2, record, task_world};
 use crate::task::unread;
 
@@ -27,7 +27,9 @@ fn completed(result: &str) -> (String, Option<String>) {
 
 fn start(store: &mut Store, kind: &Kind) -> Result<i64> {
     let tx = store.write()?;
-    let round = start_round(&tx, "t", kind)?;
+    let Started::Round(round) = start_round(&tx, "t", kind, None)? else {
+        anyhow::bail!("a snapshot is due");
+    };
     tx.commit()?;
     Ok(round)
 }

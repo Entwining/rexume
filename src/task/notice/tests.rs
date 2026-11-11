@@ -248,7 +248,7 @@ fn a_notice_of_an_acknowledged_round_is_not_listed() -> Result<()> {
     let owner = Some((Runtime::Claude, "owner"));
     assert_eq!(undelivered(store.conn(), owner)?.len(), 1);
     let tx = store.write()?;
-    crate::task::register::acknowledge(&tx, "t", 1, "taken by task ack")?;
+    crate::task::acknowledge::acknowledge(&tx, "t", 1, "taken by task ack")?;
     tx.commit()?;
     assert!(undelivered(store.conn(), owner)?.is_empty());
     assert!(undelivered(store.conn(), None)?.is_empty());
@@ -265,7 +265,7 @@ fn a_failed_send_drops_a_notice_of_a_round_acknowledged_meanwhile() -> Result<()
     let (mut store, _listener) = notice_world(dir.path(), transcript.path(), "pending")?;
     let tx = store.write()?;
     assert!(claim(&tx, "d", None)?);
-    crate::task::register::acknowledge(&tx, "t", 1, "taken by task ack")?;
+    crate::task::acknowledge::acknowledge(&tx, "t", 1, "taken by task ack")?;
     record_send(&tx, "d", ("pending", Some("failed to connect".to_owned())))?;
     tx.commit()?;
     assert_eq!(

@@ -56,7 +56,7 @@ impl EntityType {
 }
 
 /// The entity as `archive.data` holds it: its row and, for a task, the rows of its rounds, blocked
-/// episodes, requests, and notices, keyed by table name.
+/// episodes, requests, notices, and snapshots, keyed by table name.
 pub fn document(conn: &Connection, entity_type: EntityType, id: &str) -> Result<Value> {
     let table = entity_type.table();
     let own = rows(conn, &format!("SELECT * FROM {table} WHERE id = ?1"), id)?
@@ -69,6 +69,7 @@ pub fn document(conn: &Connection, entity_type: EntityType, id: &str) -> Result<
             ("blocked_episode", "id"),
             ("request", "id"),
             ("notice", "id"),
+            ("snapshot", "round, side"),
         ] {
             let sql = format!("SELECT * FROM {child} WHERE task_id = ?1 ORDER BY {key}");
             document.insert(child.to_owned(), Value::Array(rows(conn, &sql, id)?));
@@ -155,8 +156,9 @@ pub fn sweep(store: &mut Store, instance: &str, now: i64) -> Result<()> {
 }
 
 /// Archives one entity the sweep listed, if it is still expired: a task may have taken a new
-/// round since. Deleting its row deletes a task's rounds, blocked episodes, requests, and notices
-/// with it. Returns the size of a document too large to archive, whose entity stays as it is.
+/// round since. Deleting its row deletes a task's rounds, blocked episodes, requests, notices, and
+/// snapshots with it. Returns the size of a document too large to archive, whose entity stays as
+/// it is.
 fn archive(
     tx: &Transaction,
     entity_type: EntityType,

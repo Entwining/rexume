@@ -223,7 +223,11 @@ CREATE UNIQUE INDEX IF NOT EXISTS restore_executor ON restore (instance_id, runt
 -- a kept pane that closes later keeps. A close the daemon put off writes its reason to `pane_note`
 -- and leaves 'open'; any other close clears the note. A pane the orchestrator asked to keep is
 -- never 'closing' or 'kept'. `meta`: a JSON object `task add` took from `REXUME_TASK_META`, stored
--- and exported whole; Rexume defines no key of it and reads none.
+-- and exported whole; Rexume defines no key of it and reads none. `worktree`: the top level of the
+-- Git working tree the pane's foreground program stood in when the task was registered, as
+-- `git rev-parse --show-toplevel` resolved Rex's `cwd` for it, fixed then: the tree the task's
+-- snapshots are of. When it is NULL, `worktree_note` says why there was none, and both are NULL for
+-- a task registered before version 10.
 CREATE TABLE IF NOT EXISTS task (
   id                 TEXT    PRIMARY KEY,
   title              TEXT    NOT NULL,
@@ -244,7 +248,10 @@ CREATE TABLE IF NOT EXISTS task (
   pane_closed_at     INTEGER,
   created_at         INTEGER NOT NULL,
   meta               TEXT    NOT NULL DEFAULT '{}' CHECK (json_type(meta) = 'object'),
+  worktree           TEXT,
+  worktree_note      TEXT,
   CHECK ((worker_runtime IS NULL) = (worker_native_id IS NULL)),
+  CHECK (worktree IS NULL OR worktree_note IS NULL),
   CHECK ((pane_state = 'closed') = (pane_closed_at IS NOT NULL)),
   CHECK (pane_state != 'kept' OR pane_note IS NOT NULL),
   CHECK (pane_state NOT IN ('closing', 'kept') OR keep_pane = 0),
@@ -429,6 +436,52 @@ CREATE UNIQUE INDEX IF NOT EXISTS notice_finished ON notice (task_id, round) WHE
 CREATE UNIQUE INDEX IF NOT EXISTS notice_blocked_unsent ON notice (task_id, round)
   WHERE kind = 'blocked' AND state IN ('pending', 'sending');
 
+-- The worker's tree at one side of a round: what `git add -A` would stage in the task's
+-- `worktree`, as the ID of the Git tree object that holds it. 'before' is taken by the command that
+-- started the round, `task add`, `task next`, or a `task send` that started it at once, before that
+-- command's transaction, and recorded in it; a round that started from the queue has none. 'after'
+-- is taken by the first of the owner's commands on the task after the round finished, while the
+-- round is still the task's latest; a round a queued one followed has none, since its worker went
+-- on with the next round first. A snapshot is the tree when its command ran: a round's snapshots do
+-- not bound its turn, as its times do not, and two equal trees show equal endpoints, not that
+-- nothing changed between them. `tree` is NULL when the snapshot could not be taken, `note` saying
+-- why. `created_at` is when the snapshot began. The objects a tree names that the repository did
+-- not hold are in the state directory's `snapshots/TASK_ID/objects` until the sweep archives the
+-- task.
+CREATE TABLE IF NOT EXISTS snapshot (
+  task_id    TEXT    NOT NULL,
+  round      INTEGER NOT NULL,
+  side       TEXT    NOT NULL CHECK (side IN ('before', 'after')),
+  tree       TEXT,
+  note       TEXT,
+  created_at INTEGER NOT NULL,
+  PRIMARY KEY (task_id, round, side),
+  CHECK ((tree IS NULL) != (note IS NULL)),
+  FOREIGN KEY (task_id, round) REFERENCES task_round (task_id, round) ON DELETE CASCADE
+) STRICT, WITHOUT ROWID;
+
+-- The space the snapshots' objects take in the state directory, which all rows' `bytes` together
+-- keep within the limit `docs/cli.md` gives: one row per capture that may have written objects to
+-- `snapshots/TASK_ID`. `id` names the capture's lock file `snapshots/TASK_ID/ID.lock`, on which
+-- every process of the capture holds a `flock`, and its objects directory `snapshots/TASK_ID/ID`,
+-- created after the row and deleted before the lock file. A 'reserved' row's capture has not
+-- finished, and `bytes` is the size of the files it listed, or, once the capture ended without
+-- deleting all it wrote, the size of what it left, or the whole limit when that could not be
+-- measured: whoever can take the lock deletes the directory and then the row, and a row whose lock
+-- file is gone is one a capture or reclaimer killed in between left. A 'kept' row's objects are the
+-- task's, and `bytes` is their size as Git stored them: they are in `snapshots/TASK_ID/objects`, or
+-- still in the capture's directory while its lock file exists, and whoever can take the lock moves
+-- them there. There is no foreign key to `task`: `task add` takes its snapshot before the task row
+-- exists, and a task's directory outlives the task until the sweep deletes it and then its rows.
+-- Neither archived nor exported.
+CREATE TABLE IF NOT EXISTS snapshot_space (
+  task_id TEXT    NOT NULL,
+  id      TEXT    NOT NULL,
+  state   TEXT    NOT NULL CHECK (state IN ('reserved', 'kept')),
+  bytes   INTEGER NOT NULL CHECK (bytes >= 0),
+  PRIMARY KEY (task_id, id)
+) STRICT, WITHOUT ROWID;
+
 -- This database's identity, one row. `source_id` is minted when the database is created or
 -- upgraded to version 10 and never changes. `export` gives it in its header, so that a reader of
 -- several databases' exports can tell their entities apart: `epoch.id` counts from 1 in each.
@@ -442,9 +495,9 @@ CREATE TABLE IF NOT EXISTS store (
 -- relies on. `entity_id` is the entity's `id`, an epoch's as decimal text. `version` is the
 -- `user_version` whose tables `data` describes; an upgrade leaves `data` as it is. `data` is an
 -- object keyed by table name: the entity's own row and, for a task, its `task_round`,
--- `blocked_episode`, `request`, and `notice` rows as arrays in primary-key order. A row is an
--- object of every column by name, each value as the column holds it. `data` is last: the one large
--- column, so reads of the others never cross its overflow pages.
+-- `blocked_episode`, `request`, `notice`, and `snapshot` rows as arrays in primary-key order. A row
+-- is an object of every column by name, each value as the column holds it. `data` is last: the one
+-- large column, so reads of the others never cross its overflow pages.
 CREATE TABLE IF NOT EXISTS archive (
   entity_type TEXT    NOT NULL CHECK (entity_type IN ('epoch', 'restore', 'task')),
   entity_id   TEXT    NOT NULL,

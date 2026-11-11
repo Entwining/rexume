@@ -28,7 +28,7 @@ fn a_run_reaches_its_owner_and_its_pane_closes_after_release() {
     });
     let (session, owner, worker) = owner_and_run(&server, &state, dir.path(), &script);
     let (session, owner, worker) = (session.as_str(), owner.as_str(), worker.as_str());
-    let id = task(
+    let added = task(
         &server,
         &state,
         owner,
@@ -41,10 +41,17 @@ fn a_run_reaches_its_owner_and_its_pane_closes_after_release() {
             "--result-file",
             &result.to_string_lossy(),
         ],
-    )["id"]
-        .as_str()
-        .unwrap()
-        .to_owned();
+    );
+    // The run is in no repository, so it has no snapshots.
+    let snapshot = &added["snapshot"];
+    assert_eq!(snapshot["worktree"], Value::Null);
+    assert!(
+        snapshot["note"]
+            .as_str()
+            .unwrap()
+            .contains("not a git repository")
+    );
+    let id = added["id"].as_str().unwrap().to_owned();
     std::fs::write(&go, "").unwrap();
     let waited = task(&server, &state, owner, &["wait", &id, "--timeout", "20"]);
     assert_eq!(
@@ -171,7 +178,7 @@ fn a_run_that_reported_its_conversation_is_bound_when_registered() {
 /// A session with an owner whose conversation the state records, beside a pane running `script`
 /// as its own program, kept open after it exits. Returns the session, owner, and worker IDs once
 /// the daemon has recorded the run as the worker's foreground.
-fn owner_and_run(
+pub(super) fn owner_and_run(
     server: &Server,
     state: &Path,
     dir: &Path,

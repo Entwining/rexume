@@ -59,7 +59,9 @@ fn tasks(store: &Store) -> Result<()> {
          INSERT INTO notice (id, task_id, round, kind, blocked_episode_id, state, created_at,
            sent_at)
            VALUES ('n', 'old', 1, 'finished', NULL, 'accepted', {old}, {old}),
-             ('nb', 'old', 1, 'blocked', 'e1', 'sent', 0, 0);",
+             ('nb', 'old', 1, 'blocked', 'e1', 'sent', 0, 0);
+         INSERT INTO snapshot (task_id, round, side, tree, note, created_at)
+           VALUES ('old', 1, 'before', 'b0', NULL, 0), ('old', 1, 'after', NULL, 'failed', 1);",
         old = old(),
         now = now_ms()
     ))?;
@@ -84,6 +86,8 @@ fn sweep_archives_a_task_once_all_its_rounds_are_old() -> Result<()> {
     assert_eq!(data["notice"][0]["id"], "n");
     assert_eq!(data["blocked_episode"][0]["kind"], "question");
     assert_eq!(data["blocked_episode"][1]["id"], "e2");
+    assert_eq!(data["snapshot"][0]["note"], "failed");
+    assert_eq!(data["snapshot"][1]["tree"], "b0");
     assert_eq!(
         strings(&store, "SELECT id FROM task ORDER BY id"),
         ["open", "recent"]
@@ -95,6 +99,7 @@ fn sweep_archives_a_task_once_all_its_rounds_are_old() -> Result<()> {
     assert!(strings(&store, "SELECT id FROM request").is_empty());
     assert!(strings(&store, "SELECT id FROM notice").is_empty());
     assert!(strings(&store, "SELECT id FROM blocked_episode").is_empty());
+    assert!(strings(&store, "SELECT task_id FROM snapshot").is_empty());
     assert_eq!(strings(&store, "SELECT entity_id FROM archive"), ["old"]);
     Ok(())
 }

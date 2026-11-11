@@ -27,7 +27,7 @@ pub const SCHEMA_VERSION: i64 = 10;
 const APPLICATION_ID: i64 = 0x7265_7875;
 /// How long finished restores, tasks, and epochs stay in their tables before the sweep archives
 /// them, and unused conversations and turn records before it deletes them.
-const RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
+pub(crate) const RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 pub fn default_dir() -> Result<PathBuf> {
     let home = std::env::home_dir().context("HOME is not set")?;

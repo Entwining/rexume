@@ -6,6 +6,7 @@ mod daemon;
 mod event;
 mod export;
 mod gate;
+mod git;
 mod install;
 mod proc;
 mod report;

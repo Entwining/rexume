@@ -28,7 +28,7 @@ chrono = { version = "=0.4.45", default-features = false, features = ["std"] }
 clap = { version = "=4.6.7", features = ["derive", "wrap_help"] }
 env_logger = { version = "=0.11.11", default-features = false, features = ["humantime"] }
 log = "=0.4.35"
-nix = { version = "=0.31.3", default-features = false, features = ["event", "inotify", "poll", "signal", "user"] }
+nix = { version = "=0.31.3", default-features = false, features = ["event", "fs", "inotify", "poll", "signal", "user"] }
 percent-encoding = "=2.3.2"
 rusqlite = { version = "=0.41.1", features = ["bundled", "serde_json"] }
 serde = { version = "=1.0.229", features = ["derive"] }

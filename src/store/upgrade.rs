@@ -23,9 +23,9 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
     }
     // Version 9 adds the 'queued' and 'dropped' round states to a `CHECK`, which changes only with
     // its table. Version 10 adds `epoch.host_id` and `epoch.daemon_version`, the pane's
-    // `status_kind` and `status_message`, `task.meta`, the delivery columns of `request` and
-    // `notice`, and `blocked_episode`, which replaces `task_round.blocked_at`, and drops two of
-    // `task`'s `CHECK`s.
+    // `status_kind` and `status_message`, `task.meta`, `task.worktree` and `task.worktree_note`, the
+    // delivery columns of `request` and `notice`, `blocked_episode`, which replaces
+    // `task_round.blocked_at`, and `snapshot`, and drops two of `task`'s `CHECK`s.
     rebuild(
         tx,
         &["notice", "request", "task_round", "task", "epoch", "block"],
