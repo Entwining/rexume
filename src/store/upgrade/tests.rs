@@ -164,12 +164,12 @@ fn open_upgrades_a_version_2_database_dating_each_process_by_its_epoch() -> Resu
         notice_of(&store, "n")?,
         ("finished".into(), "delivered".into(), 48)
     );
-    let blocked: (String, Option<i64>) = store.conn().query_row(
-        "SELECT state, blocked_at FROM task_round WHERE task_id = 'c'",
+    let blocked: (String, i64) = store.conn().query_row(
+        "SELECT state, (SELECT COUNT(*) FROM blocked_episode) FROM task_round WHERE task_id = 'c'",
         [],
         |row| Ok((row.get(0)?, row.get(1)?)),
     )?;
-    assert_eq!(blocked, ("running".into(), None));
+    assert_eq!(blocked, ("running".into(), 0));
     let occupants: Vec<(Option<String>, Option<bool>)> = store
         .conn()
         .prepare("SELECT instance_id, own_program FROM occupant ORDER BY block_lineage")?
@@ -242,12 +242,15 @@ fn open_upgrades_versions_3_and_4_and_keeps_rounds_notices_and_requests() -> Res
         drop(conn);
         let store = Store::open(dir.path())?;
         assert_eq!(definitions(store.conn())?, fresh()?);
-        type Round = (i64, String, Option<i64>, Option<i64>, Option<String>);
+        type Round = (i64, String, i64, Option<i64>, Option<String>);
         let rounds: Vec<Round> = store
             .conn()
             .prepare(
-                "SELECT round, state, blocked_at, turn_start, result FROM task_round
-                 ORDER BY round",
+                "SELECT r.round, r.state,
+                   (SELECT COUNT(*) FROM blocked_episode e
+                    WHERE e.task_id = r.task_id AND e.round = r.round),
+                   r.turn_start, r.result
+                 FROM task_round r ORDER BY r.round",
             )?
             .query_map([], |row| {
                 Ok((
@@ -262,8 +265,8 @@ fn open_upgrades_versions_3_and_4_and_keeps_rounds_notices_and_requests() -> Res
         assert_eq!(
             rounds,
             [
-                (1, "completed".into(), None, Some(0), Some("first".into())),
-                (2, "running".into(), None, None, None)
+                (1, "completed".into(), 0, Some(0), Some("first".into())),
+                (2, "running".into(), 0, None, None)
             ]
         );
         assert_eq!(
@@ -280,53 +283,6 @@ fn open_upgrades_versions_3_and_4_and_keeps_rounds_notices_and_requests() -> Res
     Ok(())
 }
 
-/// Version 6 adds `epoch.error`. A version 5 database keeps its epochs, the newest of which
-/// `status` reads.
-#[test]
-fn open_upgrades_a_version_5_database_and_keeps_its_epochs() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let conn = Connection::open(dir.path().join("state.db"))?;
-    conn.execute_batch(include_str!("../../../tests/fixtures/schema-v5.sql"))?;
-    conn.execute_batch(
-        "INSERT INTO epoch (id, instance_id, started_at, ended_at, end_reason)
-           VALUES (7, 'i1', 1, 2, 'server_gone');",
-    )?;
-    drop(conn);
-    let store = Store::open(dir.path())?;
-    assert_eq!(definitions(store.conn())?, fresh()?);
-    let kept: (String, Option<String>) = store.conn().query_row(
-        "SELECT end_reason, error FROM epoch WHERE id = 7",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
-    assert_eq!(kept, ("server_gone".into(), None));
-    Ok(())
-}
-
-/// Version 7 drops the saved layouts, the restores of recreated sessions, and the pane columns
-/// only they read; a version 6 pane keeps the rest of its record.
-#[test]
-fn open_upgrades_a_version_6_database_and_keeps_its_panes() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let conn = Connection::open(dir.path().join("state.db"))?;
-    conn.execute_batch(include_str!("../../../tests/fixtures/schema-v6.sql"))?;
-    conn.execute_batch(
-        "INSERT INTO block (lineage, instance_id, cwd, columns, rows, fg_pid, status)
-           VALUES ('b', 'i1', '/work', 80, 24, 10, 'working');
-         INSERT INTO session (lineage, instance_id, position, doc, updated_at)
-           VALUES ('s', 'i1', 0, '{}', 1);",
-    )?;
-    drop(conn);
-    let store = Store::open(dir.path())?;
-    assert_eq!(definitions(store.conn())?, fresh()?);
-    let kept: (String, Option<i64>, Option<String>) = store.conn().query_row(
-        "SELECT instance_id, fg_pid, status FROM block WHERE lineage = 'b'",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )?;
-    assert_eq!(kept, ("i1".into(), Some(10), Some("working".into())));
-    Ok(())
-}
-
 mod history;
+mod server;
 mod turn_records;

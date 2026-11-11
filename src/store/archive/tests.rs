@@ -53,8 +53,13 @@ fn tasks(store: &Store) -> Result<()> {
              ('recent', 2, 'dropped', {old}, {old}, 0, NULL, NULL);
          INSERT INTO request (id, task_id, round, state, text)
            VALUES ('q', 'old', 2, 'superseded', 'go on');
-         INSERT INTO notice (id, task_id, round, kind, state, created_at, sent_at)
-           VALUES ('n', 'old', 1, 'finished', 'accepted', {old}, {old});",
+         INSERT INTO blocked_episode (id, task_id, round, kind, started_at, ended_at, end_reason)
+           VALUES ('e2', 'old', 1, NULL, 2, 3, 'round_finished'),
+             ('e1', 'old', 1, 'question', 0, 1, 'status_changed');
+         INSERT INTO notice (id, task_id, round, kind, blocked_episode_id, state, created_at,
+           sent_at)
+           VALUES ('n', 'old', 1, 'finished', NULL, 'accepted', {old}, {old}),
+             ('nb', 'old', 1, 'blocked', 'e1', 'sent', 0, 0);",
         old = old(),
         now = now_ms()
     ))?;
@@ -77,6 +82,8 @@ fn sweep_archives_a_task_once_all_its_rounds_are_old() -> Result<()> {
     assert_eq!(data["task_round"][1]["round"], 2);
     assert_eq!(data["request"][0]["text"], "go on");
     assert_eq!(data["notice"][0]["id"], "n");
+    assert_eq!(data["blocked_episode"][0]["kind"], "question");
+    assert_eq!(data["blocked_episode"][1]["id"], "e2");
     assert_eq!(
         strings(&store, "SELECT id FROM task ORDER BY id"),
         ["open", "recent"]
@@ -87,6 +94,7 @@ fn sweep_archives_a_task_once_all_its_rounds_are_old() -> Result<()> {
     );
     assert!(strings(&store, "SELECT id FROM request").is_empty());
     assert!(strings(&store, "SELECT id FROM notice").is_empty());
+    assert!(strings(&store, "SELECT id FROM blocked_episode").is_empty());
     assert_eq!(strings(&store, "SELECT entity_id FROM archive"), ["old"]);
     Ok(())
 }
@@ -144,8 +152,8 @@ fn sweep_archives_old_restores_and_epochs_of_earlier_instances() -> Result<()> {
     );
     assert_eq!(
         archived(&store, "epoch", "1")?.2,
-        json!({ "epoch": { "id": 1, "instance_id": "i0", "host_id": null, "started_at": 0,
-            "ended_at": old, "end_reason": "server_gone", "error": null } })
+        json!({ "epoch": { "id": 1, "instance_id": "i0", "host_id": null, "daemon_version": null,
+            "started_at": 0, "ended_at": old, "end_reason": "server_gone", "error": null } })
     );
     let restore = archived(&store, "restore", "r-old")?.2;
     assert_eq!(restore["restore"]["plan"], r#"{"argv":[]}"#);

@@ -11,15 +11,18 @@ use super::outcome::finish;
 use super::queue::Queued;
 use crate::store::{self, now_ms};
 
-/// The rounds a closed worker pane leaves unfinished that no record can finish: a run's, and an
-/// interactive worker's whose conversation is unbound or has no record (`Runtime::record`). The
+/// The rounds a closed worker pane leaves unfinished that no record can finish: a run's, whose
+/// conversation's record holds no result of it, and an interactive worker's whose conversation is
+/// unbound or has no record (`Runtime::record`, which always has one for Claude Code and omp). The
 /// others take a turn the record already shows, on the daemon's next pass.
 pub(super) static WORKER_ROUNDS: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT t.id, r.round FROM task t JOIN task_round r ON r.task_id = t.id
          LEFT JOIN conversation c ON c.runtime = t.worker_runtime AND c.native_id = t.worker_native_id
-         WHERE t.worker_lineage = ?1 AND {OPEN} AND c.transcript IS NULL
-           AND t.worker_runtime IS NOT 'claude'"
+         WHERE t.worker_lineage = ?1 AND {OPEN}
+           AND (t.result_file IS NOT NULL
+                OR (c.transcript IS NULL
+                    AND (t.worker_runtime IS NULL OR t.worker_runtime NOT IN ('claude', 'omp'))))"
     )
 });
 
@@ -80,9 +83,10 @@ fn on_worker_closed(tx: &Transaction, lineage: &str) -> Result<()> {
         "worker_closed",
         "the worker's pane closed before it finished",
     )?;
-    // Whatever Rexume meant to do with the pane, it is gone now.
+    // Whatever Rexume meant to do with the pane, it is gone now; a kept pane keeps why it was kept.
     tx.execute(
-        "UPDATE task SET pane_state = 'closed', pane_closed_at = ?1, pane_note = NULL
+        "UPDATE task SET pane_state = 'closed', pane_closed_at = ?1,
+           pane_note = CASE WHEN pane_state = 'kept' THEN pane_note END
          WHERE worker_lineage = ?2 AND pane_state != 'closed'",
         params![now_ms(), lineage],
     )?;

@@ -12,17 +12,21 @@ fn abandoning_a_round_ends_and_acknowledges_it_and_drops_what_was_not_sent() -> 
     let transcript = record(&[PROMPT])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
     store.conn().execute_batch(
-        "UPDATE task_round SET state = 'blocked', blocked_at = 5;
+        "UPDATE task_round SET state = 'blocked';
+         INSERT INTO blocked_episode (id, task_id, round, started_at) VALUES ('e', 't', 1, 5);
          INSERT INTO request (id, task_id, round, text) VALUES ('q', 't', 1, 'go');
-         INSERT INTO notice (id, task_id, round, kind, state, created_at)
-           VALUES ('nb', 't', 1, 'blocked', 'pending', 5);",
+         INSERT INTO notice (id, task_id, round, kind, blocked_episode_id, state, created_at)
+           VALUES ('nb', 't', 1, 'blocked', 'e', 'pending', 5);",
     )?;
     let tx = store.write()?;
     assert_eq!(abandon_round(&tx, "t", None)?, 1);
     tx.commit()?;
-    let round: (String, Option<String>, bool, bool, Option<i64>) = store.conn().query_row(
-        "SELECT state, note, finished_at IS NOT NULL, acked_at IS NOT NULL, blocked_at
-         FROM task_round WHERE task_id = 't' AND round = 1",
+    // The episode ends with the round, at the round's end.
+    let round: (String, Option<String>, bool, bool, Option<String>) = store.conn().query_row(
+        "SELECT r.state, r.note, r.finished_at IS NOT NULL, r.acked_at IS NOT NULL, e.end_reason
+         FROM task_round r JOIN blocked_episode e ON e.task_id = r.task_id AND e.round = r.round
+           AND e.ended_at = r.finished_at
+         WHERE r.task_id = 't' AND r.round = 1",
         [],
         |row| {
             Ok((
@@ -41,7 +45,7 @@ fn abandoning_a_round_ends_and_acknowledges_it_and_drops_what_was_not_sent() -> 
             Some("the owner abandoned the round".into()),
             true,
             true,
-            None
+            Some("round_finished".into())
         )
     );
     let unsent: Vec<(String, String, Option<String>)> = store

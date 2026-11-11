@@ -5,7 +5,7 @@ use super::*;
 use crate::task::tests::{PROMPT, record, task_world};
 
 /// Task `t`'s round 1 with `change` applied, and whether a waiter in `waiter`'s place returns.
-fn returns_after(store: &mut Store, change: &str, waiter: Waiter) -> Result<Option<Returned>> {
+fn returns_after(store: &mut Store, change: &str, waiter: &Waiter) -> Result<Option<Returned>> {
     store.conn().execute_batch(change)?;
     let tx = store.write()?;
     let returned = returns(&tx, "t", 1, waiter)?;
@@ -29,20 +29,27 @@ fn taken(kind: &str) -> (String, String, Option<String>) {
     )
 }
 
-/// Round 1 begins a blocked episode at `at`, with its notice `id` pending.
+/// Round 1 begins blocked episode `e{id}` at `at`, with its notice `id` pending.
 fn episode(at: i64, id: &str) -> String {
     format!(
-        "UPDATE task_round SET state = 'blocked', blocked_at = {at};
-         INSERT INTO notice (id, task_id, round, kind, state, created_at)
-           VALUES ('{id}', 't', 1, 'blocked', 'pending', {at});"
+        "UPDATE task_round SET state = 'blocked';
+         INSERT INTO blocked_episode (id, task_id, round, started_at) VALUES ('e{id}', 't', 1, {at});
+         INSERT INTO notice (id, task_id, round, kind, blocked_episode_id, state, created_at)
+           VALUES ('{id}', 't', 1, 'blocked', 'e{id}', 'pending', {at});"
     )
 }
 
-const RESUMED: &str = "UPDATE task_round SET state = 'running', blocked_at = NULL;
+/// The open episode `e{id}` that `episode` began.
+fn seen(id: &str) -> Option<String> {
+    Some(format!("e{id}"))
+}
+
+const RESUMED: &str = "UPDATE task_round SET state = 'running';
+  UPDATE blocked_episode SET ended_at = 8, end_reason = 'status_changed' WHERE ended_at IS NULL;
   UPDATE notice SET state = 'superseded' WHERE state = 'pending'";
 
 const FINISHED: &str = "UPDATE task_round SET state = 'completed', result = 'Done.',
-    result_ref = 'm1', finished_at = 9, blocked_at = NULL;
+    result_ref = 'm1', finished_at = 9;
   INSERT INTO notice (id, task_id, round, kind, state, created_at)
     VALUES ('f', 't', 1, 'finished', 'pending', 9);";
 
@@ -51,13 +58,21 @@ fn the_registered_waiter_returns_on_each_notice_it_takes() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = record(&[PROMPT])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
-    let waiter = Waiter::Registered;
+    let waiter = &Waiter::Registered;
     assert_eq!(returns_after(&mut store, "", waiter)?, None);
     assert_eq!(
         returns_after(&mut store, &episode(5, "b1"), waiter)?,
         Some(Returned::Blocked)
     );
     assert_eq!(notice_states(&store)?, [taken("blocked")]);
+    let taken_at: Option<i64> =
+        store
+            .conn()
+            .query_row("SELECT superseded_at FROM notice", [], |row| row.get(0))?;
+    assert!(
+        taken_at.is_some(),
+        "the wait did not record when it took the notice"
+    );
     // The owner has been told of this episode, so a later wait waits for what comes next.
     assert_eq!(returns_after(&mut store, "", waiter)?, None);
     // An episode whose notice the daemon sent does not end a wait either.
@@ -88,21 +103,21 @@ fn a_waiter_behind_another_returns_on_a_later_episode() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = record(&[PROMPT])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
-    let behind = |blocked_at| Waiter::Behind {
-        holder: 1,
-        blocked_at,
-    };
+    let behind = |episode| Waiter::Behind { holder: 1, episode };
     assert_eq!(
-        returns_after(&mut store, &episode(5, "b1"), behind(Some(5)))?,
+        returns_after(&mut store, &episode(5, "b1"), &behind(seen("b1")))?,
         None
     );
-    assert_eq!(returns_after(&mut store, RESUMED, behind(Some(5)))?, None);
     assert_eq!(
-        returns_after(&mut store, &episode(7, "b2"), behind(Some(5)))?,
+        returns_after(&mut store, RESUMED, &behind(seen("b1")))?,
+        None
+    );
+    assert_eq!(
+        returns_after(&mut store, &episode(7, "b2"), &behind(seen("b1")))?,
         Some(Returned::Blocked)
     );
     assert_eq!(
-        returns_after(&mut store, "", behind(None))?,
+        returns_after(&mut store, "", &behind(None))?,
         Some(Returned::Blocked)
     );
     let notices = notice_states(&store)?;
@@ -111,7 +126,7 @@ fn a_waiter_behind_another_returns_on_a_later_episode() -> Result<()> {
         returns_after(
             &mut store,
             &format!("{RESUMED}; {FINISHED}"),
-            behind(Some(5))
+            &behind(seen("b1"))
         )?,
         Some(Returned::Finished)
     );
@@ -126,16 +141,17 @@ fn a_wait_replaces_only_the_holder_it_found_gone() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = record(&[PROMPT])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
-    let stand_after = |store: &mut Store, change: &str, gone, before| -> Result<Waiter> {
-        store.conn().execute_batch(change)?;
-        let tx = store.write()?;
-        let waiter = stand(&tx, "t", 1, 222, gone, before)?;
-        tx.commit()?;
-        Ok(waiter)
-    };
+    let stand_after =
+        |store: &mut Store, change: &str, gone, before: Option<&Waiter>| -> Result<Waiter> {
+            store.conn().execute_batch(change)?;
+            let tx = store.write()?;
+            let waiter = stand(&tx, "t", 1, 222, gone, before)?;
+            tx.commit()?;
+            Ok(waiter)
+        };
     let behind = |holder| Waiter::Behind {
         holder,
-        blocked_at: Some(5),
+        episode: seen("b1"),
     };
     let holder = format!(
         "{}; UPDATE task_round SET waiter_pid = 111",
@@ -144,15 +160,15 @@ fn a_wait_replaces_only_the_holder_it_found_gone() -> Result<()> {
     let first = stand_after(&mut store, &holder, None, None)?;
     assert_eq!(first, behind(111));
     let later = format!("{RESUMED}; {}", episode(7, "b2"));
-    assert_eq!(stand_after(&mut store, &later, None, Some(first))?, first);
+    assert_eq!(stand_after(&mut store, &later, None, Some(&first))?, first);
     // Another wait replaced the holder this one found gone before its transaction.
     let replaced = "UPDATE task_round SET waiter_pid = 333";
     assert_eq!(
-        stand_after(&mut store, replaced, Some(111), Some(first))?,
+        stand_after(&mut store, replaced, Some(111), Some(&first))?,
         behind(333)
     );
     assert_eq!(
-        stand_after(&mut store, "", Some(333), Some(first))?,
+        stand_after(&mut store, "", Some(333), Some(&first))?,
         Waiter::Registered
     );
     let waiter: Option<i64> =

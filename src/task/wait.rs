@@ -2,17 +2,19 @@
 //! own turn.
 
 use std::path::Path;
+use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use rusqlite::{Transaction, params};
 use serde_json::{Value, json};
 
+use super::blocked::OPEN_EPISODE;
 use super::notice::{self, Kind};
 use super::{caller, finished, owned, round_state, shown};
 use crate::event::{Queue, Token};
 use crate::proc;
-use crate::store::Store;
+use crate::store::{Store, now_ms};
 
 /// Why a `task wait` returned, as decided in the transaction it returned from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -74,8 +76,8 @@ pub(super) fn wait_for(
         // Also before the first look, as a commit that wrote the log before the watch existed
         // fires nothing. Taking the write lock settles the store, as `Store::settle` does.
         let tx = store.write()?;
-        let now = stand(&tx, id, round, pid, gone, waiter)?;
-        let returned = match returns(&tx, id, round, now)? {
+        let now = stand(&tx, id, round, pid, gone, waiter.as_ref())?;
+        let returned = match returns(&tx, id, round, &now)? {
             None if Instant::now() >= until => Some(Returned::TimedOut),
             returned => returned,
         };
@@ -93,12 +95,15 @@ pub(super) fn wait_for(
             Some(Waiter::Behind { holder, .. }) => Some(holder),
             _ => None,
         };
-        waiter = Some(now);
         // A holder that exited before its watch fires nothing, so the next look is at once.
-        if let Waiter::Behind { holder, .. } = now
-            && watched != Some(holder)
-            && !queue.exit(holder, HOLDER_EXIT)?
-        {
+        let unwatched = match now {
+            Waiter::Behind { holder, .. } if watched != Some(holder) => {
+                !queue.exit(holder, HOLDER_EXIT)?
+            }
+            _ => false,
+        };
+        waiter = Some(now);
+        if unwatched {
             continue;
         }
         let fired = queue.wait(Some(until.saturating_duration_since(Instant::now())))?;
@@ -109,17 +114,33 @@ pub(super) fn wait_for(
 }
 
 /// How a `task wait` stands towards its round.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Waiter {
     /// The round's registered waiter, which takes the round's notices itself, so the daemon leaves
     /// them to it.
     Registered,
-    /// Behind the waiter `holder`, not found gone, having seen `blocked_at` when it came to stand
-    /// behind one.
+    /// Behind the waiter `holder`, not found gone, having seen the round's open `episode` when it
+    /// came to stand behind one.
     Behind {
         holder: i64,
-        blocked_at: Option<i64>,
+        episode: Option<String>,
     },
+}
+
+/// A round's waiter, state, and open blocked episode.
+static ROUND: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT r.waiter_pid, r.state,
+           (SELECT e.id FROM blocked_episode e
+            WHERE e.task_id = r.task_id AND e.round = r.round AND {OPEN_EPISODE})
+         FROM task_round r WHERE r.task_id = ?1 AND r.round = ?2"
+    )
+});
+
+fn round(tx: &Transaction, id: &str, round: i64) -> Result<(Option<i64>, String, Option<String>)> {
+    Ok(tx.query_row(&ROUND, params![id, round], |row| {
+        Ok((row.get(0)?, row.get(1)?, row.get(2)?))
+    })?)
 }
 
 /// Registers `pid` as the round's waiter when the round has none or still has `gone`, a holder
@@ -131,21 +152,17 @@ pub(super) fn stand(
     round: i64,
     pid: i64,
     gone: Option<i64>,
-    before: Option<Waiter>,
+    before: Option<&Waiter>,
 ) -> Result<Waiter> {
-    let (holder, blocked_at): (Option<i64>, Option<i64>) = tx.query_row(
-        "SELECT waiter_pid, blocked_at FROM task_round WHERE task_id = ?1 AND round = ?2",
-        params![id, round],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+    let (holder, _, episode) = self::round(tx, id, round)?;
     match holder {
         Some(holder) if holder == pid => Ok(Waiter::Registered),
         Some(holder) if Some(holder) != gone => {
-            let blocked_at = match before {
-                Some(Waiter::Behind { blocked_at, .. }) => blocked_at,
-                _ => blocked_at,
+            let episode = match before {
+                Some(Waiter::Behind { episode, .. }) => episode.clone(),
+                _ => episode,
             };
-            Ok(Waiter::Behind { holder, blocked_at })
+            Ok(Waiter::Behind { holder, episode })
         }
         _ => {
             tx.execute(
@@ -164,26 +181,22 @@ pub(super) fn returns(
     tx: &Transaction,
     id: &str,
     round: i64,
-    waiter: Waiter,
+    waiter: &Waiter,
 ) -> Result<Option<Returned>> {
-    let (state, blocked_at): (String, Option<i64>) = tx.query_row(
-        "SELECT state, blocked_at FROM task_round WHERE task_id = ?1 AND round = ?2",
-        params![id, round],
-        |row| Ok((row.get(0)?, row.get(1)?)),
-    )?;
+    let (_, state, episode) = self::round(tx, id, round)?;
     let taken = "taken by task wait";
+    let now = now_ms();
     Ok(match waiter {
         Waiter::Registered if finished(&state) => {
-            notice::supersede(tx, Kind::Finished, id, round, taken)?;
+            notice::supersede(tx, Kind::Finished, id, round, taken, now)?;
             Some(Returned::Finished)
         }
-        Waiter::Registered => {
-            notice::supersede(tx, Kind::Blocked, id, round, taken)?.then_some(Returned::Blocked)
-        }
+        Waiter::Registered => notice::supersede(tx, Kind::Blocked, id, round, taken, now)?
+            .then_some(Returned::Blocked),
         Waiter::Behind { .. } if finished(&state) => Some(Returned::Finished),
-        Waiter::Behind {
-            blocked_at: seen, ..
-        } => (blocked_at.is_some() && blocked_at != seen).then_some(Returned::Blocked),
+        Waiter::Behind { episode: seen, .. } => {
+            (episode.is_some() && episode != *seen).then_some(Returned::Blocked)
+        }
     })
 }
 

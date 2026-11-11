@@ -45,7 +45,9 @@ pub fn resume_argv(c: &Conversation) -> Vec<String> {
 /// override that, so the reported ones serve only a session that has no file yet.
 pub fn settings(transcript: &Path, conversation: &mut Conversation) {
     if transcript.exists() {
-        conversation.settings.clear();
+        for key in ["provider", "model", "effort"] {
+            conversation.settings.remove(key);
+        }
     }
 }
 
@@ -150,20 +152,27 @@ mod tests {
     }
 
     #[test]
-    fn a_session_with_a_file_reopens_without_settings() -> Result<()> {
+    fn a_session_with_a_file_reopens_without_model_settings() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let session = dir.path().join("session.jsonl");
         let path = session.to_string_lossy().into_owned();
+        let meta = r#"{"eval":"e1"}"#;
         let reported = Conversation {
             native_id: "s".into(),
             transcript: Some(path.clone()),
-            settings: settings(&[("model", "fast"), ("effort", "low"), ("provider", "gw")]),
+            settings: settings(&[
+                ("model", "fast"),
+                ("effort", "low"),
+                ("provider", "gw"),
+                ("task_meta", meta),
+            ]),
         };
-        let argv = || -> Result<Vec<String>> {
+        let reopened = || -> Result<Conversation> {
             let mut c = reported.clone();
             Runtime::Pi.settings(&mut c)?;
-            Ok(Runtime::Pi.resume_argv(&c))
+            Ok(c)
         };
+        let argv = || -> Result<Vec<String>> { Ok(Runtime::Pi.resume_argv(&reopened()?)) };
         // Before its first message Pi has written no session to restore settings from.
         assert_eq!(
             argv()?,
@@ -183,6 +192,11 @@ mod tests {
         // passed here would override them.
         std::fs::write(&session, "")?;
         assert_eq!(argv()?, ["pi", "--session", &path]);
+        // The task meta is Rexume's, not Pi's, so the tasks the session registers still get it.
+        assert_eq!(
+            Runtime::Pi.resume_env(&reopened()?),
+            [("REXUME_TASK_META".to_owned(), meta.to_owned())]
+        );
         Ok(())
     }
 

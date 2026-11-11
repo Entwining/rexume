@@ -10,7 +10,7 @@ use serde_json::{Map, Value};
 
 use super::{Interest, OPEN};
 use crate::runtime::{self, Runtime, Sent, Target, inbox};
-use crate::store::Store;
+use crate::store::{Store, now_ms};
 
 /// The pending requests of open rounds, reached through the rounds so that the request table
 /// is never scanned: SQLite keeps the left table of a `CROSS JOIN` as the outer loop.
@@ -36,10 +36,11 @@ pub(super) const WORKER: &str = "SELECT t.worker_runtime, t.worker_native_id, o.
   JOIN epoch e ON e.id = (SELECT MAX(id) FROM epoch)
   WHERE t.id = ?1";
 
-/// Claims a pending request for sending while its round is still unfinished.
+/// Claims a pending request for sending at `?2` while its round is still unfinished.
 pub(super) static CLAIM: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "UPDATE request SET state = 'sending' WHERE id = ?1 AND state = 'pending'
+        "UPDATE request SET state = 'sending', sent_at = ?2, attempts = attempts + 1
+         WHERE id = ?1 AND state = 'pending'
            AND EXISTS (SELECT 1 FROM task_round r
                        WHERE r.task_id = request.task_id AND r.round = request.round AND {OPEN})"
     )
@@ -91,7 +92,9 @@ fn record_send(tx: &Transaction, id: &str, sent: (&str, Option<String>)) -> Resu
         note = Some(ENDED.to_owned());
     }
     tx.execute(
-        "UPDATE request SET state = ?1, note = ?2 WHERE id = ?3 AND state = 'sending'",
+        "UPDATE request SET state = ?1, note = ?2,
+           sent_at = CASE WHEN ?1 IN ('pending', 'superseded') THEN NULL ELSE sent_at END
+         WHERE id = ?3 AND state = 'sending'",
         params![state, note, id],
     )?;
     Ok(())
@@ -127,7 +130,7 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<()>
             continue;
         };
         let tx = store.write()?;
-        let claimed = tx.execute(&CLAIM, params![id])? == 1;
+        let claimed = tx.execute(&CLAIM, params![id, now_ms()])? == 1;
         tx.commit()?;
         if !claimed {
             continue;

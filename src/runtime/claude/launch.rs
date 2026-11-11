@@ -71,24 +71,13 @@ const ENV_FAMILY: &str = "VERTEX_REGION_CLAUDE_";
 const OWNER: &str = "REXUME_LAUNCH_PID";
 const COMMAND: &str = "REXUME_LAUNCH";
 
-/// The launch settings of the process `pid`, as a patch over the recorded settings. The process's
-/// own environment is read rather than the hook's, which also carries the `env` of Claude Code's
-/// settings: Claude Code applies those itself on resume, and saving them would keep one the user
-/// later removed. A process that cannot be read leaves the recorded launch settings as they were.
-pub fn settings(pid: u32) -> Map<String, Value> {
-    proc::launch(pid).map_or_else(
-        || {
-            log::warn!("process {pid}: cannot read what it was started with");
-            Map::new()
-        },
-        |launch| patch(&launch, pid),
-    )
-}
-
-/// Names every key, `null` when empty, so that the report replaces or removes each. A launcher
-/// that declared its command for the process sets the provider again when it runs, so the
-/// provider variables are saved only without one.
-fn patch(launch: &proc::Launch, pid: u32) -> Map<String, Value> {
+/// The launch settings of the process `pid`, started as `launch`, as a patch over the recorded
+/// settings. It names every key, `null` when empty, so that the report replaces or removes each.
+/// The process's own environment is read rather than the hook's, which also carries the `env` of
+/// Claude Code's settings: Claude Code applies those itself on resume, and saving them would keep
+/// one the user later removed. A launcher that declared its command for the process sets the
+/// provider again when it runs, so the provider variables are saved only without one.
+pub fn patch(launch: &proc::Launch, pid: u32) -> Map<String, Value> {
     let list = |values: Vec<String>| {
         if values.is_empty() {
             Value::Null
@@ -96,7 +85,7 @@ fn patch(launch: &proc::Launch, pid: u32) -> Map<String, Value> {
             values.into()
         }
     };
-    let (command, error, env) = match declaration(&launch.env, pid) {
+    let (command, error, env) = match declaration(launch, pid) {
         None => (Value::Null, Value::Null, list(env(&launch.env))),
         Some(Ok(argv)) => (argv.into(), Value::Null, Value::Null),
         Some(Err(reason)) => (Value::Null, reason.into(), Value::Null),
@@ -115,18 +104,15 @@ fn patch(launch: &proc::Launch, pid: u32) -> Map<String, Value> {
 /// The command a launcher declared for process `pid`, or why it cannot be used; `None` when the
 /// declaration is not this process's. Children inherit their parent's, including a program Claude
 /// Code starts by its own path, so it counts only for the process `REXUME_LAUNCH_PID` names.
-fn declaration(env: &[String], pid: u32) -> Option<Result<Vec<String>, String>> {
-    let var = |name: &str| {
-        env.iter()
-            .find_map(|entry| entry.strip_prefix(name)?.strip_prefix('='))
-    };
-    if var(OWNER)?.parse::<u32>().ok()? != pid {
+fn declaration(launch: &proc::Launch, pid: u32) -> Option<Result<Vec<String>, String>> {
+    if launch.var(OWNER)?.parse::<u32>().ok()? != pid {
         return None;
     }
     // The gate claims the restore before its shell runs the command, so a command that cannot run
     // there stops here: an empty one would reopen as `claude`, a NUL cannot be quoted for the
     // shell, an empty first element names no program, and one with `=` is a variable assignment.
-    let argv = var(COMMAND)
+    let argv = launch
+        .var(COMMAND)
         .and_then(|text| serde_json::from_str::<Vec<String>>(text).ok())
         .filter(|argv| {
             argv.first()

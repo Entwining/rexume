@@ -203,6 +203,41 @@ fn a_failed_send_stays_pending_and_is_listed_with_its_reason() -> Result<()> {
     Ok(())
 }
 
+/// Each claim counts as an attempt. One that failed before anything left keeps its count but not
+/// its send time, and the receipt that settles the next records when it was seen.
+#[test]
+fn a_notice_records_each_attempt_and_when_it_was_delivered() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut transcript = tempfile::NamedTempFile::new()?;
+    let (mut store, listener) = notice_world(dir.path(), transcript.path(), "pending")?;
+    let record = |store: &Store| -> Result<(String, i64, Option<i64>, Option<i64>)> {
+        Ok(store.conn().query_row(
+            "SELECT state, attempts, sent_at, delivered_at FROM notice WHERE id = 'd'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        )?)
+    };
+    drop(listener);
+    let socket = dir.path().join("owner.sock");
+    std::fs::remove_file(&socket)?;
+    send_due(&mut store, &mut Interest::default())?;
+    assert_eq!(record(&store)?, ("pending".into(), 1, None, None));
+    let listener = UnixListener::bind(&socket)?;
+    let before = now_ms();
+    send_due(&mut store, &mut Interest::default())?;
+    let (state, attempts, sent_at, delivered_at) = record(&store)?;
+    assert_eq!((state.as_str(), attempts, delivered_at), ("sent", 2, None));
+    assert!(sent_at.is_some_and(|at| at >= before), "{sent_at:?}");
+    drop(listener);
+    writeln!(transcript, "{}", receipt("d"))?;
+    transcript.flush()?;
+    settle(&mut store, &mut HashMap::new(), &mut Interest::default())?;
+    let (state, attempts, kept, delivered_at) = record(&store)?;
+    assert_eq!((state.as_str(), attempts, kept), ("delivered", 2, sent_at));
+    assert!(delivered_at >= sent_at, "{delivered_at:?}");
+    Ok(())
+}
+
 /// The owner's acknowledgement makes a notice moot without being a receipt: the notice leaves the
 /// list and stays `sent`.
 #[test]
@@ -237,6 +272,11 @@ fn a_failed_send_drops_a_notice_of_a_round_acknowledged_meanwhile() -> Result<()
         notice(&store)?,
         ("superseded".to_owned(), Some(ACKED.to_owned()))
     );
+    let superseded_at: Option<i64> =
+        store
+            .conn()
+            .query_row("SELECT superseded_at FROM notice", [], |row| row.get(0))?;
+    assert!(superseded_at.is_some());
     Ok(())
 }
 

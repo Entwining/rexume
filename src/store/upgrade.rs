@@ -4,24 +4,35 @@
 //! missing and sets the version.
 
 use anyhow::{Result, bail};
-use rusqlite::Transaction;
+use rusqlite::{Transaction, params};
 
-use super::{SCHEMA, SCHEMA_VERSION};
+use super::{SCHEMA, SCHEMA_VERSION, new_id};
 
 pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
     if !(1..SCHEMA_VERSION).contains(&version) {
         bail!("schema {version} has no upgrade");
     }
+    // Read before any step rebuilds `task_round` without the column.
+    let blocked = if version >= 5 {
+        open_episodes(tx)?
+    } else {
+        Vec::new()
+    };
     if version < 7 {
         to_v7(tx, version)?;
     }
-    if version < 9 {
-        // Version 9 adds the 'queued' and 'dropped' round states to a `CHECK`, which changes only
-        // with its table.
-        rebuild(tx, &["notice", "request", "task_round"])?;
+    // Version 9 adds the 'queued' and 'dropped' round states to a `CHECK`, which changes only with
+    // its table. Version 10 adds `epoch.host_id` and `epoch.daemon_version`, the pane's
+    // `status_kind` and `status_message`, `task.meta`, the delivery columns of `request` and
+    // `notice`, and `blocked_episode`, which replaces `task_round.blocked_at`, and drops two of
+    // `task`'s `CHECK`s.
+    rebuild(
+        tx,
+        &["notice", "request", "task_round", "task", "epoch", "block"],
+    )?;
+    for (task, round, started_at) in blocked {
+        carry_episode(tx, &task, round, started_at)?;
     }
-    // Version 10 adds `epoch.host_id`.
-    rebuild(tx, &["epoch"])?;
     if version < 8 {
         // Version 8 reads a Claude Code conversation's turns from the record its turn hooks write,
         // which starts empty, so an offset into its transcript names nothing there: its tasks read
@@ -174,6 +185,31 @@ fn blocked_episodes(tx: &Transaction) -> Result<()> {
          ALTER TABLE notice ADD COLUMN created_at INTEGER;
          UPDATE notice SET created_at = (SELECT r.finished_at FROM task_round r
            WHERE r.task_id = notice.task_id AND r.round = notice.round);",
+    )?;
+    Ok(())
+}
+
+/// The blocked rounds of a version 5 to 9 database, each with when its episode began.
+fn open_episodes(tx: &Transaction) -> Result<Vec<(String, i64, i64)>> {
+    Ok(tx
+        .prepare("SELECT task_id, round, blocked_at FROM task_round WHERE state = 'blocked'")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
+        .collect::<rusqlite::Result<_>>()?)
+}
+
+/// Gives a round that was blocked before version 10 its open episode, of no known kind or message,
+/// and links the episode's notice, the blocked notice written when it began. The round stays
+/// blocked, so its owner gets no second notice for the same dialog.
+fn carry_episode(tx: &Transaction, task: &str, round: i64, started_at: i64) -> Result<()> {
+    let id = new_id();
+    tx.execute(
+        "INSERT INTO blocked_episode (id, task_id, round, started_at) VALUES (?1, ?2, ?3, ?4)",
+        params![id, task, round, started_at],
+    )?;
+    tx.execute(
+        "UPDATE notice SET blocked_episode_id = ?1
+         WHERE task_id = ?2 AND round = ?3 AND kind = 'blocked' AND created_at = ?4",
+        params![id, task, round, started_at],
     )?;
     Ok(())
 }

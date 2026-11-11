@@ -31,7 +31,7 @@ use crate::store::Store;
 
 use caller::{caller, owned};
 
-pub use blocked::end_blocked_episodes;
+pub use blocked::{EndReason, end_blocked_episodes};
 pub use cleanup::{close_unfocused, held, hold, keep, release_held, retired_workers};
 pub use evidence::is_run;
 pub use follow::{Follow, Interest};
@@ -59,10 +59,17 @@ const OPEN: &str = "r.state IN ('running', 'blocked')";
 
 const COLUMNS: &str = "t.id, t.title, r.round, r.state, t.result_file IS NULL, t.keep_pane,
   l.live_id, r.result_ref, r.note, r.finished_at, r.acked_at, t.pane_state, t.pane_closed_at,
-  t.pane_note, t.released_at, q.id, q.state, q.note";
+  t.pane_note, t.released_at, q.id, q.state, q.note, e.started_at, e.kind, e.message";
 
-/// Joins the request of a round joined as `r` as `q`.
-const ROUND_REQUEST: &str = "LEFT JOIN request q ON q.task_id = r.task_id AND q.round = r.round";
+/// Joins the request of a round joined as `r` as `q`, and its open blocked episode as `e`.
+static ROUND_REQUEST: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "LEFT JOIN request q ON q.task_id = r.task_id AND q.round = r.round
+         LEFT JOIN blocked_episode e ON e.task_id = r.task_id AND e.round = r.round
+           AND {}",
+        blocked::OPEN_EPISODE
+    )
+});
 
 /// Joins the worker pane's current Rex block ID as `l`, on the instance bound as `?1`. A closed
 /// pane keeps its `live` row until the next server instance, so it is excluded here.
@@ -89,8 +96,16 @@ struct Task {
     unread: Option<usize>,
     /// The task's queued rounds in order, filled in after the row is read.
     queued: Vec<i64>,
+    blocked: Option<Blocked>,
     request: Option<Request>,
     pane: Pane,
+}
+
+#[derive(Serialize)]
+struct Blocked {
+    kind: Option<String>,
+    message: Option<String>,
+    started_at: i64,
 }
 
 #[derive(Serialize)]
@@ -129,6 +144,16 @@ impl Task {
             released_at: row.get(14)?,
             unread: None,
             queued: Vec::new(),
+            blocked: row
+                .get::<_, Option<i64>>(18)?
+                .map(|started_at| -> rusqlite::Result<Blocked> {
+                    Ok(Blocked {
+                        kind: row.get(19)?,
+                        message: row.get(20)?,
+                        started_at,
+                    })
+                })
+                .transpose()?,
             request: row
                 .get::<_, Option<String>>(15)?
                 .map(|id| -> rusqlite::Result<Request> {
@@ -156,7 +181,7 @@ fn unread(conn: &Connection, state_dir: &Path, id: &str) -> Result<Option<usize>
         .query_row(
             "SELECT t.worker_runtime, t.worker_native_id, c.transcript, t.position FROM task t
              JOIN conversation c ON c.runtime = t.worker_runtime AND c.native_id = t.worker_native_id
-             WHERE t.id = ?1 AND t.released_at IS NULL",
+             WHERE t.id = ?1 AND t.result_file IS NULL AND t.released_at IS NULL",
             params![id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
         )
@@ -193,9 +218,10 @@ pub fn list(state_dir: &Path) -> Result<Value> {
         .conn()
         .prepare(&format!(
             "SELECT {COLUMNS} FROM task t JOIN task_round r ON r.task_id = t.id {LIVE_WORKER}
-             {ROUND_REQUEST}
+             {request}
              WHERE t.owner_runtime = ?2 AND t.owner_native_id = ?3 AND r.round = {current}
              ORDER BY t.created_at",
+            request = *ROUND_REQUEST,
             current = *CURRENT_ROUND
         ))?
         .query_map(
@@ -223,8 +249,9 @@ fn shown(
         .query_row(
             &format!(
                 "SELECT {COLUMNS}, r.result FROM task t JOIN task_round r ON r.task_id = t.id
-                 {LIVE_WORKER} {ROUND_REQUEST} WHERE t.id = ?2
+                 {LIVE_WORKER} {request} WHERE t.id = ?2
                    AND r.round = COALESCE(?3, {current})",
+                request = *ROUND_REQUEST,
                 current = *CURRENT_ROUND
             ),
             params![instance, id, round],
@@ -232,7 +259,7 @@ fn shown(
                 Ok(Shown {
                     version: VERSION,
                     task: Task::from_row(row)?,
-                    result: row.get(18)?,
+                    result: row.get(21)?,
                 })
             },
         )

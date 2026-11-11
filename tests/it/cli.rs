@@ -146,3 +146,32 @@ fn export_prints_a_header_and_an_end_and_creates_nothing() {
         serde_json::json!({ "record": "end", "entities": 0 })
     );
 }
+
+/// A `REXUME_TASK_META` that is not a JSON object refuses the task before anything is recorded.
+#[test]
+fn task_add_refuses_a_task_meta_that_is_not_a_json_object() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let output = rexume(
+        &[
+            "task",
+            "add",
+            "--state-dir",
+            &state.to_string_lossy(),
+            "--worker",
+            "block:w",
+            "--title",
+            "x",
+        ],
+        &[("REXUME_TASK_META", "eval=e1"), ("REX_BLOCK", "block:o")],
+        "",
+    );
+    assert_eq!(output.status.code(), Some(1));
+    let said = stderr(&output);
+    assert!(
+        said.starts_with("rexume: REXUME_TASK_META is not a JSON object")
+            && said.lines().count() == 1,
+        "{said}"
+    );
+    assert!(!state.exists());
+}

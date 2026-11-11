@@ -1,13 +1,16 @@
 use super::*;
+use crate::task::EndReason;
 
 /// `notice_world` with round 1 blocked since long ago and `d` its blocked notice, the worker's pane
 /// `b` known on the observed instance as `block:w`.
 fn blocked_world(dir: &Path, transcript: &Path, state: &str) -> Result<(Store, UnixListener)> {
     let (store, listener) = notice_world(dir, transcript, state)?;
     store.conn().execute_batch(
-        "UPDATE task_round SET state = 'blocked', blocked_at = 0, result = NULL, result_ref = NULL,
+        "UPDATE task_round SET state = 'blocked', result = NULL, result_ref = NULL,
            finished_at = NULL;
-         UPDATE notice SET kind = 'blocked';
+         INSERT INTO blocked_episode (id, task_id, round, kind, message, started_at)
+           VALUES ('e', 't', 1, 'permission', 'Run the migration?', 0);
+         UPDATE notice SET kind = 'blocked', blocked_episode_id = 'e';
          INSERT INTO live (instance_id, live_id, lineage) VALUES ('i1', 'block:w', 'b');",
     )?;
     Ok((store, listener))
@@ -44,13 +47,14 @@ fn a_blocked_notice_waits_for_a_live_waiter_and_goes_once_otherwise() -> Result<
     for part in [
         runtime::token("d").as_str(),
         "\"count\" is blocked in round 1",
-        "in pane block:w",
-        "may have been answered since",
+        "in pane block:w, waiting on a permission prompt that may have been answered since",
         "`rexume task show t --round 1`",
         "request is still pending",
     ] {
         assert!(sent.contains(part), "{part}: {sent}");
     }
+    // The program's own text is the worker's, which the owner would take in as a prompt.
+    assert!(!sent.contains("Run the migration"), "{sent}");
     assert!(!sent.contains("task ack"), "{sent}");
     Ok(())
 }
@@ -83,7 +87,7 @@ fn a_failed_send_keeps_a_blocked_notice_only_while_its_episode_goes_on() -> Resu
     );
     let tx = store.write()?;
     assert!(claim(&tx, "d", None)?);
-    crate::task::blocked::end_blocked_episodes(&tx, "b")?;
+    crate::task::blocked::end_blocked_episodes(&tx, "b", EndReason::StatusChanged)?;
     record_send(&tx, "d", failed)?;
     tx.commit()?;
     assert_eq!(
@@ -105,13 +109,17 @@ fn a_blocked_notice_is_listed_only_while_its_episode_lasts() -> Result<()> {
     let (mut store, _listener) = blocked_world(dir.path(), transcript.path(), "sent")?;
     assert_eq!(undelivered(store.conn(), None)?.len(), 1);
     let tx = store.write()?;
-    crate::task::blocked::end_blocked_episodes(&tx, "b")?;
+    crate::task::blocked::end_blocked_episodes(&tx, "b", EndReason::StatusChanged)?;
     tx.commit()?;
     assert!(undelivered(store.conn(), None)?.is_empty());
     assert_eq!(notice(&store)?.0, "sent");
     let tx = store.write()?;
-    tx.execute(crate::task::blocked::BEGIN, params![5, "t", 1])?;
-    crate::task::notice::write(&tx, Kind::Blocked, "t", 1, 5)?;
+    tx.execute(crate::task::blocked::BEGIN, params!["t", 1])?;
+    tx.execute(
+        "INSERT INTO blocked_episode (id, task_id, round, started_at) VALUES ('e2', 't', 1, 5)",
+        [],
+    )?;
+    crate::task::notice::write(&tx, Kind::Blocked, "t", 1, 5, Some("e2"))?;
     tx.execute("UPDATE notice SET state = 'sent' WHERE id != 'd'", [])?;
     tx.commit()?;
     let listed = undelivered(store.conn(), None)?;

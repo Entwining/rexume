@@ -1,7 +1,8 @@
 use anyhow::Result;
+use rusqlite::params;
 
-use super::end_left_to_server;
-use crate::task::tests::{PROMPT, record, task_world};
+use super::{block_gone, end_left_to_server};
+use crate::task::tests::{PROMPT, record, round, task_world};
 
 /// A pane the server restored itself runs a shell, so a round the earlier instance left open there
 /// ends, with a notice to its owner. A round started since the daemon observed the instance, one of
@@ -77,5 +78,41 @@ fn a_round_whose_conversation_reopened_in_its_pane_goes_on() -> Result<()> {
         |row| row.get(0),
     )?;
     assert_eq!(state, "running");
+    Ok(())
+}
+
+/// A closed worker pane ends the rounds no record will finish: a run's, also one bound to a
+/// conversation whose record shows turns, and an interactive worker's whose conversation has no
+/// record. A Claude Code or omp worker's round is left to the record Rexume keeps for it, which
+/// the next pass reads, also for an omp session without a session file.
+#[test]
+fn a_closed_worker_pane_ends_only_the_rounds_no_record_finishes() -> Result<()> {
+    for (runtime, run, ended) in [
+        ("claude", true, true),
+        ("codex", false, true),
+        ("omp", false, false),
+        ("claude", false, false),
+    ] {
+        let dir = tempfile::tempdir()?;
+        let transcript = record(&[PROMPT])?;
+        let result_file = run.then_some("/result.md");
+        let mut store = task_world(dir.path(), transcript.path(), result_file)?;
+        if runtime != "claude" {
+            store.conn().execute(
+                "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+                 VALUES (?1, 'worker', 0, 50)",
+                params![runtime],
+            )?;
+        }
+        store.conn().execute(
+            "UPDATE task SET worker_runtime = ?1, worker_native_id = 'worker'",
+            params![runtime],
+        )?;
+        let tx = store.write()?;
+        block_gone(&tx, "b")?;
+        tx.commit()?;
+        let expected = if ended { "worker_closed" } else { "running" };
+        assert_eq!(round(&store)?.0, expected, "{runtime} run: {run}");
+    }
     Ok(())
 }

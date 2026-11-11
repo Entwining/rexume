@@ -1,10 +1,11 @@
 use std::path::Path;
+use std::process::Command;
 use std::time::Duration;
 
-use serde_json::json;
+use serde_json::{Value, json};
 
-use super::{WAIT, run_task, task};
-use crate::common::{Daemon, Server, db, poll, query, shell_block, shell_pids, wait_until};
+use super::{WAIT, run_task, task, task_command};
+use crate::common::{Daemon, REXUME, Server, db, poll, query, shell_block, shell_pids, wait_until};
 
 /// A non-interactive worker is the terminal's own program, kept open after it exits. It prints
 /// before it exits, as `codex exec` does, after which the server reports an empty foreground once
@@ -85,6 +86,86 @@ fn a_run_reaches_its_owner_and_its_pane_closes_after_release() {
             )
             .is_err()
     );
+}
+
+/// A run whose program reported its conversation from the pane before the run was registered is
+/// bound to it by `task add` itself, with no daemon running to bind it later.
+#[test]
+#[ignore = "needs a Rex server"]
+fn a_run_that_reported_its_conversation_is_bound_when_registered() {
+    let dir = tempfile::tempdir().unwrap();
+    let state = dir.path().join("state");
+    let agent = dir.path().join("agent.pl");
+    std::fs::write(
+        &agent,
+        format!(
+            "open(my $r, '|-', '{REXUME}', 'report', 'claude', '--state-dir', '{}') or die $!;
+             print $r '{{\"session_id\":\"run\"}}'; close $r; sleep 600;",
+            state.display()
+        ),
+    )
+    .unwrap();
+    let server = Server::start(dir.path(), None);
+    let mut daemon = Daemon::start(&server, &state);
+    wait_until("the daemon's first epoch", WAIT, || {
+        query::<i64>(&state, "SELECT id FROM epoch")
+    });
+    let script = format!("exec /usr/bin/perl '{}'", agent.display());
+    let (_, owner, worker) = owner_and_run(&server, &state, dir.path(), &script);
+    wait_until("the run to report its conversation", WAIT, || {
+        query::<i64>(
+            &state,
+            &format!(
+                "SELECT 1 FROM occupant WHERE block_lineage = '{worker}' AND native_id = 'run'"
+            ),
+        )
+    });
+    daemon.stop();
+    let result = dir.path().join("result.md");
+    let meta = r#"{"eval": "e1"}"#;
+    let added = task_command(
+        &server,
+        &state,
+        &owner,
+        &[
+            "add",
+            "--worker",
+            &worker,
+            "--title",
+            "review",
+            "--result-file",
+            &result.to_string_lossy(),
+        ],
+    )
+    .env("REXUME_TASK_META", meta)
+    .output()
+    .unwrap();
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    let id = serde_json::from_slice::<Value>(&added.stdout).unwrap()["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let bound = query::<String>(
+        &state,
+        &format!("SELECT worker_runtime || ' ' || worker_native_id FROM task WHERE id = '{id}'"),
+    );
+    assert_eq!(bound.as_deref(), Some("claude run"));
+    let exported = Command::new(REXUME)
+        .args(["export", "--state-dir"])
+        .arg(&state)
+        .output()
+        .unwrap();
+    let task = String::from_utf8(exported.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str::<Value>(line).unwrap())
+        .find(|line| line["id"] == id.as_str())
+        .unwrap();
+    assert_eq!(task["data"]["task"]["meta"], meta);
 }
 
 /// A session with an owner whose conversation the state records, beside a pane running `script`

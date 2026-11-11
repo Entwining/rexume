@@ -9,6 +9,7 @@ mod lines;
 pub mod omp;
 pub mod pi;
 mod receipt;
+mod reopen;
 #[cfg(test)]
 pub(crate) mod tests;
 
@@ -43,45 +44,6 @@ impl Runtime {
             Self::Codex => "codex",
             Self::Pi => "pi",
             Self::Omp => "omp",
-        }
-    }
-
-    /// The command that reopens a conversation. Its identity, settings, and an allowlist of launch
-    /// flags are carried over. Original arguments are never replayed wholesale: those can hold a
-    /// launch prompt that would run a finished task again.
-    pub fn resume_argv(self, conversation: &Conversation) -> Vec<String> {
-        match self {
-            Self::Claude => claude::resume_argv(conversation),
-            Self::Codex => codex::resume_argv(conversation),
-            Self::Pi => pi::resume_argv(conversation),
-            Self::Omp => omp::resume_argv(conversation),
-        }
-    }
-
-    /// The variables the command that reopens a conversation runs with, by name and value.
-    pub fn resume_env(self, conversation: &Conversation) -> Vec<(String, String)> {
-        match self {
-            Self::Claude => claude::resume_env(conversation),
-            Self::Codex | Self::Pi | Self::Omp => Vec::new(),
-        }
-    }
-
-    /// What the reporting process `pid` was started with that its resume command takes again, as
-    /// a patch over the recorded settings.
-    pub fn launch_settings(self, pid: u32) -> Map<String, Value> {
-        match self {
-            Self::Claude => claude::launch::settings(pid),
-            Self::Codex | Self::Pi | Self::Omp => Map::new(),
-        }
-    }
-
-    /// Why the conversation cannot reopen as it was launched: its launcher declared the command
-    /// that starts it again in a form Rexume cannot use. Reopening it as plain `claude` would start
-    /// it with whatever the launcher chooses by default instead.
-    pub fn launch_error(self, conversation: &Conversation) -> Option<&str> {
-        match self {
-            Self::Claude => conversation.setting("launch_error"),
-            Self::Codex | Self::Pi | Self::Omp => None,
         }
     }
 
@@ -120,37 +82,6 @@ impl Runtime {
             Self::Pi => Some(pi::inbox(state_dir, native_id)),
             Self::Omp => Some(omp::inbox(state_dir, native_id)),
             Self::Claude | Self::Codex => None,
-        }
-    }
-
-    /// Whether the conversation can be reopened. Claude Code, Codex, and omp refuse to resume a
-    /// conversation whose file does not exist yet, which Claude Code and Codex write only with its
-    /// first prompt; Pi opens a session file that does not exist yet as a new session.
-    pub fn can_reopen(self, conversation: &Conversation) -> bool {
-        match self {
-            Self::Claude | Self::Codex | Self::Omp => conversation
-                .transcript
-                .as_deref()
-                .is_none_or(|transcript| Path::new(transcript).exists()),
-            Self::Pi => true,
-        }
-    }
-
-    /// The settings a reopened conversation gets, from the runtime's own record where it keeps
-    /// them, over the ones its session start reported.
-    pub fn settings(self, conversation: &mut Conversation) -> Result<()> {
-        let Some(transcript) = conversation.transcript.clone() else {
-            return Ok(());
-        };
-        match self {
-            Self::Claude => claude::settings(Path::new(&transcript), conversation),
-            Self::Codex => codex::settings(Path::new(&transcript), conversation),
-            Self::Pi => {
-                pi::settings(Path::new(&transcript), conversation);
-                Ok(())
-            }
-            // omp restores them from the session file it reopens.
-            Self::Omp => Ok(()),
         }
     }
 

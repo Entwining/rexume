@@ -1,12 +1,13 @@
 //! A Claude Code conversation started through a wrapper that declares its launch reopens through
-//! the declared command, with the choice the wrapper made then rather than its current default.
+//! the declared command, with the choice the wrapper made then rather than its current default,
+//! and with the `REXUME_TASK_META` it started with.
 
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
-use crate::common::{Daemon, REXUME, Server, claude, db, query, rex_bin, wait_until};
+use crate::common::{Daemon, REXUME, SHELL, Server, claude, db, query, rex_bin, wait_until};
 use crate::restore::{WAIT, agents, restart, restores};
 
 /// A Perl whose start environment another process can read, as Rexume reads Claude Code's. macOS
@@ -56,9 +57,10 @@ exec('PERL', 'AGENT', @ARGV) or die $!;
 const AGENT: &str = r#"my $id = $ENV{CONVERSATION};
 for my $i (0 .. $#ARGV - 1) { $id = $ARGV[$i + 1] if $ARGV[$i] eq '--resume' }
 open(my $f, '>', "$run.seen") or die $!;
-print $f join("\n", $id, $ENV{CLAUDE_CODE_USE_VERTEX} // 'unset', $ENV{WRAPPER_TAG} // 'none');
+print $f join("\n", $id, $ENV{CLAUDE_CODE_USE_VERTEX} // 'unset', $ENV{WRAPPER_TAG} // 'none',
+  $ENV{REXUME_TASK_META} || 'none');
 close $f;
-open(my $r, '|-', 'REXUME', 'report', 'claude', '--state-dir', 'STATE') or die $!;
+open(my $r, '|-', 'REXUME_BIN', 'report', 'claude', '--state-dir', 'STATE') or die $!;
 print $r qq({"session_id":"$id","transcript_path":"DIR/$id.jsonl"});
 close $r;
 sleep 600;"#;
@@ -68,7 +70,7 @@ fn wrapped_agent(dir: &Path, state: &Path) -> (PathBuf, PathBuf) {
     let (native, runs) = claude::stand_in(
         &dir.join("native"),
         &AGENT
-            .replace("REXUME", REXUME)
+            .replace("REXUME_BIN", REXUME)
             .replace("STATE", &state.to_string_lossy())
             .replace("DIR", &dir.to_string_lossy()),
     );
@@ -90,8 +92,8 @@ fn wrapped_agent(dir: &Path, state: &Path) -> (PathBuf, PathBuf) {
 }
 
 /// What reached the latest run of conversation `id` once it has reported itself: the provider
-/// variable and the tag.
-fn reached(state: &Path, runs: &Path, id: &str) -> (String, String) {
+/// variable, the tag, and the task meta.
+fn reached(state: &Path, runs: &Path, id: &str) -> (String, String, String) {
     wait_until("the run to report", WAIT, || {
         let (pid, seen) = std::fs::read_dir(runs)
             .unwrap()
@@ -117,7 +119,7 @@ fn reached(state: &Path, runs: &Path, id: &str) -> (String, String) {
             ),
         )?;
         let mut lines = seen.lines().skip(1).map(str::to_owned);
-        Some((lines.next()?, lines.next()?))
+        Some((lines.next()?, lines.next()?, lines.next()?))
     })
 }
 
@@ -130,9 +132,10 @@ fn launch_command(state: &Path, id: &str) -> Value {
     serde_json::from_str::<Value>(&settings).unwrap()["launch_command"].clone()
 }
 
-/// Conversation `one` starts with `--a` and a tag of shell metacharacters while the default is
-/// `b`; conversation `two` starts on the default `b`, which then becomes `a`. Each restart reopens
-/// each with its own choice and the tag as given, through the declared command alone: the plan
+/// Conversation `one` starts with `--a`, a tag of shell metacharacters, and a task meta while the
+/// default is `b`; conversation `two` starts on the default `b`, which then becomes `a`, with the
+/// task meta its shell exports cleared. Each restart reopens each with its own choice, the tag as
+/// given, and its own task meta rather than the shell's, through the declared command: the plan
 /// replays no provider variable, and the command does not grow from one restore to the next.
 #[test]
 #[ignore = "needs a Rex server"]
@@ -141,13 +144,22 @@ fn a_declared_launch_reopens_with_the_choice_made_at_launch() {
     let state = dir.path().join("state");
     let (bin, runs) = wrapped_agent(dir.path(), &state);
     let tag = r#"x y;$(touch z)|&`"q'*"#;
+    let meta = r#"{"eval": "it's 1"}"#;
+    // A startup file of the interactive shell the gate reopens a conversation through.
+    let home = dir.path().join("home");
+    std::fs::create_dir_all(&home).unwrap();
+    std::fs::write(
+        home.join(format!(".{SHELL}rc")),
+        r#"export REXUME_TASK_META='{"eval": "stale"}'"#,
+    )
+    .unwrap();
     let expected = [
         (
             "one",
             json!(["claude", "--a", "--tag", tag]),
-            ("unset", tag),
+            ("unset", tag, meta),
         ),
-        ("two", json!(["claude", "--b"]), ("1", "none")),
+        ("two", json!(["claude", "--b"]), ("1", "none", "none")),
     ];
     for (id, ..) in &expected {
         std::fs::write(dir.path().join(format!("{id}.jsonl")), "").unwrap();
@@ -160,10 +172,11 @@ fn a_declared_launch_reopens_with_the_choice_made_at_launch() {
     let (session, blocks, _) = agents(&server, &state, dir.path());
     let typed = [
         format!(
-            "CONVERSATION=one claude --a --tag {}",
+            "REXUME_TASK_META={} CONVERSATION=one claude --a --tag {}",
+            shlex::try_quote(meta).unwrap(),
             shlex::try_quote(tag).unwrap()
         ),
-        "CONVERSATION=two claude".to_owned(),
+        "REXUME_TASK_META= CONVERSATION=two claude".to_owned(),
     ];
     for (block, line) in blocks.iter().zip(&typed) {
         server.call(
@@ -172,9 +185,12 @@ fn a_declared_launch_reopens_with_the_choice_made_at_launch() {
                      "args": { "data": format!("{line}\r") } }),
         );
     }
-    for (id, command, (provider, tag)) in &expected {
+    let seen = |(provider, tag, meta): &(&str, &str, &str)| {
+        ((*provider).into(), (*tag).into(), (*meta).into())
+    };
+    for (id, command, reaches) in &expected {
         let reached = reached(&state, &runs, id);
-        assert_eq!(reached, ((*provider).into(), (*tag).into()), "{id}");
+        assert_eq!(reached, seen(reaches), "{id}");
         assert_eq!(launch_command(&state, id), *command, "{id}");
     }
     std::fs::write(dir.path().join("default"), "a").unwrap();
@@ -185,7 +201,7 @@ fn a_declared_launch_reopens_with_the_choice_made_at_launch() {
             Some(restores(&server, &state))
                 .filter(|r| r.len() == 2 && r.iter().all(|(_, s, _)| s == "claimed"))
         });
-        for (id, command, (provider, tag)) in &expected {
+        for (id, command, reaches) in &expected {
             let plan: String = db(&state)
                 .query_row(
                     "SELECT plan FROM restore WHERE instance_id = ?1 AND native_id = ?2",
@@ -197,13 +213,14 @@ fn a_declared_launch_reopens_with_the_choice_made_at_launch() {
             let mut argv = command.as_array().unwrap().clone();
             argv.extend([json!("--resume"), json!(id)]);
             assert_eq!(plan["argv"], json!(argv), "{id} after {restarts}");
-            assert_eq!(plan["env"], json!([]), "{id} after {restarts}");
-            let reached = reached(&state, &runs, id);
+            let meta = if reaches.2 == "none" { "" } else { reaches.2 };
             assert_eq!(
-                reached,
-                ((*provider).into(), (*tag).into()),
+                plan["env"],
+                json!([["REXUME_TASK_META", meta]]),
                 "{id} after {restarts}"
             );
+            let reached = reached(&state, &runs, id);
+            assert_eq!(reached, seen(reaches), "{id} after {restarts}");
             assert_eq!(
                 launch_command(&state, id),
                 *command,

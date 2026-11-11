@@ -10,6 +10,7 @@ use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Map, Value};
 
+use super::blocked::OPEN_EPISODE;
 use super::{Interest, OPEN};
 use crate::proc;
 use crate::runtime::{Runtime, Sent, Target};
@@ -17,6 +18,9 @@ use crate::store::{Store, new_id, now_ms};
 
 pub(super) mod receipt;
 mod text;
+mod undelivered;
+
+pub use undelivered::undelivered;
 
 /// How long after the round finished, or began its blocked episode, the daemon waits before it
 /// sends the notice, so a `task wait` running in the owner's turn can take it first.
@@ -39,53 +43,65 @@ const FINISHED: &str = "n.kind = 'finished'";
 const UNSENT_BLOCKED: &str = "n.kind = 'blocked' AND n.state IN ('pending', 'sending')";
 
 /// Whether round `r` still needs notice `n`: a finished notice until acknowledgement, a blocked
-/// notice while its episode lasts. Matching `r.blocked_at` to `n.created_at` excludes notices from
-/// earlier episodes of the same round. Once unneeded, a notice is neither sent nor listed,
+/// notice while the episode it names lasts. Once unneeded, a notice is neither sent nor listed,
 /// regardless of its state: the owner has the result, or the dialog is over.
-const WANTED: &str =
-    "CASE n.kind WHEN 'finished' THEN r.acked_at IS NULL ELSE r.blocked_at IS n.created_at END";
+static WANTED: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "CASE n.kind WHEN 'finished' THEN r.acked_at IS NULL
+           ELSE EXISTS (SELECT 1 FROM blocked_episode e
+                        WHERE e.id = n.blocked_episode_id AND {OPEN_EPISODE}) END"
+    )
+});
 
 const ACKED: &str = "the round was acknowledged during a send that failed";
 
-/// Drops a round's pending finished notice, with `?3` saying why.
+/// Drops a round's pending finished notice at `?4`, with `?3` saying why.
 pub(super) static SUPERSEDE_FINISHED: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "UPDATE notice AS n SET state = 'superseded', note = ?3
+        "UPDATE notice AS n SET state = 'superseded', note = ?3, superseded_at = ?4
          WHERE n.task_id = ?1 AND n.round = ?2 AND {FINISHED} AND n.state = 'pending'"
     )
 });
 
-/// Drops a round's pending blocked notice, with `?3` saying why.
+/// Drops a round's pending blocked notice at `?4`, with `?3` saying why.
 pub(super) static SUPERSEDE_BLOCKED: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "UPDATE notice AS n SET state = 'superseded', note = ?3
+        "UPDATE notice AS n SET state = 'superseded', note = ?3, superseded_at = ?4
          WHERE n.task_id = ?1 AND n.round = ?2 AND {UNSENT_BLOCKED} AND n.state = 'pending'"
     )
 });
 
-/// Writes a round's notice at `now`, the time its transaction gives the round, which the daemon
-/// sends once it is due.
-pub(super) fn write(tx: &Transaction, kind: Kind, id: &str, round: i64, now: i64) -> Result<()> {
+/// Writes a round's notice at `now`, the time its transaction gives the round or the blocked
+/// `episode` the notice tells of, which the daemon sends once it is due.
+pub(super) fn write(
+    tx: &Transaction,
+    kind: Kind,
+    id: &str,
+    round: i64,
+    now: i64,
+    episode: Option<&str>,
+) -> Result<()> {
     let kind = match kind {
         Kind::Finished => "finished",
         Kind::Blocked => "blocked",
     };
     tx.execute(
-        "INSERT INTO notice (id, task_id, round, kind, state, created_at)
-         VALUES (?1, ?2, ?3, ?4, 'pending', ?5)",
-        params![new_id(), id, round, kind, now],
+        "INSERT INTO notice (id, task_id, round, kind, blocked_episode_id, state, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
+        params![new_id(), id, round, kind, episode, now],
     )?;
     Ok(())
 }
 
-/// Drops a round's notice while it is still pending, so that it is never sent, with `note` saying
-/// why. Returns whether there was one.
+/// Drops a round's notice at `now` while it is still pending, so that it is never sent, with
+/// `note` saying why. Returns whether there was one.
 pub(super) fn supersede(
     tx: &Transaction,
     kind: Kind,
     id: &str,
     round: i64,
     note: &str,
+    now: i64,
 ) -> Result<bool> {
     let statement = match kind {
         Kind::Finished => &SUPERSEDE_FINISHED,
@@ -93,22 +109,23 @@ pub(super) fn supersede(
     };
     Ok(tx
         .prepare_cached(statement)?
-        .execute(params![id, round, note])?
+        .execute(params![id, round, note, now])?
         == 1)
 }
 
 /// Pending notices with the round each tells of, the worker pane's Rex block ID on the instance
-/// the daemon observes last, the state of the round's request, and whether the task has an open
-/// round, in the order they come due, so that an owner's notices, which go one at a time, reach it
-/// in that order.
+/// the daemon observes last, the state of the round's request, whether the task has an open round,
+/// and a blocked notice's episode kind, in the order they come due, so that an owner's notices,
+/// which go one at a time, reach it in that order.
 pub(super) static PENDING: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT n.id, n.kind = 'blocked', t.id, t.title, n.round,
            r.state, r.note, r.waiter_pid, n.created_at, l.live_id, q.state,
-           EXISTS (SELECT 1 FROM task_round r WHERE r.task_id = n.task_id AND {OPEN})
+           EXISTS (SELECT 1 FROM task_round r WHERE r.task_id = n.task_id AND {OPEN}), ep.kind
          FROM notice n JOIN task t ON t.id = n.task_id
          JOIN task_round r ON r.task_id = n.task_id AND r.round = n.round
          LEFT JOIN request q ON q.task_id = n.task_id AND q.round = n.round
+         LEFT JOIN blocked_episode ep ON ep.id = n.blocked_episode_id
          LEFT JOIN epoch e ON e.id = (SELECT MAX(id) FROM epoch)
          LEFT JOIN live l ON l.instance_id = e.instance_id AND l.lineage = t.worker_lineage
          WHERE n.state = 'pending'
@@ -132,6 +149,8 @@ struct Due {
     /// Whether the task has an open round: for a finished notice, a later one, which the worker's
     /// unread turns wait behind.
     open: bool,
+    /// What a blocked notice's worker waits for, as its program said.
+    kind: Option<String>,
 }
 
 /// Sends each due notice to its owner once the owner is running and between turns, unless a live
@@ -161,6 +180,7 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
                 worker: row.get(9)?,
                 request: row.get(10)?,
                 open: row.get(11)?,
+                kind: row.get(12)?,
             })
         })?
         .collect::<rusqlite::Result<_>>()?;
@@ -210,9 +230,10 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
 /// Whether a notice's round still needs it, and whether it is a blocked notice.
 pub(super) static STILL_WANTED: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "SELECT {WANTED}, n.kind = 'blocked'
+        "SELECT {}, n.kind = 'blocked'
          FROM notice n JOIN task_round r ON r.task_id = n.task_id AND r.round = n.round
-         WHERE n.id = ?1"
+         WHERE n.id = ?1",
+        *WANTED
     )
 });
 
@@ -240,17 +261,19 @@ fn record_send(tx: &Transaction, notice: &str, sent: (&str, Option<String>)) -> 
     }
     tx.execute(
         "UPDATE notice SET state = ?1, note = ?2,
-           sent_at = CASE WHEN ?1 IN ('pending', 'superseded') THEN NULL ELSE sent_at END
+           sent_at = CASE WHEN ?1 IN ('pending', 'superseded') THEN NULL ELSE sent_at END,
+           superseded_at = CASE WHEN ?1 = 'superseded' THEN ?4 END
          WHERE id = ?3",
-        params![state, note, notice],
+        params![state, note, notice, now_ms()],
     )?;
     Ok(())
 }
 
 /// Claims a pending notice for sending at `?3`, unless a `task wait` registered since `?2`, the
 /// dead waiter (or none) the daemon saw before the transaction.
-pub(super) const CLAIM: &str =
-    "UPDATE notice SET state = 'sending', sent_at = ?3 WHERE id = ?1 AND state = 'pending'
+pub(super) const CLAIM: &str = "UPDATE notice SET state = 'sending', sent_at = ?3,
+    attempts = attempts + 1
+  WHERE id = ?1 AND state = 'pending'
   AND NOT EXISTS (SELECT 1 FROM task_round r
                   WHERE r.task_id = notice.task_id AND r.round = notice.round
                     AND r.waiter_pid IS NOT NULL AND r.waiter_pid IS NOT ?2)";
@@ -328,47 +351,6 @@ fn ready_owner(conn: &Connection, task: &str) -> Result<Option<Owner>> {
             })
         })
         .optional()?)
-}
-
-/// Unconfirmed notices their rounds still need, with each round's state. A `pending` notice with
-/// a note has failed to send; other pending notices are still waiting for their first attempt.
-static UNDELIVERED: LazyLock<String> = LazyLock::new(|| {
-    format!(
-        "SELECT n.id, n.kind, n.task_id, n.round, r.state, n.state, n.note
-         FROM notice n JOIN task t ON t.id = n.task_id
-         JOIN task_round r ON r.task_id = n.task_id AND r.round = n.round
-         WHERE {WANTED}
-           AND (n.state IN ('unknown', 'sending', 'sent', 'accepted')
-                OR (n.state = 'pending' AND n.note IS NOT NULL))"
-    )
-});
-
-/// The NOTICE objects of `docs/cli.md` that `UNDELIVERED` selects: one owner's, or all.
-pub fn undelivered(conn: &Connection, owner: Option<(Runtime, &str)>) -> Result<Vec<Value>> {
-    let notice = |row: &rusqlite::Row| -> rusqlite::Result<Value> {
-        Ok(serde_json::json!({
-            "id": row.get::<_, String>(0)?,
-            "kind": row.get::<_, String>(1)?,
-            "task_id": row.get::<_, String>(2)?,
-            "round": row.get::<_, i64>(3)?,
-            "round_state": row.get::<_, String>(4)?,
-            "state": row.get::<_, String>(5)?,
-            "note": row.get::<_, Option<String>>(6)?,
-        }))
-    };
-    Ok(match owner {
-        Some((runtime, native_id)) => conn
-            .prepare(&format!(
-                "{} AND t.owner_runtime = ?1 AND t.owner_native_id = ?2",
-                *UNDELIVERED
-            ))?
-            .query_map(params![runtime.as_str(), native_id], notice)?
-            .collect::<rusqlite::Result<_>>()?,
-        None => conn
-            .prepare(&UNDELIVERED)?
-            .query_map([], notice)?
-            .collect::<rusqlite::Result<_>>()?,
-    })
 }
 
 #[cfg(test)]

@@ -1,13 +1,14 @@
 //! The `task` commands an orchestrator runs.
 
+use std::ffi::OsString;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow, bail};
 use clap::Subcommand;
 use clap::builder::NonEmptyStringValueParser;
-use serde_json::Value;
+use serde_json::{Map, Value};
 
 use crate::task;
 
@@ -15,6 +16,8 @@ use crate::task;
 const BLOCKED: u8 = 3;
 /// The exit status of `task wait` when its timeout passes first, as coreutils `timeout` uses.
 const TIMED_OUT: u8 = 124;
+/// The largest `REXUME_TASK_META`, in bytes.
+const META_LIMIT: usize = 1024;
 
 pub(super) const EXAMPLES: &str = "\
 Examples:
@@ -159,6 +162,23 @@ impl Message {
     }
 }
 
+/// The task's `meta` from `REXUME_TASK_META`'s `value`: the JSON object as given, or `{}` when the
+/// variable is unset or empty.
+fn meta(value: Option<OsString>) -> Result<String> {
+    let Some(value) = value.filter(|value| !value.is_empty()) else {
+        return Ok("{}".to_owned());
+    };
+    let text = value
+        .into_string()
+        .map_err(|_| anyhow!("REXUME_TASK_META is not UTF-8 text"))?;
+    if text.len() > META_LIMIT {
+        bail!("REXUME_TASK_META is larger than 1 KiB");
+    }
+    serde_json::from_str::<Map<String, Value>>(&text)
+        .context("REXUME_TASK_META is not a JSON object")?;
+    Ok(text)
+}
+
 fn absolute_path(text: &str) -> Result<PathBuf, &'static str> {
     let path = PathBuf::from(text);
     if path.is_absolute() {
@@ -183,6 +203,7 @@ pub(super) fn run(command: Command, dir: &Path) -> Result<(Value, u8)> {
                 title: &title,
                 result_file: result_file.as_deref(),
                 keep_pane,
+                meta: &meta(std::env::var_os("REXUME_TASK_META"))?,
             },
         ),
         Command::List => task::list(dir),
@@ -220,6 +241,31 @@ mod tests {
             (task::Returned::TimedOut, 124),
         ] {
             assert_eq!(exit_status(returned), status, "{returned:?}");
+        }
+    }
+
+    /// `REXUME_TASK_META` is kept as given when it is a JSON object within the limit, is `{}` when
+    /// unset or empty, and refuses the task otherwise.
+    #[test]
+    fn task_meta_is_a_small_json_object_or_nothing() {
+        let meta = |value: Option<&str>| meta(value.map(OsString::from)).map_err(|e| e.to_string());
+        assert_eq!(meta(None), Ok("{}".to_owned()));
+        assert_eq!(meta(Some("")), Ok("{}".to_owned()));
+        let given = r#"{"eval": "e1", "arm": 2}"#;
+        assert_eq!(meta(Some(given)), Ok(given.to_owned()));
+        let at_limit = format!(r#"{{"k": "{}"}}"#, "x".repeat(META_LIMIT - 9));
+        assert_eq!(meta(Some(&at_limit)), Ok(at_limit.clone()));
+        let over = format!(r#"{{"k": "{}"}}"#, "x".repeat(META_LIMIT - 8));
+        assert_eq!(
+            meta(Some(&over)),
+            Err("REXUME_TASK_META is larger than 1 KiB".to_owned())
+        );
+        for refused in ["[1]", "\"e1\"", "eval=e1", "{\"eval\":"] {
+            assert_eq!(
+                meta(Some(refused)),
+                Err("REXUME_TASK_META is not a JSON object".to_owned()),
+                "{refused}"
+            );
         }
     }
 

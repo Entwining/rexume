@@ -83,6 +83,8 @@ pub(super) fn read_result(path: &str) -> Result<String, String> {
 pub(super) struct Pane {
     pub instance_id: Option<String>,
     pub status: Option<String>,
+    pub status_kind: Option<String>,
+    pub status_message: Option<String>,
     pub status_pid: Option<i64>,
     pub status_at: Option<i64>,
     pub fg_pid: Option<i64>,
@@ -112,8 +114,8 @@ pub fn is_run(conn: &Connection, lineage: &str, instance: &str, pid: i64) -> Res
 }
 
 /// One pane's record, for `Pane::read`.
-pub(super) const PANE: &str = "SELECT b.instance_id, b.status, b.status_pid, b.status_at, b.fg_pid,
-    b.last_exit, b.instance_id IS e.instance_id
+pub(super) const PANE: &str = "SELECT b.instance_id, b.status, b.status_kind, b.status_message,
+    b.status_pid, b.status_at, b.fg_pid, b.last_exit, b.instance_id IS e.instance_id
   FROM block b LEFT JOIN epoch e ON e.id = (SELECT MAX(id) FROM epoch)
   WHERE b.lineage = ?1";
 
@@ -125,11 +127,13 @@ impl Pane {
                 Ok(Self {
                     instance_id: row.get(0)?,
                     status: row.get(1)?,
-                    status_pid: row.get(2)?,
-                    status_at: row.get(3)?,
-                    fg_pid: row.get(4)?,
-                    last_exit: row.get(5)?,
-                    current: row.get(6)?,
+                    status_kind: row.get(2)?,
+                    status_message: row.get(3)?,
+                    status_pid: row.get(4)?,
+                    status_at: row.get(5)?,
+                    fg_pid: row.get(6)?,
+                    last_exit: row.get(7)?,
+                    current: row.get(8)?,
                 })
             })
             .optional()?

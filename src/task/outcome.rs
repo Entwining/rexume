@@ -6,10 +6,11 @@ use std::sync::LazyLock;
 use anyhow::{Result, bail};
 use rusqlite::{OptionalExtension, Transaction, params};
 
+use super::blocked::{self, EndReason};
 use super::evidence::{Evidence, Pane, Reading, RunProcess, Take};
 use super::notice::{self, Kind};
 use super::queue::{self, Queued};
-use super::{OPEN, blocked, request};
+use super::{OPEN, request};
 use crate::runtime::Turn;
 use crate::store::now_ms;
 
@@ -141,10 +142,10 @@ fn interactive_outcome(
 ) -> Result<Option<i64>> {
     if reading.received {
         tx.prepare_cached(
-            "UPDATE request SET state = 'delivered'
+            "UPDATE request SET state = 'delivered', delivered_at = ?3
              WHERE task_id = ?1 AND round = ?2 AND state IN ('sent', 'accepted', 'unknown')",
         )?
-        .execute(params![id, round])?;
+        .execute(params![id, round, now_ms()])?;
     }
     if reading.replaced {
         let note = "the worker's record was replaced or cut, so its turns after the task's \
@@ -253,15 +254,14 @@ pub(super) fn end(
     let now = now_ms();
     tx.execute(
         "UPDATE task_round SET state = ?1, result = ?2, result_ref = ?3, finished_at = ?4,
-           finished_instance_id = ?5, finished_status_at = ?6, finished_generation = ?7, note = ?8,
-           blocked_at = NULL
+           finished_instance_id = ?5, finished_status_at = ?6, finished_generation = ?7, note = ?8
          WHERE task_id = ?9 AND round = ?10",
         params![
             state, result, reference, now, instance, status_at, generation, note, id, round
         ],
     )?;
-    notice::write(tx, Kind::Finished, id, round, now)?;
-    blocked::end(tx, id, round)?;
+    notice::write(tx, Kind::Finished, id, round, now, None)?;
+    blocked::end(tx, id, round, now, EndReason::RoundFinished)?;
     tx.execute(
         "UPDATE request SET state = 'superseded', note = ?3
          WHERE task_id = ?1 AND round = ?2 AND state = 'pending'",

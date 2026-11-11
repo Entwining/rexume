@@ -55,8 +55,8 @@ impl EntityType {
     }
 }
 
-/// The entity as `archive.data` holds it: its row and, for a task, the rows of its rounds,
-/// requests, and notices, keyed by table name.
+/// The entity as `archive.data` holds it: its row and, for a task, the rows of its rounds, blocked
+/// episodes, requests, and notices, keyed by table name.
 pub fn document(conn: &Connection, entity_type: EntityType, id: &str) -> Result<Value> {
     let table = entity_type.table();
     let own = rows(conn, &format!("SELECT * FROM {table} WHERE id = ?1"), id)?
@@ -64,7 +64,12 @@ pub fn document(conn: &Connection, entity_type: EntityType, id: &str) -> Result<
         .with_context(|| format!("no {table} {id}"))?;
     let mut document = Map::from_iter([(table.to_owned(), own)]);
     if entity_type == EntityType::Task {
-        for (child, key) in [("task_round", "round"), ("request", "id"), ("notice", "id")] {
+        for (child, key) in [
+            ("task_round", "round"),
+            ("blocked_episode", "id"),
+            ("request", "id"),
+            ("notice", "id"),
+        ] {
             let sql = format!("SELECT * FROM {child} WHERE task_id = ?1 ORDER BY {key}");
             document.insert(child.to_owned(), Value::Array(rows(conn, &sql, id)?));
         }
@@ -150,8 +155,8 @@ pub fn sweep(store: &mut Store, instance: &str, now: i64) -> Result<()> {
 }
 
 /// Archives one entity the sweep listed, if it is still expired: a task may have taken a new
-/// round since. Deleting its row deletes a task's rounds, requests, and notices with it. Returns
-/// the size of a document too large to archive, whose entity stays as it is.
+/// round since. Deleting its row deletes a task's rounds, blocked episodes, requests, and notices
+/// with it. Returns the size of a document too large to archive, whose entity stays as it is.
 fn archive(
     tx: &Transaction,
     entity_type: EntityType,

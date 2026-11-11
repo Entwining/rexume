@@ -196,14 +196,16 @@ fn a_task_on_an_instance_a_later_one_followed_is_refused() -> Result<()> {
     refuse_stopped(store.conn(), "i3", 6)?;
     Ok(())
 }
-/// A round no record can finish, here one whose worker never reported, ends with its pane.
+/// A round no record can finish, here one whose worker never reported, ends with its pane; a pane
+/// kept earlier keeps why it was kept, and a close put off is no longer pending.
 #[test]
 fn a_closed_worker_pane_ends_its_unbound_round_and_every_task_on_it() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = record(&[PROMPT])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
     store.conn().execute_batch(
-        "UPDATE task SET worker_runtime = NULL, worker_native_id = NULL;
+        "UPDATE task SET worker_runtime = NULL, worker_native_id = NULL,
+           pane_note = 'put off while the pane was in use';
          INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
            pane_state, pane_note, created_at)
          VALUES ('k', 'earlier', 'claude', 'owner', 'b', 0, 'kept', 'in use', 0);
@@ -224,7 +226,10 @@ fn a_closed_worker_pane_ends_its_unbound_round_and_every_task_on_it() -> Result<
         .collect::<rusqlite::Result<_>>()?;
     assert_eq!(
         panes,
-        [("closed".into(), true, None), ("closed".into(), true, None)]
+        [
+            ("closed".into(), true, Some("in use".into())),
+            ("closed".into(), true, None)
+        ]
     );
     let notice: String =
         store
@@ -244,18 +249,20 @@ fn a_closed_worker_pane_ends_its_unbound_round_and_every_task_on_it() -> Result<
 fn every_pass_statement_uses_an_index() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let store = Store::open(dir.path())?;
-    let (open, finished, blocked) = (
+    let (open, finished, blocked, episode) = (
         Some("task_round_open"),
         Some("notice_finished"),
         Some("notice_blocked_unsent"),
+        Some("blocked_episode_open"),
     );
-    let statements: [(&str, &str, Option<&str>); 28] = [
+    let statements: [(&str, &str, Option<&str>); 29] = [
         ("OPEN_ROUNDS", &OPEN_ROUNDS, open),
         ("outcome::ROUND", &outcome::ROUND, None),
         ("evidence::PANE", evidence::PANE, None),
         ("WORKER_ROUNDS", &WORKER_ROUNDS, open),
         ("blocked::BEGIN", blocked::BEGIN, None),
         ("blocked::RESUME", blocked::RESUME, None),
+        ("blocked::END", &blocked::END, episode),
         ("blocked::ON_PANE", &blocked::ON_PANE, open),
         ("cleanup::CLAIM", &cleanup::CLAIM, open),
         ("cleanup::DUE", &cleanup::DUE, open),
@@ -308,7 +315,7 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
                 "{name}: {detail}"
             );
         }
-        for index in [open, finished, blocked].into_iter().flatten() {
+        for index in [open, finished, blocked, episode].into_iter().flatten() {
             assert_eq!(
                 details.iter().any(|d| d.contains(index)),
                 partial == Some(index),

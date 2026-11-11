@@ -26,8 +26,9 @@ impl Daemon<'_> {
             let epoch = {
                 let tx = self.store.write()?;
                 tx.execute(
-                    "INSERT INTO epoch (instance_id, host_id, started_at) VALUES (?1, ?2, ?3)",
-                    params![instance, host, now_ms()],
+                    "INSERT INTO epoch (instance_id, host_id, daemon_version, started_at)
+                     VALUES (?1, ?2, ?3, ?4)",
+                    params![instance, host, env!("CARGO_PKG_VERSION"), now_ms()],
                 )?;
                 let id = tx.last_insert_rowid();
                 tx.commit()?;

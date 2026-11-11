@@ -205,6 +205,35 @@ fn a_non_interactive_round_ends_by_its_exit_and_result_file() -> Result<()> {
     Ok(())
 }
 
+/// A run's conversation is bound by the pass that finds it reported, also the pass that ends the
+/// run, and no round takes a turn from it, so a finished turn in its record is not unread.
+#[test]
+fn a_run_is_bound_to_its_conversation_without_unread_turns() -> Result<()> {
+    for ends in [false, true] {
+        let dir = tempfile::tempdir()?;
+        let transcript = record(&[PROMPT, ANSWER])?;
+        let result_file = dir.path().join("result.md");
+        std::fs::write(&result_file, "Report.")?;
+        let path = result_file.to_string_lossy();
+        let mut store = task_world(dir.path(), transcript.path(), Some(&path))?;
+        if ends {
+            store.conn().execute_batch(
+                "UPDATE block SET fg_pid = NULL, last_exit = 0 WHERE lineage = 'b'",
+            )?;
+        }
+        Follow::default().pass(&mut store, None)?;
+        assert_eq!(bound(&store)?.as_deref(), Some("worker"), "ends: {ends}");
+        let state = if ends { "completed" } else { "running" };
+        assert_eq!(round(&store)?.0, state);
+        assert_eq!(
+            unread(store.conn(), store.dir(), "t")?,
+            None,
+            "ends: {ends}"
+        );
+    }
+    Ok(())
+}
+
 /// A new server instance first finishes a run by what the earlier instance recorded, then ends
 /// the runs that instance left open. A run's own instance is the only one whose record shows it,
 /// and a run from before instances were recorded is left to its record.

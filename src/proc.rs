@@ -23,6 +23,15 @@ pub struct Launch {
     pub env: Vec<String>,
 }
 
+impl Launch {
+    /// The value the process started with for the variable `name`.
+    pub fn var(&self, name: &str) -> Option<&str> {
+        self.env
+            .iter()
+            .find_map(|entry| entry.strip_prefix(name)?.strip_prefix('='))
+    }
+}
+
 /// NUL-terminated strings. A byte that is not UTF-8 reads as U+FFFD, so that one such string
 /// leaves the others readable.
 fn strings(bytes: &[u8]) -> Vec<String> {

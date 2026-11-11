@@ -48,6 +48,15 @@ fn request(store: &Store) -> Result<(String, Option<String>)> {
         })?)
 }
 
+/// The request's attempts, and when it was sent and seen delivered.
+fn delivery(store: &Store) -> Result<(i64, Option<i64>, Option<i64>)> {
+    Ok(store.conn().query_row(
+        "SELECT attempts, sent_at, delivered_at FROM request",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?)
+}
+
 fn request_lifecycle(runtime: Runtime) -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = record(&[])?;
@@ -86,8 +95,12 @@ fn request_lifecycle(runtime: Runtime) -> Result<()> {
     store
         .conn()
         .execute_batch("UPDATE occupant SET instance_id = 'i1' WHERE block_lineage = 'b'")?;
+    assert_eq!(delivery(&store)?, (0, None, None));
     send_due(&mut store, &mut interest)?;
     assert_eq!(request(&store)?, ("sent".into(), None));
+    let (attempts, sent_at, _) = delivery(&store)?;
+    assert_eq!(attempts, 1);
+    assert!(sent_at.is_some());
     assert!(interest.files.contains(&inbox));
     let sent: Value = serde_json::from_slice(&std::fs::read(inbox.join(format!("{id}.json")))?)?;
     assert_eq!(sent["text"], format!("{} go", runtime::token(&id)));
@@ -110,6 +123,9 @@ fn request_lifecycle(runtime: Runtime) -> Result<()> {
     )?;
     Follow::default().pass(&mut store, None)?;
     assert_eq!(request(&store)?.0, "delivered");
+    let (attempts, kept, delivered_at) = delivery(&store)?;
+    assert_eq!((attempts, kept), (1, sent_at));
+    assert!(delivered_at >= sent_at, "{delivered_at:?}");
     let result: Option<String> =
         store
             .conn()
@@ -163,7 +179,7 @@ fn a_request_whose_round_ended_is_never_sent() -> Result<()> {
         )
     );
     let tx = store.write()?;
-    assert_eq!(tx.execute(&CLAIM, params![id])?, 0);
+    assert_eq!(tx.execute(&CLAIM, params![id, 5])?, 0);
     Ok(())
 }
 
@@ -175,10 +191,16 @@ fn a_failed_send_drops_a_request_whose_round_ended() -> Result<()> {
     let transcript = record(&[])?;
     let (mut store, id) = request_world(dir.path(), transcript.path(), Runtime::Pi)?;
     let tx = store.write()?;
-    assert_eq!(tx.execute(&CLAIM, params![id])?, 1);
+    assert_eq!(tx.execute(&CLAIM, params![id, 5])?, 1);
     crate::task::outcome::end(&tx, "t", 2, "abandoned", None, None)?;
     record_send(&tx, &id, ("pending", Some("failed to connect".to_owned())))?;
     tx.commit()?;
     assert_eq!(request(&store)?, ("superseded".into(), Some(ENDED.into())));
+    let sent: (i64, Option<i64>) = store.conn().query_row(
+        "SELECT attempts, sent_at FROM request WHERE id = ?1",
+        params![id],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    assert_eq!(sent, (1, None));
     Ok(())
 }

@@ -18,16 +18,19 @@
 -- `host_id`: the machine and account the server runs as, as Rex reports it in its status, where
 -- servers that see the same files report the same value; NULL when the server reported none, as
 -- one without a state directory does, and for an epoch from before version 10.
+-- `daemon_version`: the version of the Rexume daemon that observed the epoch; NULL for an epoch
+-- from before version 10.
 -- AUTOINCREMENT: readers take the newest epoch as MAX(id), and `archive` keeps an epoch under its
 -- id, so an id is never reused.
 CREATE TABLE IF NOT EXISTS epoch (
-  id          INTEGER PRIMARY KEY AUTOINCREMENT,
-  instance_id TEXT    NOT NULL,
-  host_id     TEXT,
-  started_at  INTEGER NOT NULL,
-  ended_at    INTEGER,
-  end_reason  TEXT    CHECK (end_reason IN ('disconnected', 'server_gone')),
-  error       TEXT,
+  id             INTEGER PRIMARY KEY AUTOINCREMENT,
+  instance_id    TEXT    NOT NULL,
+  host_id        TEXT,
+  daemon_version TEXT,
+  started_at     INTEGER NOT NULL,
+  ended_at       INTEGER,
+  end_reason     TEXT    CHECK (end_reason IN ('disconnected', 'server_gone')),
+  error          TEXT,
   CHECK ((ended_at IS NULL) = (end_reason IS NULL)),
   CHECK (error IS NULL OR ended_at IS NOT NULL)
 ) STRICT;
@@ -40,22 +43,26 @@ CREATE INDEX IF NOT EXISTS epoch_instance ON epoch (instance_id, id);
 -- instance was seen in that instance's open epoch. A pane the server restored itself keeps its
 -- row, which moves to the new instance once the daemon reads the pane there, and its foreground,
 -- status, and exit, which describe processes of one instance, start empty. The row goes when the
--- pane closes. Program states are Rex's vocabulary and are not constrained here. `status_pid`
--- and `status_name` are the process that reported the status, which need not be the
--- foreground, and `status_at` is the time Rex gives the status. `last_exit` is the exit code of
--- the program the terminal started (Rex's child_exited), which a pane reports once, or -1 when a
--- signal ended it; it is attributed to a task by the pane having that program as its foreground
--- when the task was registered.
+-- pane closes. Program states are Rex's vocabulary and are not constrained here. `status_kind` and
+-- `status_message` are what a `blocked` status says the program waits for (Rex's `kind`) and its
+-- one line of text (Rex's `msg`), as reported and unconstrained like the state; NULL when the
+-- status gives none. `status_pid` and `status_name` are the process that reported the status,
+-- which need not be the foreground, and `status_at` is the time Rex gives the status. `last_exit`
+-- is the exit code of the program the terminal started (Rex's child_exited), which a pane reports
+-- once, or -1 when a signal ended it; it is attributed to a task by the pane having that program
+-- as its foreground when the task was registered.
 CREATE TABLE IF NOT EXISTS block (
-  lineage       TEXT    PRIMARY KEY,
-  instance_id   TEXT    NOT NULL,
-  fg_pid        INTEGER,
-  fg_generation INTEGER,
-  status        TEXT,
-  status_pid    INTEGER,
-  status_name   TEXT,
-  status_at     INTEGER,
-  last_exit     INTEGER
+  lineage        TEXT    PRIMARY KEY,
+  instance_id    TEXT    NOT NULL,
+  fg_pid         INTEGER,
+  fg_generation  INTEGER,
+  status         TEXT,
+  status_kind    TEXT,
+  status_message TEXT,
+  status_pid     INTEGER,
+  status_name    TEXT,
+  status_at      INTEGER,
+  last_exit      INTEGER
 ) STRICT;
 
 -- Which live Rex ID stands for which lineage on one server instance, bound the first time the
@@ -197,23 +204,26 @@ CREATE UNIQUE INDEX IF NOT EXISTS restore_executor ON restore (instance_id, runt
 -- the server instance it ran on: a PID names a process only there, so a pane recorded on another
 -- instance shows nothing of the run. It is NULL for a task registered before version 3 when no
 -- epoch showed the instance, and such a task's run counts as the recorded pane's. `worker_runtime`
--- and `worker_native_id` are the interactive worker's conversation, bound once (at registration
--- when the pane's foreground process had reported, else by the daemon once the pane's occupant
--- reported after registration or is its foreground process) and never moved to a conversation that
--- takes over the pane later. `position`: byte offset into that conversation's record of turns up
--- to which every finished turn has been taken by a round; it starts at the bound report's
--- `occupant.start_position` and moves in the transaction that takes a turn; 0 for a Claude Code
--- worker's task upgraded from before version 8. `released_at`: when the orchestrator released the
--- worker; a released task starts no more rounds, and only its pane may be closed. `pane_state`:
--- 'open' while the pane exists and Rexume has neither closed nor given it up; 'closing' while the
--- daemon, the only closer, holds the pane for one close attempt, or while a restore holds a
--- retired worker's pane the server restored until it closes or keeps it (add and new rounds
--- refuse it);
--- 'closed' once the pane is gone, by Rexume or by the user; 'kept' when the pane was found in use,
--- or the server restored it and it did not show its shell with nothing typed, and is left to
--- whoever uses it, `pane_note` saying why. A close
--- the daemon put off writes its reason to `pane_note` and leaves 'open'. A pane the orchestrator
--- asked to keep is never 'closing' or 'kept'.
+-- and `worker_native_id` are the worker's conversation, a run's as an interactive worker's, bound
+-- once (at registration when the pane's foreground process had reported, else by the daemon, while
+-- a round is open, once the pane's occupant reported after registration or is its foreground
+-- process) and never moved to a conversation that takes over the pane later; NULL for a worker
+-- that reported none, as a run that is no agent does, and for a run from before version 10.
+-- `position`: byte offset into that conversation's record of turns up to which every finished turn
+-- has been taken by a round; it starts at the bound report's `occupant.start_position` and moves
+-- in the transaction that takes a turn, so a run's, whose rounds take no turn, stays where its
+-- conversation's record began; 0 for a Claude Code worker's task upgraded from before version 8.
+-- `released_at`: when the orchestrator released the worker; a released task starts no more rounds,
+-- and only its pane may be closed. `pane_state`: 'open' while the pane exists and Rexume has
+-- neither closed nor given it up; 'closing' while the daemon, the only closer, holds the pane for
+-- one close attempt, or while a restore holds a retired worker's pane the server restored until it
+-- closes or keeps it (add and new rounds refuse it); 'closed' once the pane is gone, by Rexume or
+-- by the user; 'kept' when the pane was found in use, or the server restored it and it did not
+-- show its shell with nothing typed, and is left to whoever uses it, `pane_note` saying why, which
+-- a kept pane that closes later keeps. A close the daemon put off writes its reason to `pane_note`
+-- and leaves 'open'; any other close clears the note. A pane the orchestrator asked to keep is
+-- never 'closing' or 'kept'. `meta`: a JSON object `task add` took from `REXUME_TASK_META`, stored
+-- and exported whole; Rexume defines no key of it and reads none.
 CREATE TABLE IF NOT EXISTS task (
   id                 TEXT    PRIMARY KEY,
   title              TEXT    NOT NULL,
@@ -233,11 +243,10 @@ CREATE TABLE IF NOT EXISTS task (
   pane_note          TEXT,
   pane_closed_at     INTEGER,
   created_at         INTEGER NOT NULL,
+  meta               TEXT    NOT NULL DEFAULT '{}' CHECK (json_type(meta) = 'object'),
   CHECK ((worker_runtime IS NULL) = (worker_native_id IS NULL)),
-  CHECK (worker_runtime IS NULL OR result_file IS NULL),
   CHECK ((pane_state = 'closed') = (pane_closed_at IS NOT NULL)),
   CHECK (pane_state != 'kept' OR pane_note IS NOT NULL),
-  CHECK (pane_state != 'closed' OR pane_note IS NULL),
   CHECK (pane_state NOT IN ('closing', 'kept') OR keep_pane = 0),
   CHECK (pane_state != 'closing' OR released_at IS NOT NULL),
   FOREIGN KEY (owner_runtime, owner_native_id) REFERENCES conversation (runtime, native_id),
@@ -261,15 +270,11 @@ CREATE INDEX IF NOT EXISTS task_worker_conversation ON task (worker_runtime, wor
 -- abandons it; a dropped round never ran, so it never stands for the task's latest result.
 -- `waiter_pid`: the `task wait` process that takes the round's notices itself while it runs; a
 -- wait takes its place whenever it is empty or names a process that is gone.
--- `blocked_at`: when the round's current blocked episode began, set exactly while it is 'blocked'.
--- An episode begins once the task's own conversation has reported `blocked` from the worker's pane
--- on the observed server instance without a break for a grace, in the transaction that writes its
--- blocked notice. It ends in the transaction that records another status for the pane or clears it,
--- when a pass finds the status no longer that conversation's `blocked` on the observed instance, or
--- when the round finishes. A round is 'completed' exactly when its result is saved here, in the
--- transaction that also writes its finished notice; every final state sets `finished_at`. A round
--- is 'abandoned' when its owner stopped waiting for it with `task abandon`, which acknowledges it
--- in the same transaction and leaves the worker as it is.
+-- A round is 'blocked' exactly while it has a `blocked_episode` that has not ended. A round is
+-- 'completed' exactly when its result is saved here, in the transaction that also writes its
+-- finished notice; every final state sets `finished_at`. A round is 'abandoned' when its owner
+-- stopped waiting for it with `task abandon`, which acknowledges it in the same transaction and
+-- leaves the worker as it is.
 -- `finished_instance_id`, `finished_status_at`, and `finished_generation` are the worker pane's
 -- record when the round finished, to tell later activity in the pane apart: its server instance,
 -- NULL when the pane was not recorded or the round finished before version 3 and no epoch dates
@@ -286,7 +291,6 @@ CREATE TABLE IF NOT EXISTS task_round (
   state                TEXT    NOT NULL CHECK (state IN ('queued', 'running', 'blocked', 'completed',
                                                          'cancelled', 'failed', 'terminated',
                                                          'worker_closed', 'abandoned', 'dropped')),
-  blocked_at           INTEGER,
   note                 TEXT,
   finished_at          INTEGER,
   finished_instance_id TEXT,
@@ -299,7 +303,6 @@ CREATE TABLE IF NOT EXISTS task_round (
   result               TEXT,
   PRIMARY KEY (task_id, round),
   CHECK ((state IN ('queued', 'running', 'blocked')) = (finished_at IS NULL)),
-  CHECK ((blocked_at IS NOT NULL) = (state = 'blocked')),
   CHECK ((state = 'completed') = (result IS NOT NULL)),
   CHECK ((state = 'completed') = (result_ref IS NOT NULL)),
   CHECK (turn_start IS NULL OR state IN ('completed', 'cancelled', 'failed')),
@@ -309,6 +312,38 @@ CREATE TABLE IF NOT EXISTS task_round (
 CREATE UNIQUE INDEX IF NOT EXISTS task_round_open ON task_round (task_id) WHERE state IN ('running', 'blocked');
 CREATE UNIQUE INDEX IF NOT EXISTS task_round_turn ON task_round (task_id, turn_start);
 
+-- One blocked episode of an interactive round: the task's own conversation reported `blocked`, a
+-- dialog or a question waiting for an answer, from the worker's pane on the observed server
+-- instance without a break for a grace. The row is inserted in the transaction that makes the round
+-- 'blocked' and writes the episode's notice. `kind`, `message`, and `status_at` are the pane's
+-- `status_kind`, `status_message`, and `status_at` at that moment and stay as they are when a
+-- later status, still `blocked`, says otherwise. `started_at` is that transaction's time, which is
+-- also the notice's `created_at`; `status_at` is when Rex says the worker began to wait. The
+-- episode ends once, in the transaction that ends it: 'status_changed' when the pane's status was
+-- replaced by one that is not `blocked` or was removed; 'round_finished' when the round finished,
+-- with the round's `finished_at` as `ended_at`; 'server_gone' when the pane was first recorded on a
+-- later server instance or a pass found its record on an earlier one; 'occupant_changed' when a
+-- pass found the status no longer reported by the task's conversation in the pane. A later block
+-- in the same round is another row.
+CREATE TABLE IF NOT EXISTS blocked_episode (
+  id         TEXT    PRIMARY KEY,
+  task_id    TEXT    NOT NULL,
+  round      INTEGER NOT NULL,
+  kind       TEXT,
+  message    TEXT,
+  status_at  INTEGER,
+  started_at INTEGER NOT NULL,
+  ended_at   INTEGER,
+  end_reason TEXT    CHECK (end_reason IN ('status_changed', 'round_finished', 'server_gone',
+                                           'occupant_changed')),
+  CHECK ((ended_at IS NULL) = (end_reason IS NULL)),
+  FOREIGN KEY (task_id, round) REFERENCES task_round (task_id, round) ON DELETE CASCADE
+) STRICT;
+CREATE INDEX IF NOT EXISTS blocked_episode_round ON blocked_episode (task_id, round);
+-- A round has at most one episode that has not ended.
+CREATE UNIQUE INDEX IF NOT EXISTS blocked_episode_open ON blocked_episode (task_id, round)
+  WHERE ended_at IS NULL;
+
 -- The prompt a request round hands to the worker, which the daemon, the only sender, delivers to
 -- the worker's conversation. It moves through a notice's states with their meanings, aimed at the
 -- worker: 'pending' until sent, with `note` saying why it still waits or why a send failed before
@@ -316,49 +351,73 @@ CREATE UNIQUE INDEX IF NOT EXISTS task_round_turn ON task_round (task_id, turn_s
 -- never sent again; 'delivered' once the worker's record shows it received; 'superseded' when its
 -- round ended before it was sent, or during a send that failed before anything left, so it is never
 -- sent. `id` is the token the request's text carries and the worker's record is searched for.
--- `text` is the message, last.
+-- `attempts`: how often the daemon claimed the request as 'sending', a claim whose send failed
+-- before anything left included; 0 for one claimed only before version 10. `sent_at`: when the
+-- daemon claimed it for a send that may have left, kept through every state after 'sending' and
+-- cleared when a send that failed before anything left returns it to 'pending' or 'superseded';
+-- NULL for one sent before version 10. `delivered_at`: when the daemon saw the worker's record
+-- show it received, which for Claude Code is when the turn that took it in ended; NULL before
+-- version 10. `text` is the message, last.
 CREATE TABLE IF NOT EXISTS request (
-  id      TEXT    PRIMARY KEY,
-  task_id TEXT    NOT NULL,
-  round   INTEGER NOT NULL,
-  state   TEXT    NOT NULL DEFAULT 'pending'
+  id           TEXT    PRIMARY KEY,
+  task_id      TEXT    NOT NULL,
+  round        INTEGER NOT NULL,
+  state        TEXT    NOT NULL DEFAULT 'pending'
     CHECK (state IN ('pending', 'sending', 'sent', 'accepted', 'delivered', 'unknown',
                      'superseded')),
-  note    TEXT,
-  text    TEXT    NOT NULL,
+  note         TEXT,
+  attempts     INTEGER NOT NULL DEFAULT 0,
+  sent_at      INTEGER,
+  delivered_at INTEGER,
+  text         TEXT    NOT NULL,
   UNIQUE (task_id, round),
+  CHECK (sent_at IS NULL OR state NOT IN ('pending', 'superseded')),
+  CHECK (delivered_at IS NULL OR state = 'delivered'),
   FOREIGN KEY (task_id, round) REFERENCES task_round (task_id, round) ON DELETE CASCADE
 ) STRICT;
 
 -- What a task's owner is told about one of its rounds. `kind` 'finished': the round finished; one
 -- per round, written in the transaction that finishes it. 'blocked': the round began a blocked
--- episode; one per episode, written in the transaction that sets the round's `blocked_at`.
--- `created_at`: when the notice was written, the time that transaction gives the round's
--- `finished_at` or `blocked_at`, and what the notice is due from. Exactly one claimant, the daemon
--- or the owner's own `task wait` or acknowledgement, moves a notice out of 'pending'. 'sending' is
--- the running daemon's claim and every state after it is the daemon's. 'unknown': the send may have
--- happened, so only the owner's own record settles it, never a resend. 'superseded': the notice is
--- never sent, because before anything was sent the owner took it through `task wait`, acknowledged
--- the round, or the blocked episode ended (`note` says which). A 'pending' notice with a `note` is
--- one whose send failed before anything left. `id` is the token the notice text carries and the
--- owner's record is searched for. `sent_at`: when the daemon claimed the notice for a send that may
--- have left, kept through every state after 'sending'. A send that failed before anything left
--- clears `sent_at` and returns the notice to 'pending', or to 'superseded' if the round was
--- acknowledged or the episode ended during the send. A 'pending' or 'superseded' notice therefore
--- has no `sent_at`; neither does one sent before version 5. An owner gets its next notice only once
--- none is still on its way ('sending', 'sent', or 'accepted') that was sent after the owner's pane
--- last reported a status (`block.status_at`).
+-- episode; one per episode, written in the transaction that inserts the episode, which
+-- `blocked_episode_id` names; NULL for a blocked notice from before version 10 whose episode had
+-- ended. `created_at`: when the notice was written, the time that transaction gives the round's
+-- `finished_at` or the episode's `started_at`, and what the notice is due from. Exactly one
+-- claimant, the daemon or the owner's own `task wait` or acknowledgement, moves a notice out of
+-- 'pending'. 'sending' is the running daemon's claim and every state after it is the daemon's.
+-- 'unknown': the send may have happened, so only the owner's own record settles it, never a resend.
+-- 'superseded': the notice is never sent, because before anything was sent the owner took it
+-- through `task wait`, acknowledged the round, or the blocked episode ended (`note` says which). A
+-- 'pending' notice with a `note` is one whose send failed before anything left. `id` is the token
+-- the notice text carries and the owner's record is searched for. `sent_at`: when the daemon
+-- claimed the notice for a send that may have left, kept through every state after 'sending'. A
+-- send that failed before anything left clears `sent_at` and returns the notice to 'pending', or to
+-- 'superseded' if the round was acknowledged or the episode ended during the send. A 'pending' or
+-- 'superseded' notice therefore has no `sent_at`; neither does one sent before version 5. An owner
+-- gets its next notice only once none is still on its way ('sending', 'sent', or 'accepted') that
+-- was sent after the owner's pane last reported a status (`block.status_at`). `attempts`: as a
+-- request's. `delivered_at`: when the daemon saw the owner's record show it received;
+-- `superseded_at`: when it became 'superseded', which for one `task wait` took is when the owner's
+-- wait returned with it; both NULL before version 10. The foreign key `blocked_episode_id` has no
+-- index of its own: an episode is deleted only with its round, by the retention sweep, in the
+-- statement that deletes the round's notices.
 CREATE TABLE IF NOT EXISTS notice (
-  id         TEXT    PRIMARY KEY,
-  task_id    TEXT    NOT NULL,
-  round      INTEGER NOT NULL,
-  kind       TEXT    NOT NULL CHECK (kind IN ('finished', 'blocked')),
-  state      TEXT    NOT NULL CHECK (state IN ('pending', 'sending', 'sent', 'accepted',
-                                               'delivered', 'unknown', 'superseded')),
-  note       TEXT,
-  created_at INTEGER NOT NULL,
-  sent_at    INTEGER,
+  id                 TEXT    PRIMARY KEY,
+  task_id            TEXT    NOT NULL,
+  round              INTEGER NOT NULL,
+  kind               TEXT    NOT NULL CHECK (kind IN ('finished', 'blocked')),
+  blocked_episode_id TEXT    REFERENCES blocked_episode (id),
+  state              TEXT    NOT NULL CHECK (state IN ('pending', 'sending', 'sent', 'accepted',
+                                                       'delivered', 'unknown', 'superseded')),
+  note               TEXT,
+  attempts           INTEGER NOT NULL DEFAULT 0,
+  created_at         INTEGER NOT NULL,
+  sent_at            INTEGER,
+  delivered_at       INTEGER,
+  superseded_at      INTEGER,
+  CHECK (blocked_episode_id IS NULL OR kind = 'blocked'),
   CHECK (sent_at IS NULL OR state NOT IN ('pending', 'superseded')),
+  CHECK (delivered_at IS NULL OR state = 'delivered'),
+  CHECK (superseded_at IS NULL OR state = 'superseded'),
   FOREIGN KEY (task_id, round) REFERENCES task_round (task_id, round) ON DELETE CASCADE
 ) STRICT;
 CREATE INDEX IF NOT EXISTS notice_round ON notice (task_id, round);
@@ -378,14 +437,14 @@ CREATE TABLE IF NOT EXISTS store (
   source_id TEXT    NOT NULL
 ) STRICT;
 
--- What the retention sweep removed, kept as it stood: one row per task, restore, or epoch,
--- inserted in the transaction that deletes the entity's rows and never updated or deleted, which
--- `export` relies on. `entity_id` is the entity's `id`, an epoch's as decimal text. `version` is
--- the `user_version` whose tables `data` describes; an upgrade leaves `data` as it is. `data` is
--- an object keyed by table name: the entity's own row and, for a task, its `task_round`,
--- `request`, and `notice` rows as arrays in primary-key order. A row is an object of every column
--- by name, each value as the column holds it. `data` is last: the one large column, so reads of
--- the others never cross its overflow pages.
+-- What the retention sweep removed, kept as it stood: one row per task, restore, or epoch, inserted
+-- in the transaction that deletes the entity's rows and never updated or deleted, which `export`
+-- relies on. `entity_id` is the entity's `id`, an epoch's as decimal text. `version` is the
+-- `user_version` whose tables `data` describes; an upgrade leaves `data` as it is. `data` is an
+-- object keyed by table name: the entity's own row and, for a task, its `task_round`,
+-- `blocked_episode`, `request`, and `notice` rows as arrays in primary-key order. A row is an
+-- object of every column by name, each value as the column holds it. `data` is last: the one large
+-- column, so reads of the others never cross its overflow pages.
 CREATE TABLE IF NOT EXISTS archive (
   entity_type TEXT    NOT NULL CHECK (entity_type IN ('epoch', 'restore', 'task')),
   entity_id   TEXT    NOT NULL,

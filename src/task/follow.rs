@@ -139,6 +139,9 @@ impl Follow {
         let mut evidence = Vec::new();
         for mut round in open {
             let key = (round.task.clone(), round.round);
+            if round.runtime.is_none() {
+                bind(store, &mut round)?;
+            }
             let shown = match &round.result_file {
                 Some(file) => {
                     // Read only once the run exited 0, and before the transaction.
@@ -151,9 +154,6 @@ impl Follow {
                     Evidence::Run { pane, file }
                 }
                 None => {
-                    if round.runtime.is_none() {
-                        bind(store, &mut round)?;
-                    }
                     let (Some(runtime), Some(native_id)) = (round.runtime, &round.native_id) else {
                         continue;
                     };
@@ -230,10 +230,11 @@ pub(super) fn taken(conn: &Connection, task: &str) -> Result<Taken> {
     Ok(taken)
 }
 
-/// Binds an interactive task registered before its worker reported to the conversation that
-/// reported from the pane since the task was registered, or that runs as its foreground program,
-/// from the report's start position. The binding is made once; a conversation that takes over the
-/// pane later is not the task's.
+/// Binds a task registered before its worker reported to the conversation that reported from the
+/// pane since the task was registered, or that runs as its foreground program, from the report's
+/// start position: an interactive worker's, whose rounds take its turns, and a run's, which only
+/// names it. The binding is made once; a conversation that takes over the pane later is not the
+/// task's.
 fn bind(store: &mut Store, round: &mut OpenRound) -> Result<()> {
     let found: Option<(Runtime, String, Option<String>, i64)> = store
         .conn()

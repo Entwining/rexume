@@ -7,7 +7,7 @@ use anyhow::Result;
 use rusqlite::params;
 
 use crate::runtime::{Receipt, Runtime, inbox};
-use crate::store::Store;
+use crate::store::{Store, now_ms};
 use crate::task::Interest;
 
 /// Sent notices with the owner record each is looked for in.
@@ -90,11 +90,12 @@ pub(in crate::task) fn settle(
         return Ok(());
     }
     let tx = store.write()?;
+    let now = now_ms();
     for id in &delivered {
         tx.execute(
-            "UPDATE notice SET state = 'delivered'
+            "UPDATE notice SET state = 'delivered', delivered_at = ?2
              WHERE id = ?1 AND state IN ('sent', 'accepted', 'unknown')",
-            params![id],
+            params![id, now],
         )?;
     }
     for (id, _) in &accepted {

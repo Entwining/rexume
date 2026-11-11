@@ -10,15 +10,18 @@ fn store() -> Result<(tempfile::TempDir, Store, i64)> {
     let dir = tempfile::tempdir()?;
     let mut store = Store::open(dir.path())?;
     store.conn().execute_batch(
-        "INSERT INTO epoch (id, instance_id, host_id, started_at) VALUES (4, 'i2', 'h', 1);
+        "INSERT INTO epoch (id, instance_id, host_id, daemon_version, started_at)
+           VALUES (4, 'i2', 'h', '0.1.0', 1);
          INSERT INTO conversation (runtime, native_id, resumable, reported_at)
            VALUES ('claude', 'owner', 1, 1);
          INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
-           created_at)
-           VALUES ('old', 'x', 'claude', 'owner', 'b1', 0, 1),
-             ('kept', 'y', 'claude', 'owner', 'b2', 1, 1);
+           created_at, meta)
+           VALUES ('old', 'x', 'claude', 'owner', 'b1', 0, 1, '{}'),
+             ('kept', 'y', 'claude', 'owner', 'b2', 1, 1, '{\"eval\": \"e1\"}');
          INSERT INTO task_round (task_id, round, state, finished_at, acked_at, created_at)
-           VALUES ('old', 1, 'cancelled', 1, 1, 1), ('kept', 1, 'running', NULL, NULL, 1);",
+           VALUES ('old', 1, 'cancelled', 1, 1, 1), ('kept', 1, 'blocked', NULL, NULL, 1);
+         INSERT INTO blocked_episode (id, task_id, round, kind, message, started_at)
+           VALUES ('e', 'kept', 1, 'permission', 'Edit?', 1);",
     )?;
     let archived_at = now_ms();
     archive::sweep(&mut store, "i2", archived_at)?;
@@ -29,7 +32,8 @@ fn store() -> Result<(tempfile::TempDir, Store, i64)> {
 fn finish_kept(store: &Store) -> Result<()> {
     store.conn().execute_batch(
         "UPDATE task_round SET state = 'cancelled', finished_at = 1, acked_at = 1
-         WHERE task_id = 'kept'",
+         WHERE task_id = 'kept';
+         UPDATE blocked_episode SET ended_at = 1, end_reason = 'round_finished';",
     )?;
     Ok(())
 }
@@ -93,8 +97,12 @@ fn export_prints_entities_in_use_and_archived_between_header_and_end() -> Result
     assert_eq!(old[0]["data"], archived_data(&store, "old")?);
     let epoch = entity(&lines, "4");
     assert_eq!(epoch[0]["data"]["epoch"]["host_id"], "h");
+    assert_eq!(epoch[0]["data"]["epoch"]["daemon_version"], "0.1.0");
     let kept = entity(&lines, "kept");
     assert_eq!(kept[0]["archived_at"], Value::Null);
+    // A JSON column prints as the text it holds.
+    assert_eq!(kept[0]["data"]["task"]["meta"], r#"{"eval": "e1"}"#);
+    assert_eq!(kept[0]["data"]["blocked_episode"][0]["message"], "Edit?");
     archive::sweep(&mut store, "i2", now_ms())?;
     assert_eq!(archived_data(&store, "kept")?, kept[0]["data"]);
     Ok(())

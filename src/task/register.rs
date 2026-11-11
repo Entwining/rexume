@@ -17,6 +17,8 @@ pub struct NewTask<'a> {
     pub title: &'a str,
     pub result_file: Option<&'a Path>,
     pub keep_pane: bool,
+    /// A JSON object, saved as the task's `meta`.
+    pub meta: &'a str,
 }
 
 pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
@@ -51,8 +53,8 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
     refuse_taken(&tx, &worker, new.worker)?;
     refuse_stopped(&tx, &caller.instance, asked_at)?;
     let bound = match foreground {
-        Some(pid) if new.result_file.is_none() => occupant_of(&tx, &worker, &caller.instance, pid)?,
-        _ => None,
+        Some(pid) => occupant_of(&tx, &worker, &caller.instance, pid)?,
+        None => None,
     };
     let (runtime, native_id, position) = match bound {
         Some((runtime, native_id, position)) => (Some(runtime.as_str()), Some(native_id), position),
@@ -61,8 +63,8 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
     tx.execute(
         "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, worker_pid,
            worker_instance_id, result_file, keep_pane, worker_runtime, worker_native_id, position,
-           created_at)
-         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)",
+           created_at, meta)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)",
         params![
             id,
             new.title,
@@ -77,6 +79,7 @@ pub fn add(state_dir: &Path, new: &NewTask) -> Result<Value> {
             native_id,
             position,
             now,
+            new.meta,
         ],
     )?;
     insert_round(&tx, &id, 1, now)?;
@@ -264,11 +267,12 @@ pub fn release(state_dir: &Path, id: &str) -> Result<Value> {
 /// Records the owner's acknowledgement of a finished round; a notice not yet sent for it is
 /// dropped, since the owner has the result.
 pub(super) fn acknowledge(tx: &Transaction, id: &str, round: i64, by: &str) -> Result<()> {
+    let now = now_ms();
     tx.execute(
         "UPDATE task_round SET acked_at = COALESCE(acked_at, ?1) WHERE task_id = ?2 AND round = ?3",
-        params![now_ms(), id, round],
+        params![now, id, round],
     )?;
-    notice::supersede(tx, notice::Kind::Finished, id, round, by)?;
+    notice::supersede(tx, notice::Kind::Finished, id, round, by, now)?;
     Ok(())
 }
 
