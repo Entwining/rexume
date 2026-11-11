@@ -12,11 +12,11 @@ Finished, cancelled, or waiting conversations reopen without a new turn. Panes y
 
 ## Keep your settings
 
-Conversations reopen with their model and effort. Claude Code also keeps its provider choice and supported launch flags. [Permission modes follow each runtime's rules](docs/usage.md#conversation-settings), including an exception for omp launch flags.
+Conversations reopen with their model and effort. Claude Code also keeps its provider choice and supported launch flags. [Permission modes follow each runtime's rules](docs/usage.md#conversation-settings).
 
-## Worker results reach their owner
+## Worker results come back
 
-Rexume saves each registered worker's result. It [notifies the orchestrator that registered the worker](docs/usage.md#hand-work-to-a-worker), even while that conversation is idle. The orchestrator can send another prompt or release an unused worker's pane for cleanup.
+The orchestrator does not have to wait on its workers. Rexume saves each registered worker's result and [notifies the orchestrator that registered the worker](docs/usage.md#hand-work-to-a-worker). The orchestrator can then prompt the worker again, or release it so Rexume closes its pane.
 
 ## Install
 
