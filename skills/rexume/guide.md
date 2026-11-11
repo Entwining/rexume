@@ -36,18 +36,21 @@ An agent participant's label names its runtime and model, and its role when sibl
 
 Pass `--focus=false` to `rex run`, `rex split`, and `rex window new` unless the user asks to switch, background work or not: a new tab or pane takes focus, and with it whatever the user is typing. `rex new` has no such option, because a new session is not shown. Pass `--keep-open` whenever you or the user must read the output or exit status afterwards, because a pane created for a program closes with it.
 
-Start a detached pane with `session.new_block`, its program and task in `command`, and add `exit: {on_completion: false}` wherever `--keep-open` would apply:
+Start a detached pane with `session.new_block`, its program and task in `command` after `env -u REX_SESSION`, and add `exit: {on_completion: false}` wherever `--keep-open` would apply:
 
 ```sh
 jq -n --arg s "$REX_SESSION" --arg label '<participant>' --arg cwd "$PWD" \
   '{session_id: $s, flavor: "com.superlogical.terminal.shell", label: $label,
-    options: {cwd: $cwd, command: ["<program>", "<argument>"], exit: {on_completion: false}}}' |
+    options: {cwd: $cwd, command: ["env", "-u", "REX_SESSION", "<program>", "<argument>"],
+      exit: {on_completion: false}}}' |
   rex api call session.new_block -
 ```
 
 The reply's `block_id` is the pane, which starts at 80 columns by 24 rows. To show it, as when the user asks to watch the worker or must answer its dialog, `session.move_block` places it beside a pane in a window, given as `anchor_block_id`; `rex move` moves only panes already in windows.
 
 Start the program with its task in the launch command instead of opening a shell and typing into it. Unless a helper's task drives Rex, such as opening its own reviewers, tell it in its task that it is the participant and does the work itself: a brief quoting the user's request to orchestrate otherwise leads it to load this skill and launch agents of its own.
+
+Start every program you launch for a task after `env -u REX_SESSION`, with `rex run`, `rex split`, and `rex window new` too. Rex sets `REX_SESSION` in the panes it starts, and with its Let agents name sessions setting on, its session-start hook tells an agent started with that variable to label the session, yours, after the agent's own task. Give a helper whose task drives Rex your session ID in its task instead, for `-s`.
 
 Answer a dialog in an agent you launched, a folder trust prompt included, as `agents` directs.
 
