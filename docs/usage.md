@@ -43,9 +43,9 @@ A pane's `note` says why it is in its state:
 | State | What it means |
 | --- | --- |
 | `planned` | Rexume waits for the shell to read its startup files or show a prompt with nothing typed. A prompt that does not end in a space keeps it waiting. |
-| `typed`, `unknown` | The line was typed, but the conversation has not started yet. After 5 seconds it is `unknown`. Rexume does not type it again, because the line may still be running. |
+| `typed`, `unknown` | The line is about to be written or may have reached the shell, but its gate has not claimed the restore. After 5 seconds without a claim it is `unknown`. Rexume does not type it again, because the line may still be running. |
 | `skipped` | The pane closed, the conversation opened in another pane, or no empty prompt appeared within 30 seconds. Start the conversation yourself if you want it there. |
-| `failed` | The server refused the line. |
+| `failed` | The line could not be sent or the server refused it. |
 
 The daemon [records each restore step before its side effect](design.md#restore).
 
