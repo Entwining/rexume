@@ -1,10 +1,10 @@
 # Rexume command line
 
-A command that succeeds prints one JSON object on stdout, when it has a result, and exits 0; `skill show` prints Markdown instead. A command that fails prints one line, `rexume: <reason>`, on stderr and exits 1. A usage error prints clap's message on stderr and exits 2. `task wait` exits 3 when it returns because the worker is blocked and 124 when its timeout passes, with the task still on stdout. `report` exits 0 except on a usage error. The stderr text is written for people and may change between versions; scripts and skills branch on the exit code and the JSON, not on it.
+A command that succeeds prints one JSON object on stdout, when it has a result, and exits 0; `skill show` prints Markdown instead, and `export` JSON Lines. A command that fails prints one line, `rexume: <reason>`, on stderr and exits 1. A usage error prints clap's message on stderr and exits 2. `task wait` exits 3 when it returns because the worker is blocked and 124 when its timeout passes, with the task still on stdout. `report` exits 0 except on a usage error. The stderr text is written for people and may change between versions; scripts and skills branch on the exit code and the JSON, not on it.
 
 A command's JSON object carries `version` at its top level, which changes only when a field changes meaning or goes away. Times are Unix milliseconds. `rexume COMMAND --help` lists each command's options.
 
-`daemon`, `status`, `report`, and `task` take `--state-dir DIR`, the directory holding `state.db`; it defaults to `$HOME/.local/state/rexume`. The Pi and omp extensions always use the default. A directory there, and each missing parent, is created with mode `0700` by whichever command or extension needs it first. An existing directory keeps its mode, except the state directory itself, which the daemon restricts when it starts.
+`daemon`, `status`, `export`, `report`, and `task` take `--state-dir DIR`, the directory holding `state.db`; it defaults to `$HOME/.local/state/rexume`. The Pi and omp extensions always use the default. A directory there, and each missing parent, is created with mode `0700` by whichever command or extension needs it first. An existing directory keeps its mode, except the state directory itself, which the daemon restricts when it starts.
 
 ## install
 
@@ -92,6 +92,20 @@ What to check after a restart, read without changing anything: restored panes wh
 
 Each restore is one pane the server restored where Rexume set out to reopen a conversation, listed unless its gate claimed it, so a restore that reopened nothing, `skipped` or `failed`, stays listed. `session` is the session's label, `pane` the pane's ID when Rexume first saw it, and `note` why the restore waits or ended. `state` is `planned` (waiting for the pane to show its shell with nothing typed), `typed` (the line was typed and its gate has not started yet), `unknown` (the gate did not start within 5 seconds of the line; a gate that starts later still claims it, and nothing is typed again), `skipped` (the pane closed, the conversation was opened in another pane, or the pane did not show an empty shell prompt within 30 seconds), or `failed` (the server refused the line). [docs/design.md](design.md#restore) explains them. `epoch_error` is `null` unless the daemon's latest observation of the server ended on an error rather than with its connection or with the daemon's own stop or replacement; the daemon then connects again, and records nothing until it observes the server without one. `claude_hooks_missing` lists the turn events whose Rexume hooks are missing from `~/.claude/settings.json`, provided Rexume's `SessionStart` hook is present. Without that hook, as after uninstall, the list is empty. Without the turn hooks, no Claude Code turn is recorded, so a Claude Code worker's round does not finish and no notice to a Claude Code owner is confirmed. The daemon adds missing turn hooks when it next starts; a configuration manager that replaces `hooks` removes them again unless its source declares all four Rexume hooks. The field is `null` when the settings cannot be read or parsed as JSON, with the reason on stderr. The list describes the settings file, not what a running session has loaded.
 
+## export
+
+```sh
+rexume export
+```
+
+Prints Rexume's history as JSON Lines on stdout, read without changing anything: every task with its rounds, requests, and notices, every restore, and every epoch, both those still in use and those the daemon archived. Like the state directory, the output holds task results and request texts.
+
+The first line is the header, `{"record": "header", "version": 1, "source_id", "schema_version", "exported_at"}`, and the last is `{"record": "end", "entities": N}`, where N counts the entity lines between them. An export without that last line, or with another count, is incomplete: the command failed, exiting 1, or its output was cut. `source_id` names the database and never changes; `id` is unique for a `type` within one `source_id`, and an epoch's is a number as text.
+
+Each entity line is `{"record": "entity", "type", "id", "schema_version", "archived_at", "data"}`, with `type` `task`, `restore`, or `epoch`. `data` is an object keyed by table name: the entity's own row and, for a task, `task_round`, `request`, and `notice` as arrays of rows in primary-key order. A row has every column of its table by name, as [`schema.sql`](../src/store/schema.sql) describes them at `schema_version`, each value as the column holds it: a number, a string, or `null`, so a column holding JSON, such as `restore.plan`, is a string. `archived_at` is when the daemon archived the entity, whose line then never changes, and `null` for one still in use, which a later export may show changed or archived; a reader keeps the line of the later export. The lines are one moment's state, each entity once, in no order the contract fixes.
+
+`version` changes only when a field of these lines changes meaning or goes away; `schema_version` changes with the schema.
+
 ## report
 
 ```sh
@@ -154,7 +168,7 @@ An interactive task's first round takes the first turn the worker's process fini
 
 A message is the text itself or a file's contents, at most 256 KiB, read when the command runs.
 
-When the daemon starts observing the server, it deletes a task with its results and notices if all its rounds have finished and none finished or was acknowledged within the last 30 days, whatever its notices' states; the task commands then no longer find it.
+When the daemon starts observing the server, it archives a task with its results, requests, and notices if all its rounds have finished and none finished or was acknowledged within the last 30 days, whatever its notices' states; `export` still prints it, but the task commands no longer find it.
 
 `TASK` has `id`, `title`, `round`, `state`, `mode` (`interactive` or `non_interactive`), `keep_pane`, `worker`, `result_ref`, `note`, `finished_at`, `acked_at`, `released_at`, `unread`, `queued`, `request`, `pane`, and, except in `task list`, `result`.
 

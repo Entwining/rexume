@@ -112,3 +112,37 @@ fn a_claude_turn_hook_appends_to_the_turn_record() {
         (Some("stop"), Some("Looks good."))
     );
 }
+
+/// An export of a database with nothing in it is still whole: a header and an `end` that counts
+/// no entities. A state directory without a database fails with one line and stays absent.
+#[test]
+fn export_prints_a_header_and_an_end_and_creates_nothing() {
+    let dir = tempfile::tempdir().unwrap();
+    let missing = dir.path().join("missing");
+    let output = rexume(
+        &["export", "--state-dir", &missing.to_string_lossy()],
+        &[],
+        "",
+    );
+    assert_eq!(output.status.code(), Some(1));
+    assert!(stderr(&output).starts_with("rexume: ") && stderr(&output).lines().count() == 1);
+    assert!(output.stdout.is_empty() && !missing.exists());
+
+    let state = dir.path().join("state");
+    let state = state.to_string_lossy();
+    // `task list` creates the database before it finds that it runs outside a pane.
+    rexume(&["task", "list", "--state-dir", &state], &[], "");
+    let output = rexume(&["export", "--state-dir", &state], &[], "");
+    assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
+    let lines: Vec<serde_json::Value> = String::from_utf8(output.stdout)
+        .unwrap()
+        .lines()
+        .map(|line| serde_json::from_str(line).unwrap())
+        .collect();
+    assert_eq!(lines.len(), 2);
+    assert_eq!(lines[0]["record"], "header");
+    assert_eq!(
+        lines[1],
+        serde_json::json!({ "record": "end", "entities": 0 })
+    );
+}

@@ -328,4 +328,5 @@ fn open_upgrades_a_version_6_database_and_keeps_its_panes() -> Result<()> {
     Ok(())
 }
 
+mod history;
 mod turn_records;

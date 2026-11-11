@@ -2,6 +2,7 @@
 //! transaction through this module, so related records change together and no writer needs the
 //! daemon to be running. No transaction waits on Rex, a socket, or a file.
 
+pub mod archive;
 #[cfg(test)]
 mod tests;
 mod upgrade;
@@ -21,10 +22,11 @@ use crate::runtime::Runtime;
 
 const SCHEMA: &str = include_str!("schema.sql");
 /// The `user_version` that `schema.sql` sets.
-pub const SCHEMA_VERSION: i64 = 9;
+pub const SCHEMA_VERSION: i64 = 10;
 /// The `application_id` that `schema.sql` sets: 'rexu' in ASCII.
 const APPLICATION_ID: i64 = 0x7265_7875;
-/// How long finished restores, tasks, and unused conversations are kept.
+/// How long finished restores, tasks, and epochs stay in their tables before the sweep archives
+/// them, and unused conversations and turn records before it deletes them.
 const RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 pub fn default_dir() -> Result<PathBuf> {
@@ -82,6 +84,10 @@ impl Store {
                 Found::Older(version) => upgrade::from(&tx, version)
                     .with_context(|| format!("failed to upgrade `{}`", path.display()))?,
             }
+            tx.execute(
+                "INSERT INTO store (id, source_id) VALUES (1, ?1) ON CONFLICT DO NOTHING",
+                params![new_id()],
+            )?;
             tx.commit()?;
         }
         Ok(Self {
@@ -299,11 +305,10 @@ pub fn sweep_records(store: &Store) -> Result<()> {
     Ok(())
 }
 
-/// Deletes unreferenced rows of earlier instances and finished records older than `RETENTION`.
-/// A task's notices do not extend its retention (`docs/design.md`, "What is saved"). Run by the
-/// daemon once the current instance's baseline is saved. The order follows the foreign keys.
-pub fn sweep(tx: &Transaction, instance: &str, now: i64) -> Result<()> {
-    let cutoff = now - i64::try_from(RETENTION.as_millis())?;
+/// Deletes the rows of earlier instances that nothing refers to any more. Run by the daemon once
+/// the current instance's baseline is saved, before its restores; `archive::sweep` removes the
+/// finished records after them.
+pub fn sweep(tx: &Transaction, instance: &str) -> Result<()> {
     tx.execute(
         "DELETE FROM live WHERE instance_id != ?1",
         params![instance],
@@ -320,39 +325,6 @@ pub fn sweep(tx: &Transaction, instance: &str, now: i64) -> Result<()> {
         "DELETE FROM occupant WHERE (instance_id IS NULL OR instance_id != ?1)
            AND NOT EXISTS (SELECT 1 FROM block WHERE block.lineage = occupant.block_lineage)",
         params![instance],
-    )?;
-    tx.execute(
-        "DELETE FROM restore WHERE instance_id != ?1 AND created_at < ?2",
-        params![instance, cutoff],
-    )?;
-    tx.execute(
-        "DELETE FROM task
-          WHERE id IN (SELECT task_id FROM task_round GROUP BY task_id
-                       HAVING COUNT(finished_at) = COUNT(*)
-                         AND MAX(COALESCE(acked_at, finished_at)) < ?1)",
-        params![cutoff],
-    )?;
-    tx.execute(
-        "DELETE FROM epoch
-          WHERE ended_at < ?1 AND instance_id NOT IN (SELECT instance_id FROM block)",
-        params![cutoff],
-    )?;
-    tx.execute(
-        "DELETE FROM conversation
-          WHERE reported_at < ?1
-            AND NOT EXISTS (SELECT 1 FROM occupant o
-                            WHERE o.runtime = conversation.runtime
-                              AND o.native_id = conversation.native_id)
-            AND NOT EXISTS (SELECT 1 FROM task t
-                            WHERE t.owner_runtime = conversation.runtime
-                              AND t.owner_native_id = conversation.native_id)
-            AND NOT EXISTS (SELECT 1 FROM restore r
-                            WHERE r.runtime = conversation.runtime
-                              AND r.native_id = conversation.native_id)
-            AND NOT EXISTS (SELECT 1 FROM task t
-                            WHERE t.worker_runtime = conversation.runtime
-                              AND t.worker_native_id = conversation.native_id)",
-        params![cutoff],
     )?;
     Ok(())
 }

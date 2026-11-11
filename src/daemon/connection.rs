@@ -181,8 +181,9 @@ impl Daemon<'_> {
     }
 
     /// Proves the adapter's subscription is live before anything is read: a client started after
-    /// it subscribed must show up on its stream. Reads before that could miss changes.
-    pub(super) fn witness(&mut self, pipe: &mut Pipe) -> Result<String> {
+    /// it subscribed must show up on its stream. Reads before that could miss changes. Returns the
+    /// server's instance ID and, when it reports one, its host ID.
+    pub(super) fn witness(&mut self, pipe: &mut Pipe) -> Result<(String, Option<String>)> {
         for _ in 0..WITNESS_ATTEMPTS {
             let reply = self.options.cli.call(
                 "session.bootstrap",
@@ -190,12 +191,13 @@ impl Daemon<'_> {
             )?;
             let client = require_str(&reply, "/client_id")?;
             let instance = require_str(&reply, "/server_status/instance_id")?;
+            let host = str_at(&reply, "/server_status/host_id").map(str::to_owned);
             let joined = pipe.wait_event(Instant::now() + WITNESS_WAIT, |event| {
                 str_at(event, "/event") == Some("client_joined")
                     && str_at(event, "/payload/client/client_id") == Some(client.as_str())
             });
             if joined.is_some() {
-                return Ok(instance);
+                return Ok((instance, host));
             }
             if pipe.events().1 {
                 bail!("the adapter's connection ended before its subscription was confirmed");

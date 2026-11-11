@@ -4,6 +4,7 @@
 pub mod cli;
 mod daemon;
 mod event;
+mod export;
 mod gate;
 mod install;
 mod proc;

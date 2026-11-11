@@ -10,12 +10,19 @@ fn store() -> (tempfile::TempDir, Store) {
 #[test]
 fn open_creates_the_schema_once_and_reopens_without_writing() -> Result<()> {
     let (dir, store) = store();
+    let source_id = |store: &Store| -> Result<String> {
+        Ok(store
+            .conn()
+            .query_row("SELECT source_id FROM store", [], |row| row.get(0))?)
+    };
+    let minted = source_id(&store)?;
     let before = store.data_version()?;
     let again = Store::open(dir.path())?;
     let version: i64 = again
         .conn()
         .pragma_query_value(None, "user_version", |row| row.get(0))?;
     assert_eq!(version, SCHEMA_VERSION);
+    assert_eq!(source_id(&again)?, minted);
     assert_eq!(store.data_version()?, before);
     Ok(())
 }
@@ -120,30 +127,21 @@ fn ensure_lineage_keeps_the_lineage_of_an_id_the_server_brought_back() -> Result
     Ok(())
 }
 
+/// An earlier instance's pane goes unless an open task names it, and so do its live IDs.
 #[test]
-fn sweep_keeps_what_an_open_task_or_a_recent_restore_still_names() -> Result<()> {
+fn sweep_keeps_the_pane_an_open_task_still_names() -> Result<()> {
     let (_dir, mut store) = store();
-    let old = now_ms() - i64::try_from(RETENTION.as_millis())? - 1;
     let tx = store.write()?;
-    tx.execute_batch(&format!(
-        "INSERT INTO epoch (instance_id, started_at, ended_at, end_reason)
-           VALUES ('i1', 0, {old}, 'server_gone'), ('i0', 0, {old}, 'server_gone');
-         INSERT INTO block (lineage, instance_id) VALUES ('b-task', 'i1'), ('b-gone', 'i1'),
+    tx.execute_batch(
+        "INSERT INTO block (lineage, instance_id) VALUES ('b-task', 'i1'), ('b-gone', 'i1'),
            ('b-now', 'i2');
          INSERT INTO live (instance_id, live_id, lineage) VALUES ('i1', 'x', 'x'), ('i2', 'y', 'y');
          INSERT INTO conversation (runtime, native_id, resumable, reported_at)
-           VALUES ('claude', 'owner', 1, 0), ('claude', 'unused', 1, 0), ('claude', 'restored', 1, 0),
-             ('claude', 'expired', 1, 0);
+           VALUES ('claude', 'owner', 1, 0);
          INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
-           created_at) VALUES ('t', 'x', 'claude', 'owner', 'b-task', 0, 0);
-         INSERT INTO restore (id, instance_id, block_lineage, start, runtime, native_id, plan, state,
-           created_at)
-           VALUES ('r-old', 'i1', 'b-gone', 'agent', 'claude', 'expired', '{{}}', 'skipped', {old}),
-             ('r-recent', 'i1', 'b-other', 'agent', 'claude', 'restored', '{{}}', 'skipped', {now}),
-             ('r-current', 'i2', 'b-now', 'agent', 'claude', 'expired', '{{}}', 'planned', {old});",
-        now = now_ms()
-    ))?;
-    sweep(&tx, "i2", now_ms())?;
+           created_at) VALUES ('t', 'x', 'claude', 'owner', 'b-task', 0, 0);",
+    )?;
+    sweep(&tx, "i2")?;
     let names = |sql: &str| -> Vec<String> {
         let mut statement = tx.prepare(sql).unwrap();
         let rows = statement.query_map([], |row| row.get(0)).unwrap();
@@ -154,48 +152,6 @@ fn sweep_keeps_what_an_open_task_or_a_recent_restore_still_names() -> Result<()>
         ["b-now", "b-task"]
     );
     assert_eq!(names("SELECT live_id FROM live"), ["y"]);
-    assert_eq!(names("SELECT instance_id FROM epoch"), ["i1"]);
-    assert_eq!(
-        names("SELECT native_id FROM conversation ORDER BY native_id"),
-        ["expired", "owner", "restored"]
-    );
-    assert_eq!(
-        names("SELECT id FROM restore ORDER BY id"),
-        ["r-current", "r-recent"]
-    );
-    Ok(())
-}
-
-/// A task and its unconfirmed notice are deleted only when every round is old enough: acknowledged
-/// before the retention cutoff, or finished before it if never acknowledged. An old dropped round
-/// does not let the task go while an earlier round is open or recently acknowledged.
-#[test]
-fn sweep_deletes_a_task_only_once_all_its_rounds_are_old() -> Result<()> {
-    let (_dir, mut store) = store();
-    let old = now_ms() - i64::try_from(RETENTION.as_millis())? - 1;
-    let tx = store.write()?;
-    tx.execute_batch(&format!(
-        "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
-           VALUES ('claude', 'owner', 1, 0);
-         INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
-           created_at)
-           VALUES ('old', 'x', 'claude', 'owner', 'b1', 0, 0),
-             ('open', 'x', 'claude', 'owner', 'b2', 0, 0),
-             ('recent', 'x', 'claude', 'owner', 'b3', 0, 0);
-         INSERT INTO task_round (task_id, round, state, finished_at, acked_at, created_at)
-           VALUES ('old', 1, 'cancelled', {old}, {old}, 0), ('old', 2, 'dropped', {old}, NULL, 0),
-             ('open', 1, 'running', NULL, NULL, 0), ('open', 2, 'dropped', {old}, {old}, 0),
-             ('recent', 1, 'failed', {old}, {now}, 0), ('recent', 2, 'dropped', {old}, {old}, 0);
-         INSERT INTO notice (id, task_id, round, kind, state, created_at, sent_at)
-           VALUES ('n', 'old', 1, 'finished', 'accepted', {old}, {old});",
-        now = now_ms()
-    ))?;
-    sweep(&tx, "i2", now_ms())?;
-    let tasks: Vec<String> = tx
-        .prepare("SELECT id FROM task ORDER BY id")?
-        .query_map([], |row| row.get(0))?
-        .collect::<rusqlite::Result<_>>()?;
-    assert_eq!(tasks, ["open", "recent"]);
     Ok(())
 }
 
@@ -215,13 +171,17 @@ fn sweep_forgets_the_occupant_of_a_pane_it_forgets() -> Result<()> {
            VALUES ('b-closed', 'claude', 'c-closed', 'i1', 1, 0, {old}),
              ('b-unseen', 'claude', 'c-new', 'i2', 2, 0, {old});"
     ))?;
-    sweep(&tx, "i2", now_ms())?;
-    let occupants: Vec<String> = tx
+    sweep(&tx, "i2")?;
+    tx.commit()?;
+    archive::sweep(&mut store, "i2", now_ms())?;
+    let occupants: Vec<String> = store
+        .conn()
         .prepare("SELECT block_lineage FROM occupant")?
         .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
     assert_eq!(occupants, ["b-unseen"]);
-    let conversations: Vec<String> = tx
+    let conversations: Vec<String> = store
+        .conn()
         .prepare("SELECT native_id FROM conversation")?
         .query_map([], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;

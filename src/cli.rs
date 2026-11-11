@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use serde_json::Value;
 
 use crate::runtime::Runtime;
-use crate::{daemon, gate, install, report, rex, skill, status, store};
+use crate::{daemon, export, gate, install, report, rex, skill, status, store};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None, after_help = EXAMPLES)]
@@ -108,6 +108,11 @@ enum Command {
     ///
     /// Reads the state database and the Claude Code settings without changing them.
     Status(StateDir),
+    /// Print every task, restore, and epoch as JSON Lines, those the daemon archived included
+    ///
+    /// Reads the state database without changing it. The first line is a header and the last an
+    /// `end` record with the count of entity lines, so a reader can tell a cut-off export.
+    Export(StateDir),
     /// Record the conversation starting in this pane, or a Claude Code turn; the hooks run this
     ///
     /// Reads the hook's JSON on stdin. Outside a Rex pane it does nothing. A failure is printed on
@@ -251,6 +256,10 @@ fn run(command: Command) -> Result<Option<(Value, u8)>> {
         }
         Command::Status(state) => {
             status::run(&state.resolve()?, &home()?).map(|value| Some((value, 0)))
+        }
+        Command::Export(state) => {
+            let mut out = std::io::BufWriter::new(std::io::stdout().lock());
+            export::run(&state.resolve()?, &mut out).map(|()| None)
         }
         Command::Skill {
             command: SkillCommand::Status,

@@ -12,7 +12,7 @@ use super::view::View;
 use super::{ADAPTER, Daemon, Exit, FIRST_FILE, PIPE, WAITER_EXIT, WAL};
 use crate::restore::Restorer;
 use crate::rex::{Pipe, Rex, str_at};
-use crate::store::{self, now_ms};
+use crate::store::{self, archive, now_ms};
 use crate::task::{Follow, Interest};
 
 impl Daemon<'_> {
@@ -22,12 +22,12 @@ impl Daemon<'_> {
         self.queue.read(pipe.fd(), PIPE)?;
         let witnessed = self.witness(&mut pipe);
         let mut rex = Rex::Pipe(pipe);
-        let result = witnessed.and_then(|instance| {
+        let result = witnessed.and_then(|(instance, host)| {
             let epoch = {
                 let tx = self.store.write()?;
                 tx.execute(
-                    "INSERT INTO epoch (instance_id, started_at) VALUES (?1, ?2)",
-                    params![instance, now_ms()],
+                    "INSERT INTO epoch (instance_id, host_id, started_at) VALUES (?1, ?2, ?3)",
+                    params![instance, host, now_ms()],
                 )?;
                 let id = tx.last_insert_rowid();
                 tx.commit()?;
@@ -79,10 +79,15 @@ impl Daemon<'_> {
         view.baseline(rex, &mut self.store)?;
         {
             let tx = self.store.write()?;
-            store::sweep(&tx, instance, now_ms())?;
+            store::sweep(&tx, instance)?;
             tx.commit()?;
         }
         restorer.reconcile(rex, &mut self.store, instance);
+        // After the first restores, which it must not hold up, and on a failure the epoch goes on:
+        // the next one archives what this one could not.
+        if let Err(e) = archive::sweep(&mut self.store, instance, now_ms()) {
+            log::warn!("failed to archive finished records: {e:#}");
+        }
         if let Err(e) = store::sweep_records(&self.store) {
             log::warn!("failed to sweep the turn records: {e:#}");
         }

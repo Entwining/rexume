@@ -15,10 +15,15 @@
 -- `error`: why the daemon stopped observing before the connection ended, which `status` shows
 -- for the newest epoch; NULL for an epoch that is open, ended with its connection, or ended because
 -- the daemon was stopped or replaced.
--- AUTOINCREMENT: readers take the newest epoch as MAX(id), so an id is never reused.
+-- `host_id`: the machine and account the server runs as, as Rex reports it in its status, where
+-- servers that see the same files report the same value; NULL when the server reported none, as
+-- one without a state directory does, and for an epoch from before version 10.
+-- AUTOINCREMENT: readers take the newest epoch as MAX(id), and `archive` keeps an epoch under its
+-- id, so an id is never reused.
 CREATE TABLE IF NOT EXISTS epoch (
   id          INTEGER PRIMARY KEY AUTOINCREMENT,
   instance_id TEXT    NOT NULL,
+  host_id     TEXT,
   started_at  INTEGER NOT NULL,
   ended_at    INTEGER,
   end_reason  TEXT    CHECK (end_reason IN ('disconnected', 'server_gone')),
@@ -365,6 +370,31 @@ CREATE UNIQUE INDEX IF NOT EXISTS notice_finished ON notice (task_id, round) WHE
 CREATE UNIQUE INDEX IF NOT EXISTS notice_blocked_unsent ON notice (task_id, round)
   WHERE kind = 'blocked' AND state IN ('pending', 'sending');
 
+-- This database's identity, one row. `source_id` is minted when the database is created or
+-- upgraded to version 10 and never changes. `export` gives it in its header, so that a reader of
+-- several databases' exports can tell their entities apart: `epoch.id` counts from 1 in each.
+CREATE TABLE IF NOT EXISTS store (
+  id        INTEGER PRIMARY KEY CHECK (id = 1),
+  source_id TEXT    NOT NULL
+) STRICT;
+
+-- What the retention sweep removed, kept as it stood: one row per task, restore, or epoch,
+-- inserted in the transaction that deletes the entity's rows and never updated or deleted, which
+-- `export` relies on. `entity_id` is the entity's `id`, an epoch's as decimal text. `version` is
+-- the `user_version` whose tables `data` describes; an upgrade leaves `data` as it is. `data` is
+-- an object keyed by table name: the entity's own row and, for a task, its `task_round`,
+-- `request`, and `notice` rows as arrays in primary-key order. A row is an object of every column
+-- by name, each value as the column holds it. `data` is last: the one large column, so reads of
+-- the others never cross its overflow pages.
+CREATE TABLE IF NOT EXISTS archive (
+  entity_type TEXT    NOT NULL CHECK (entity_type IN ('epoch', 'restore', 'task')),
+  entity_id   TEXT    NOT NULL,
+  version     INTEGER NOT NULL,
+  archived_at INTEGER NOT NULL,
+  data        TEXT    NOT NULL CHECK (json_type(data) = 'object'),
+  PRIMARY KEY (entity_type, entity_id)
+) STRICT;
+
 -- 'rexu' in ASCII, which Store::open checks before it uses a database.
 PRAGMA application_id = 0x72657875;
-PRAGMA user_version = 9;
+PRAGMA user_version = 10;

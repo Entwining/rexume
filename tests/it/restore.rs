@@ -178,6 +178,16 @@ fn a_turn_the_crash_cut_off_continues_once_in_its_own_pane() {
     wait_until("the second daemon's epoch", WAIT, || {
         query::<i64>(&state, "SELECT COUNT(*) FROM epoch").filter(|n| *n == 3)
     });
+    // Each epoch records the host the server reports, which its restart kept.
+    let host = server.call("server.status", &json!({}))["host_id"].clone();
+    let same_host: i64 = db(&state)
+        .query_row(
+            "SELECT COUNT(*) FROM epoch WHERE host_id = ?1",
+            params![host.as_str().expect("the server reports its host")],
+            |row| row.get(0),
+        )
+        .unwrap();
+    assert_eq!(same_host, 3);
     std::thread::sleep(Duration::from_secs(2));
     assert_eq!(
         claude::runs(&runs, 1).len(),
