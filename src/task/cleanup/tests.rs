@@ -57,6 +57,22 @@ fn a_pane_whose_run_exited_is_retired_until_it_is_restored() -> Result<()> {
     Ok(())
 }
 
+/// `task abandon` ends a run's round while the run may still run, on the instance it ran on.
+#[test]
+fn an_abandoned_run_that_has_not_exited_keeps_its_pane_for_that() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let store = released_run(dir.path())?;
+    store.conn().execute_batch(
+        "UPDATE block SET fg_pid = 200, last_exit = NULL WHERE lineage = 'b';
+         UPDATE task_round SET state = 'abandoned', result = NULL, result_ref = NULL;",
+    )?;
+    assert!(matches!(
+        untouched(store.conn(), store.dir(), "t")?,
+        Untouched::No(reason) if reason == "the worker's pane does not show its run's exit"
+    ));
+    Ok(())
+}
+
 #[test]
 fn a_restored_pane_the_restore_did_not_hold_is_kept() -> Result<()> {
     let dir = tempfile::tempdir()?;

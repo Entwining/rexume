@@ -89,7 +89,7 @@ pub(super) fn untouched(conn: &Connection, state_dir: &Path, id: &str) -> Result
     // shows the pane unused.
     if !taken.interactive {
         if last_exit.is_none() {
-            return no("the worker's pane was restored after its run");
+            return no("the worker's pane does not show its run's exit");
         }
         return Ok(Untouched::Yes(taken.worker));
     }
