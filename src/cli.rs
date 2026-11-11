@@ -9,7 +9,7 @@ use clap::{Parser, Subcommand};
 use serde_json::Value;
 
 use crate::runtime::Runtime;
-use crate::{daemon, gate, install, report, rex, status, store};
+use crate::{daemon, gate, install, report, rex, skill, status, store};
 
 #[derive(Parser)]
 #[command(version, about, long_about = None, after_help = EXAMPLES)]
@@ -74,20 +74,22 @@ impl Server {
 
 #[derive(Subcommand)]
 enum Command {
-    /// Install the hooks, the Claude Code plugin, the Pi and omp extensions, and the daemon's job
+    /// Install the hooks, the Claude Code plugin, the Pi and omp extensions, the skill, and the
+    /// daemon's job
     ///
     /// Writes Claude Code's SessionStart, UserPromptSubmit, Stop, and StopFailure hooks into
     /// `~/.claude/settings.json`, a SessionStart hook into `~/.codex/hooks.json`, the Pi
     /// extension into `~/.pi/agent/extensions/rexume.ts`, the omp extension into
-    /// `~/.omp/agent/extensions/rexume.ts`, and the job: the LaunchAgent
-    /// `io.github.entwining.rexume` on macOS, the systemd user service `rexume.service` on Linux.
-    /// Then writes the Claude Code plugin to `~/.local/share/rexume/claude-plugin` and registers it
-    /// through the `claude` on `PATH`. Prints what changed as JSON. A runtime whose directory does
-    /// not exist is skipped. Running it again changes only what is missing or different.
+    /// `~/.omp/agent/extensions/rexume.ts`, the skill's stub into `~/.agents/skills/rexume` and
+    /// `~/.claude/skills/rexume`, and the job: the LaunchAgent `io.github.entwining.rexume` on
+    /// macOS, the systemd user service `rexume.service` on Linux. Then writes the Claude Code
+    /// plugin to `~/.local/share/rexume/claude-plugin` and registers it through the `claude` on
+    /// `PATH`. Prints what changed as JSON. A runtime whose directory does not exist is skipped.
+    /// Running it again changes only what is missing or different.
     Install(Server),
     /// Remove what install wrote, keeping the state directory and this executable
     ///
-    /// Removes the hooks, each extension install wrote, and the job, which stops the
+    /// Removes the hooks, each extension and skill stub install wrote, and the job, which stops the
     /// daemon, then the Claude Code plugin, through the `claude` on `PATH`. `~/.local/state/rexume`
     /// keeps the recorded panes, conversations, and task results; delete it to remove them too.
     Uninstall,
@@ -129,6 +131,16 @@ enum Command {
         #[command(flatten)]
         state: StateDir,
     },
+    /// Print the guide that Rexume's skill gives agents, or the record of the Rex guide it was
+    /// reviewed against
+    ///
+    /// The skill install writes runs this, so an agent reads the guide of the installed version;
+    /// an agent without the skill can run it to read the same guide. The guide names the topic to
+    /// read before each action it covers.
+    Skill {
+        #[command(subcommand)]
+        command: SkillCommand,
+    },
     /// Run in the shell of a restored pane: claim its restore, then start its conversation
     #[command(hide = true)]
     Gate {
@@ -148,6 +160,18 @@ enum Command {
         #[arg(value_name = "TOKEN")]
         token: String,
     },
+}
+
+#[derive(Subcommand)]
+enum SkillCommand {
+    /// Print the guide, or one topic of it, as Markdown
+    Show {
+        /// The topic to print instead of the main guide
+        #[arg(value_name = "TOPIC")]
+        topic: Option<skill::Topic>,
+    },
+    /// Print the Rex version and guide hash that the guide's last review used, as JSON
+    Status,
 }
 
 pub fn main() -> ExitCode {
@@ -174,6 +198,12 @@ pub fn main() -> ExitCode {
             Ok(dir) => return ExitCode::from(gate::run(&dir, &id)),
             Err(e) => Err(e),
         },
+        Command::Skill {
+            command: SkillCommand::Show { topic },
+        } => skill::text(topic).and_then(|text| {
+            write!(std::io::stdout().lock(), "{text}").context("failed to write to stdout")?;
+            Ok(None)
+        }),
         command => run(command),
     };
     let printed = result.and_then(|printed| {
@@ -222,9 +252,18 @@ fn run(command: Command) -> Result<Option<(Value, u8)>> {
         Command::Status(state) => {
             status::run(&state.resolve()?, &home()?).map(|value| Some((value, 0)))
         }
+        Command::Skill {
+            command: SkillCommand::Status,
+        } => skill::status().map(|value| Some((value, 0))),
         Command::Task { command, state } => task::run(command, &state.resolve()?).map(Some),
         Command::Relay { socket, token } => rex::relay::run(&socket, &token).map(|()| None),
-        Command::Report { .. } | Command::Gate { .. } => unreachable!("handled in main"),
+        Command::Report { .. }
+        | Command::Gate { .. }
+        | Command::Skill {
+            command: SkillCommand::Show { .. },
+        } => {
+            unreachable!("handled in main")
+        }
     }
 }
 

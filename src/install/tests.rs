@@ -1,3 +1,5 @@
+use std::io::ErrorKind;
+
 use super::*;
 
 fn read(path: &Path) -> Result<Value> {

@@ -28,10 +28,14 @@ fn a_daemon_exits_when_an_upgrade_replaces_its_executable() {
         } else {
             install(&exe);
         }
-        // The extension an older version's install wrote.
+        // The extension and the skill stub an older version's install wrote.
         let extension = dir.path().join("home/.pi/agent/extensions/rexume.ts");
         std::fs::create_dir_all(extension.parent().unwrap()).unwrap();
         std::fs::write(&extension, "// Written by `rexume install`, long ago\n").unwrap();
+        let stub = dir.path().join("home/.agents/skills/rexume/SKILL.md");
+        std::fs::create_dir_all(stub.parent().unwrap()).unwrap();
+        let old_stub = "---\nname: rexume\n---\n<!-- Written by `rexume install`, long ago -->\n";
+        std::fs::write(&stub, old_stub).unwrap();
         // The state directory an earlier version created, open to other users.
         let state = dir.path().join("state");
         std::fs::create_dir(&state).unwrap();
@@ -60,6 +64,11 @@ fn a_daemon_exits_when_an_upgrade_replaces_its_executable() {
             std::fs::read_to_string(&extension).unwrap(),
             include_str!("../../src/runtime/pi/extension.ts"),
             "a starting daemon brings the extension up to date"
+        );
+        assert_eq!(
+            std::fs::read_to_string(&stub).unwrap(),
+            include_str!("../../skills/rexume/SKILL.md"),
+            "a starting daemon brings the skill stub up to date"
         );
         assert_eq!(
             std::fs::metadata(&state).unwrap().permissions().mode() & 0o777,

@@ -1,18 +1,20 @@
 //! `rexume install` and `rexume uninstall`: the hooks of Claude Code and Codex, the Claude Code
-//! plugin, the Pi and omp extensions, and the job that runs the daemon, a LaunchAgent on macOS and
-//! a systemd user service on Linux. The daemon also refreshes the plugin and the extensions and
-//! adds Claude Code's turn hooks. Each entry is recognized by its identity (the hook's command, the
-//! plugin's name, the extensions' and the job's paths), so install changes only what is missing or
+//! plugin, the Pi and omp extensions, the stub of Rexume's skill, and the job that runs the daemon,
+//! a LaunchAgent on macOS and a systemd user service on Linux. The daemon also refreshes the
+//! plugin, the extensions, and the stub, and adds Claude Code's turn hooks. Each entry is
+//! recognized by its identity (the hook's command, the plugin's name, the `Written by` line of the
+//! extensions and the stub, and the job's paths), so install changes only what is missing or
 //! different, and uninstall removes only these entries.
 
 mod claude_plugin;
 mod extension;
+mod file;
 #[cfg(target_os = "macos")]
 mod launch_agent;
+mod skill;
 #[cfg(target_os = "linux")]
 mod systemd_unit;
 
-use std::io::{ErrorKind, Write as _};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 
@@ -26,6 +28,8 @@ use systemd_unit as job;
 pub use claude_plugin::refresh as refresh_claude_plugin;
 pub use extension::refresh_extensions;
 use extension::{OMP_EXTENSION, PI_EXTENSION};
+use file::{read_json, refresh_file, remove_file, write, write_json};
+pub use skill::refresh_skills;
 
 /// What the job runs.
 pub struct Install {
@@ -106,6 +110,8 @@ pub fn install(home: &Path, install: &Install) -> Result<Value> {
     let pi = PI_EXTENSION.install(home)?;
     let omp = OMP_EXTENSION.install(home)?;
     let daemon = job::install(install, home)?;
+    // After the job, which a stub that cannot be written must not keep from running.
+    let [agents_skill, claude_skill] = skill::install(home)?;
     // Last: notices and requests reach Claude Code without the plugin, so a failing `claude`
     // leaves only the plugin for the next install.
     let plugin = claude_plugin::install(home, &install.path)?;
@@ -115,6 +121,8 @@ pub fn install(home: &Path, install: &Install) -> Result<Value> {
         ("codex_hook", codex),
         ("pi_extension", pi),
         ("omp_extension", omp),
+        agents_skill,
+        claude_skill,
         (job::KEY, (daemon, None)),
     ]);
     out[job::NAME_KEY] = json!(job::NAME);
@@ -124,14 +132,15 @@ pub fn install(home: &Path, install: &Install) -> Result<Value> {
 /// `path` is the `PATH` through which uninstall finds `claude`.
 pub fn uninstall(home: &Path, path: &str) -> Result<Value> {
     let targets = Targets::new(home);
-    // The daemon rewrites the plugin and the extensions when it starts, so it is stopped before
-    // they are removed.
+    // The daemon rewrites the plugin, the extensions, and the stub when it starts, so it is stopped
+    // before they are removed.
     job::unload(home)?;
     let claude = remove_hook(&targets.claude, "claude", &CLAUDE_EVENTS)?;
     let codex = remove_hook(&targets.codex, "codex", &CODEX_EVENTS)?;
     let pi = PI_EXTENSION.uninstall(home)?;
     let omp = OMP_EXTENSION.uninstall(home)?;
     let daemon = job::remove(home)?;
+    let [agents_skill, claude_skill] = skill::uninstall(home)?;
     // Last, so that a missing or failing `claude` leaves only the plugin for the next uninstall.
     let plugin = claude_plugin::uninstall(home, path)?;
     Ok(outcomes([
@@ -140,6 +149,8 @@ pub fn uninstall(home: &Path, path: &str) -> Result<Value> {
         ("codex_hook", (codex, None)),
         ("pi_extension", pi),
         ("omp_extension", omp),
+        agents_skill,
+        claude_skill,
         (job::KEY, daemon),
     ]))
 }
@@ -276,69 +287,6 @@ fn remove_hook(path: &Path, runtime: &str, events: &[&str]) -> Result<&'static s
     }
     write_json(path, &settings)?;
     Ok("removed")
-}
-
-fn remove_file(path: &Path, ours: impl Fn(&str) -> bool) -> Result<Outcome> {
-    match std::fs::read_to_string(path) {
-        Ok(text) if ours(&text) => {
-            std::fs::remove_file(path)
-                .with_context(|| format!("failed to remove `{}`", path.display()))?;
-            Ok(("removed", None))
-        }
-        Ok(_) => Ok(("kept", Some("not written by install".to_owned()))),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(("absent", None)),
-        Err(e) => Err(e).with_context(|| format!("failed to read `{}`", path.display())),
-    }
-}
-
-fn read_json(path: &Path) -> Result<Value> {
-    match std::fs::read_to_string(path) {
-        Ok(text) => serde_json::from_str(&text)
-            .with_context(|| format!("failed to parse `{}`", path.display())),
-        Err(e) if e.kind() == ErrorKind::NotFound => Ok(json!({})),
-        Err(e) => Err(e).with_context(|| format!("failed to read `{}`", path.display())),
-    }
-}
-
-fn write_json(path: &Path, value: &Value) -> Result<()> {
-    let mut text = serde_json::to_string_pretty(value)?;
-    text.push('\n');
-    write(path, text.as_bytes())?;
-    Ok(())
-}
-
-/// Replaces a file through a rename, keeping its permissions and leaving it whole if this stops
-/// midway, and returns `created`, `updated`, or `unchanged`.
-fn write(path: &Path, bytes: &[u8]) -> Result<&'static str> {
-    // A file linked from elsewhere is changed where it lives.
-    let path = match std::fs::canonicalize(path) {
-        Ok(path) => path,
-        Err(e) if e.kind() == ErrorKind::NotFound => path.to_path_buf(),
-        Err(e) => return Err(e).with_context(|| format!("failed to resolve `{}`", path.display())),
-    };
-    let old = match std::fs::read(&path) {
-        Ok(old) => Some(old),
-        Err(e) if e.kind() == ErrorKind::NotFound => None,
-        Err(e) => return Err(e).with_context(|| format!("failed to read `{}`", path.display())),
-    };
-    if old.as_deref() == Some(bytes) {
-        return Ok("unchanged");
-    }
-    let dir = path
-        .parent()
-        .with_context(|| format!("`{}` has no parent directory", path.display()))?;
-    std::fs::create_dir_all(dir)
-        .with_context(|| format!("failed to create `{}`", dir.display()))?;
-    let mut partial = tempfile::NamedTempFile::new_in(dir)
-        .with_context(|| format!("failed to write in `{}`", dir.display()))?;
-    partial.write_all(bytes)?;
-    if let Ok(meta) = std::fs::metadata(&path) {
-        partial.as_file().set_permissions(meta.permissions())?;
-    }
-    partial
-        .persist(&path)
-        .with_context(|| format!("failed to write `{}`", path.display()))?;
-    Ok(if old.is_some() { "updated" } else { "created" })
 }
 
 #[cfg(test)]

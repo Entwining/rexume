@@ -170,6 +170,17 @@ fn refresh_integrations(home: &Path) {
         Ok(_) => {}
         Err(e) => log::warn!("failed to refresh the Claude Code plugin: {e:#}"),
     }
+    // An older stub keeps an older description, which decides when agents load the skill.
+    match install::refresh_skills(home) {
+        Ok(refreshed) => {
+            for (key, outcome) in refreshed {
+                if outcome == "updated" {
+                    log::info!("updated the skill stub ({key})");
+                }
+            }
+        }
+        Err(e) => log::warn!("failed to refresh the skill stubs: {e:#}"),
+    }
     // Claude Code rounds finish only from the turn record its turn hooks write.
     match install::refresh_claude_hooks(home) {
         Ok("created") => log::info!("added the Claude Code turn hooks"),

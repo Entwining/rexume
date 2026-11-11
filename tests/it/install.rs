@@ -296,6 +296,16 @@ fn the_next_install_finishes_a_reload_that_failed() {
     assert_eq!(home.starts_and_stops(), (2, 2));
 }
 
+/// A skill stub install cannot write fails install without keeping the job from running.
+#[test]
+fn a_stub_install_cannot_write_leaves_the_job_running() {
+    let home = Home::new();
+    std::fs::write(home.home().join(".claude/skills"), "").unwrap();
+    let failed = home.output(&Home::install_args(SERVER));
+    assert!(!failed.status.success());
+    assert!(home.job().is_some());
+}
+
 /// Install starts a service that is not running: one that gave up at its start limit, as when its
 /// executable was missing, and one waiting to restart, which the manager shows as activating.
 #[cfg(target_os = "linux")]

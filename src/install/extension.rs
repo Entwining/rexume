@@ -1,12 +1,11 @@
 //! The Pi and omp extensions, each written into its runtime's agent directory under home and
 //! recognized by the first line every version of either starts with.
 
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 
-use super::{Outcome, remove_file, write};
+use super::{Outcome, refresh_file, remove_file, write};
 use crate::runtime::{omp, pi};
 
 /// How every version of either extension starts, so that a file install wrote is recognized after
@@ -54,17 +53,11 @@ impl Extension {
     }
 
     /// Rewrites the extension install wrote when it differs from this version's, so that an
-    /// upgrade reaches the runtime without another install. A missing file stays missing, so that
-    /// uninstall stays final, and a file install did not write is left as it is. Returns
-    /// `updated`, `unchanged`, `absent`, or `kept`.
+    /// upgrade reaches the runtime without another install.
     fn refresh(&self, home: &Path) -> Result<&'static str> {
-        let path = self.path(home);
-        match std::fs::read_to_string(&path) {
-            Ok(text) if text.starts_with(WRITTEN_BY) => write(&path, self.text.as_bytes()),
-            Ok(_) => Ok("kept"),
-            Err(e) if e.kind() == ErrorKind::NotFound => Ok("absent"),
-            Err(e) => Err(e).with_context(|| format!("failed to read `{}`", path.display())),
-        }
+        refresh_file(&self.path(home), self.text.as_bytes(), |text| {
+            text.starts_with(WRITTEN_BY)
+        })
     }
 }
 

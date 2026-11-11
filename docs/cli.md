@@ -1,6 +1,6 @@
 # Rexume command line
 
-A command that succeeds prints one JSON object on stdout, when it has a result, and exits 0. A command that fails prints one line, `rexume: <reason>`, on stderr and exits 1. A usage error prints clap's message on stderr and exits 2. `task wait` exits 3 when it returns because the worker is blocked and 124 when its timeout passes, with the task still on stdout. `report` exits 0 except on a usage error. The stderr text is written for people and may change between versions; scripts and skills branch on the exit code and the JSON, not on it.
+A command that succeeds prints one JSON object on stdout, when it has a result, and exits 0; `skill show` prints Markdown instead. A command that fails prints one line, `rexume: <reason>`, on stderr and exits 1. A usage error prints clap's message on stderr and exits 2. `task wait` exits 3 when it returns because the worker is blocked and 124 when its timeout passes, with the task still on stdout. `report` exits 0 except on a usage error. The stderr text is written for people and may change between versions; scripts and skills branch on the exit code and the JSON, not on it.
 
 A command's JSON object carries `version` at its top level, which changes only when a field changes meaning or goes away. Times are Unix milliseconds. `rexume COMMAND --help` lists each command's options.
 
@@ -12,14 +12,15 @@ A command's JSON object carries `version` at its top level, which changes only w
 rexume install [--rex PATH] [--server ADDRESS]
 ```
 
-Installs the hooks of Claude Code and Codex, the Claude Code plugin, the Pi and omp extensions, and the job that runs the daemon, a LaunchAgent on macOS and a systemd user service on Linux, as the README describes. `--rex` defaults to the first `rex` on `PATH` and fails when there is none; `--server` defaults to `REX_SERVER`, then `unix://$HOME/Library/Application%20Support/rex/server.sock` on macOS or `unix://$XDG_RUNTIME_DIR/rex/server.sock` on Linux, where install fails without `XDG_RUNTIME_DIR`. The job runs this executable by the path install was started with (`rexume` found on `PATH` is used as that path, not resolved further), so a package manager that replaces the file keeps the job working. `install` and `daemon` still accept `--theme-foreground` and `--theme-background`, which a job an earlier install wrote passes, and ignore them with a warning; install writes the job without them. The job runs with install's own `PATH`, through which the daemon finds `codex` to send notices; run `install` again if `codex` moves. Last, install registers the Claude Code plugin through the `claude` it finds on that `PATH`, so a `claude` that fails leaves only the plugin for the next install.
+Installs the hooks of Claude Code and Codex, the Claude Code plugin, the Pi and omp extensions, the stub of Rexume's skill, and the job that runs the daemon, a LaunchAgent on macOS and a systemd user service on Linux, as the README describes. `--rex` defaults to the first `rex` on `PATH` and fails when there is none; `--server` defaults to `REX_SERVER`, then `unix://$HOME/Library/Application%20Support/rex/server.sock` on macOS or `unix://$XDG_RUNTIME_DIR/rex/server.sock` on Linux, where install fails without `XDG_RUNTIME_DIR`. The job runs this executable by the path install was started with (`rexume` found on `PATH` is used as that path, not resolved further), so a package manager that replaces the file keeps the job working. `install` and `daemon` still accept `--theme-foreground` and `--theme-background`, which a job an earlier install wrote passes, and ignore them with a warning; install writes the job without them. The job runs with install's own `PATH`, through which the daemon finds `codex` to send notices; run `install` again if `codex` moves. Install writes the skill stubs after the job, so a stub it cannot write leaves the job running. Last, install registers the Claude Code plugin through the `claude` it finds on that `PATH`, so a `claude` that fails leaves only the plugin for the next install.
 
 ```json
 { "version": 1, "claude_hook": "created", "claude_hook_note": null, "claude_plugin": "created",
   "claude_plugin_note": null, "codex_hook": "unchanged", "codex_hook_note": null,
   "pi_extension": "skipped", "pi_extension_note": "`~/.pi/agent` does not exist", "omp_extension": "created",
-  "omp_extension_note": null, "launch_agent": "created", "launch_agent_note": null,
-  "launch_agent_label": "io.github.entwining.rexume" }
+  "omp_extension_note": null, "agents_skill": "created", "agents_skill_note": null,
+  "claude_skill": "kept", "claude_skill_note": "not written by install", "launch_agent": "created",
+  "launch_agent_note": null, "launch_agent_label": "io.github.entwining.rexume" }
 ```
 
 | Field | Values |
@@ -28,6 +29,7 @@ Installs the hooks of Claude Code and Codex, the Claude Code plugin, the Pi and 
 | `claude_plugin` | `created` (its files were new, or install registered it with Claude Code), `updated` (its files changed), `unchanged`, `skipped` (no `~/.claude`, or no `claude` on `PATH` to register it with, after which install removes the plugin's directory if it created it); the note is `disabled in Claude Code` when you turned it off there, which install leaves as it is |
 | `pi_extension` | `created`, `updated`, `unchanged`, `skipped` (no `~/.pi/agent`) |
 | `omp_extension` | `created`, `updated`, `unchanged`, `skipped` (no `~/.omp/agent`) |
+| `agents_skill`, `claude_skill` | `created`, `updated`, `unchanged`, `kept` (a `rexume` skill install did not write is there), `skipped` (no `~/.codex` or `~/.pi/agent` for `agents_skill`, no `~/.claude` for `claude_skill`); when `~/.claude/skills` links to `~/.agents/skills`, the one file is written when any of those runtimes is set up, and both give what was done to it |
 | `launch_agent` | `created`, `updated`, `unchanged` |
 
 On Linux, `systemd_unit`, `systemd_unit_note`, and `systemd_unit_name` (`rexume.service`) take the place of `launch_agent`, `launch_agent_note`, and `launch_agent_label`, with the same values.
@@ -40,10 +42,11 @@ Each field has a `_note` beside it, which says why when the value needs a reason
 - **Codex trust.** Codex keys its approval of a hook by the hook's position in `hooks.json`. Install appends and never moves existing groups, so hooks you already trusted stay trusted, and only the appended entry waits for approval in `/hooks`.
 - **Claude Code plugin.** Its files are `~/.local/share/rexume/claude-plugin`, one directory that is both the plugin `rexume` and the marketplace `rexume` it is installed from, and are rewritten whenever they differ from the ones this version ships. Install runs `claude plugin marketplace add` with that directory when `~/.claude/settings.json` has no `extraKnownMarketplaces.rexume`, and `claude plugin install rexume@rexume` when it has no `enabledPlugins["rexume@rexume"]`; it never writes either key itself, and a plugin set to `false` there stays off. Claude Code also keeps the plugin in a registry of its own, which only its commands change.
 - **Pi and omp extensions.** `~/.pi/agent/extensions/rexume.ts` and `~/.omp/agent/extensions/rexume.ts` are each rewritten whenever their bytes differ from the extension this version ships for that runtime, and each is written only when its runtime's agent directory exists; install never creates `~/.pi/agent` or `~/.omp/agent`. A file install wrote starts with `` // Written by `rexume install` ``, in every version and for both runtimes; the daemon replaces only such a file, and uninstall removes only such a file. omp also reads extensions from a profile's agent directory (`omp --profile NAME`) and from one that `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR` names; install writes only to the default `~/.omp/agent`.
+- **Skill stub.** `~/.agents/skills/rexume/SKILL.md`, which Codex and Pi read, and `~/.claude/skills/rexume/SKILL.md`, which Claude Code reads, are each the skill's `SKILL.md` this version ships, which tells the agent to run `rexume skill show`. A stub install wrote has a line that starts with `` <!-- Written by `rexume install` ``, in every version; install and the daemon replace only such a file, leaving any other `rexume` skill as it is, and uninstall removes only such a file, with its `rexume` directory once that is empty and not a link.
 - **LaunchAgent.** The job is the label `io.github.entwining.rexume` in `gui/$UID`, defined by `~/Library/LaunchAgents/io.github.entwining.rexume.plist`, which runs `rexume daemon` and logs to `~/Library/Logs/rexume.log`. Install compares the plist it would write with the one on disk by their parsed content, and reloads the job only when the plist differs or the job is not loaded; otherwise launchd is not touched. It writes the new plist only once the old job's daemon has exited, so a reload that fails leaves the plist differing or the job unloaded, and the next install finishes it.
 - **systemd user service.** The job is `rexume.service` in the user's systemd manager, defined by `rexume.service` in `$XDG_CONFIG_HOME/systemd/user` (`~/.config` when the variable is unset or not absolute), which runs `rexume daemon`; its log goes to the journal, read with `journalctl --user -u rexume`. Install compares the unit it would write with the one on disk byte for byte, and touches nothing when they match and the service is running, enabled, and loaded from that file. Otherwise it stops the service, writes the unit when it differs, and enables and starts the service again, so a step that fails leaves something the next install finishes. The service restarts 2 seconds after any exit and gives up after 5 starts within 30 seconds, as when its executable is gone; the next install starts it again. Install fails when it cannot reach the user manager, after it has written the hooks and the extensions; uninstall still removes them, and `rexume daemon` can run under another service manager instead.
 
-The plugin's files, the extensions, and the job's plist or unit hold nothing of the user's, so they are replaced whole and no backup is kept; the plist or unit is written from install's flags and its `PATH`. Files are replaced through a rename that keeps their permissions; a symbolic link is followed and its target replaced.
+The plugin's files, the extensions, the skill stub, and the job's plist or unit hold nothing of the user's, so they are replaced whole and no backup is kept; the plist or unit is written from install's flags and its `PATH`. Files are replaced through a rename that keeps their permissions; a symbolic link is followed and its target written, even one that does not exist yet, while uninstall removes the link itself and leaves its target.
 
 ## uninstall
 
@@ -51,16 +54,18 @@ The plugin's files, the extensions, and the job's plist or unit hold nothing of 
 rexume uninstall
 ```
 
-Boots the LaunchAgent out, or disables and stops the systemd service, and waits for the daemon to exit, so that it cannot write the plugin or an extension back. Then it removes Rexume's hooks and any group they leave empty from each of their events, the Pi and omp extensions, each when install wrote it, and the plist or unit. Last, it runs `claude plugin uninstall rexume@rexume` and `claude plugin marketplace remove rexume`, each when `~/.claude/settings.json` still names what it removes, through the `claude` on its `PATH`, and removes the plugin's directory; it fails when that `claude` is missing or fails, leaving only the plugin for the next uninstall. The state directory and the executable stay.
+Boots the LaunchAgent out, or disables and stops the systemd service, and waits for the daemon to exit, so that it cannot write the plugin or an extension back. Then it removes Rexume's hooks and any group they leave empty from each of their events, the Pi and omp extensions and the skill stubs, each when install wrote it, and the plist or unit. Last, it runs `claude plugin uninstall rexume@rexume` and `claude plugin marketplace remove rexume`, each when `~/.claude/settings.json` still names what it removes, through the `claude` on its `PATH`, and removes the plugin's directory; it fails when that `claude` is missing or fails, leaving only the plugin for the next uninstall. The state directory and the executable stay.
 
 ```json
 { "version": 1, "claude_hook": "removed", "claude_hook_note": null, "claude_plugin": "removed",
   "claude_plugin_note": null, "codex_hook": "absent", "codex_hook_note": null,
   "pi_extension": "kept", "pi_extension_note": "not written by install", "omp_extension": "removed",
-  "omp_extension_note": null, "launch_agent": "removed", "launch_agent_note": null }
+  "omp_extension_note": null, "agents_skill": "removed", "agents_skill_note": null,
+  "claude_skill": "removed", "claude_skill_note": null, "launch_agent": "removed",
+  "launch_agent_note": null }
 ```
 
-Each field is `removed` or `absent`; `pi_extension` and `omp_extension` can also be `kept`. On Linux, `systemd_unit` and `systemd_unit_note` take the place of `launch_agent` and `launch_agent_note`.
+Each field is `removed` or `absent`; `pi_extension`, `omp_extension`, `agents_skill`, and `claude_skill` can also be `kept`. On Linux, `systemd_unit` and `systemd_unit_note` take the place of `launch_agent` and `launch_agent_note`.
 
 ## daemon
 
@@ -68,7 +73,7 @@ Each field is `removed` or `absent`; `pi_extension` and `omp_extension` can also
 rexume daemon [--rex PATH] [--server ADDRESS]
 ```
 
-The process the job runs. It runs until stopped, logs to stderr, and exits 1 at once when another daemon holds the same state directory. It starts `rex do` with its adapter script as a child process and reconnects with a growing delay, from 1 to 30 seconds, when the server goes away; a new server socket wakes it early. It logs each call it makes through the adapter, with the call's block method, if any, and how long it took: as a warning when the call took a second or longer, and otherwise only with `RUST_LOG=rexume=debug`. On `SIGTERM` or `SIGINT` it ends `rex do` and exits 0; it also exits 0 when its executable is replaced, so that its job starts the new one. When it starts, it sets the state directory's mode to `0700` if other users have any access to it, as one an earlier version created does, and logs that it did or that it failed, without stopping. It also rewrites the Claude Code plugin's files and each of the Pi and omp extensions install wrote, as install does, when they differ from this version's; it never creates a missing plugin directory or extension, leaves an extension install did not write as it is, and logs a failure without stopping, each extension on its own. A running Claude Code session reads the new plugin when it starts again or on `/reload-plugins`. Likewise, when Rexume's `SessionStart` hook is in `~/.claude/settings.json`, it appends a group to each Claude Code turn event that lacks Rexume's hook, running the same command as that hook with a `timeout` of 5, so an install from before the turn hooks gets them; settings without that hook are left as they are.
+The process the job runs. It runs until stopped, logs to stderr, and exits 1 at once when another daemon holds the same state directory. It starts `rex do` with its adapter script as a child process and reconnects with a growing delay, from 1 to 30 seconds, when the server goes away; a new server socket wakes it early. It logs each call it makes through the adapter, with the call's block method, if any, and how long it took: as a warning when the call took a second or longer, and otherwise only with `RUST_LOG=rexume=debug`. On `SIGTERM` or `SIGINT` it ends `rex do` and exits 0; it also exits 0 when its executable is replaced, so that its job starts the new one. When it starts, it sets the state directory's mode to `0700` if other users have any access to it, as one an earlier version created does, and logs that it did or that it failed, without stopping. It also rewrites the Claude Code plugin's files and each of the Pi and omp extensions and the skill stubs install wrote, as install does, when they differ from this version's; it never creates a missing plugin directory, extension, or stub, leaves an extension or a skill install did not write as it is, and logs a failure without stopping, each extension on its own. A running Claude Code session reads the new plugin when it starts again or on `/reload-plugins`. Likewise, when Rexume's `SessionStart` hook is in `~/.claude/settings.json`, it appends a group to each Claude Code turn event that lacks Rexume's hook, running the same command as that hook with a `timeout` of 5, so an install from before the turn hooks gets them; settings without that hook are left as they are.
 
 ## status
 
@@ -167,11 +172,28 @@ A round's `state` is `queued` (a request round waiting behind the open round, wi
 
 A notice's text starts with `[rexume NOTICE_ID]` and names the task, its title, and the round. A finished notice names the `task show` and `task ack` commands for that round and, when the worker has unread turns and no later round of the task is open, how many. A blocked notice names the worker's current block ID while the pane is on the server, says the worker is waiting on a dialog or a question that may have been answered since, names the `task show` command for that round, and says when the round's request is still pending; it needs no `task ack`, since the round has not finished. A request's text starts with `[rexume REQUEST_ID]`, followed by the message.
 
+## skill
+
+```sh
+rexume skill show [TOPIC]
+rexume skill status
+```
+
+`skill show` prints the guide that Rexume's skill gives agents, as Markdown: the skill install writes is a stub that runs this command, so an agent reads the guide of the installed version, and an agent without the skill can run it to read the same guide. Without `TOPIC` it prints the main guide, which names the topic to read before each action a topic covers: `agents` for starting, prompting, and collecting from other coding agents and running a panel, `runtimes` for what differs between Claude Code, Codex, and Pi, and `task` for this file's opening conventions followed by its `task` section. The texts are `skills/rexume` and this file as the executable was built with them.
+
+The guide tells agents to read Rex's own guide first and to follow Rexume's where the two differ, so each difference holds for the Rex guide it was reviewed against. `skill status` prints that review's record, built in from `skills/rexume/rex-guide.json`, for a check that compares it with the running Rex:
+
+```json
+{ "version": 1, "rex_version": "…", "rex_guide_sha256": "…" }
+```
+
+`rex_version` is the `rex_version` that `rex version --json` reported for the Rex the review used, and `rex_guide_sha256` the SHA-256, in lowercase hex, of that Rex's complete `rex skill show` output. Only a finished review changes them. They are not a minimum Rex version, and an equal hash from a later Rex shows that the guide text is the same, not that the later Rex behaves the same.
+
 ## Environment
 
 | Variable | Read by | Use |
 | --- | --- | --- |
-| `HOME` | every command | the default state directory; install's and uninstall's targets, the plugin files, Pi and omp extensions, and Claude Code turn hooks the daemon updates, and the Claude Code settings `status` checks |
+| `HOME` | every command | the default state directory; install's and uninstall's targets, the plugin files, Pi and omp extensions, skill stubs, and Claude Code turn hooks the daemon updates, and the Claude Code settings `status` checks |
 | `PATH` | `install`, `uninstall`, `daemon`, `report`, `task` | finding `rex` (and, for `install`, `rexume`), and for `install` and `uninstall`, `claude`; install writes its own into the job, where the daemon finds `codex` through it |
 | `REX_SERVER` | `install`, `daemon`, `report`, `task` | the server address when `--server` is not given; `report` and `task` use it to reach the server |
 | `XDG_RUNTIME_DIR` | `install`, `daemon` (Linux) | the default server address when neither `--server` nor `REX_SERVER` is given |

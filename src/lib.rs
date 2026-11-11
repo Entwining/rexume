@@ -11,6 +11,7 @@ mod report;
 mod restore;
 mod rex;
 mod runtime;
+mod skill;
 mod status;
 mod store;
 mod task;

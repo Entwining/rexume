@@ -71,10 +71,11 @@ rexume install
 | Codex `SessionStart` hook | `~/.codex/hooks.json` |
 | Pi extension | `~/.pi/agent/extensions/rexume.ts` |
 | omp extension | `~/.omp/agent/extensions/rexume.ts` |
+| Rexume's skill, a stub that has the agent read the guide `rexume skill show` prints | `~/.claude/skills/rexume/SKILL.md` for Claude Code, `~/.agents/skills/rexume/SKILL.md` for Codex and Pi |
 | On macOS, LaunchAgent `io.github.entwining.rexume`, which runs `rexume daemon` | `~/Library/LaunchAgents/io.github.entwining.rexume.plist` |
 | On Linux, systemd user service `rexume.service`, which runs `rexume daemon` | `~/.config/systemd/user/rexume.service` |
 
-A runtime whose directory does not exist is skipped, and the JSON says so: Pi needs `~/.pi/agent` and omp needs `~/.omp/agent`, and install creates neither. An omp profile's agent directory, or one that `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR` names, gets no extension, so its sessions report nothing and take no notices. If you install Claude Code, Codex, Pi, or omp later, run `rexume install` again once it is set up. Running it again leaves one copy of each entry and keeps your other hooks and settings; [docs/cli.md](docs/cli.md#how-install-recognizes-its-entries) describes how it recognizes its entries.
+A runtime whose directory does not exist is skipped, and the JSON says so: Pi needs `~/.pi/agent` and omp needs `~/.omp/agent`, and install creates neither. The skill goes to `~/.claude/skills` when `~/.claude` exists and to `~/.agents/skills` when `~/.codex` or `~/.pi/agent` does, and a `rexume` skill you wrote yourself there stays as it is. An omp profile's agent directory, or one that `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR` names, gets no extension, so its sessions report nothing and take no notices. If you install Claude Code, Codex, Pi, or omp later, run `rexume install` again once it is set up. Running it again leaves one copy of each entry and keeps your other hooks and settings; [docs/cli.md](docs/cli.md#how-install-recognizes-its-entries) describes how it recognizes its entries.
 
 Codex runs a new hook only after you approve it: open `/hooks` in Codex and trust the `rexume report codex` entry.
 
@@ -94,7 +95,7 @@ Agents started before `install` are recorded from their next session start. Seei
 
 ### Upgrade
 
-Upgrading the program, with `brew upgrade` or by installing over it, is enough: the daemon notices that its executable was replaced, its job starts the new one, and it replaces the Pi and omp extensions `install` wrote when the new version's differ, and adds the Claude Code hooks a new version needs beside the `SessionStart` hook `install` wrote. It never creates an extension, or a Claude Code hook without that `SessionStart` hook, so a removed extension stays removed, and so does a Claude Code turn hook once you remove the `SessionStart` hook with it. It likewise rewrites the Claude Code plugin's files but never creates their directory, so an installation from before the plugin gets it only when you run `rexume install` again; a running Claude Code session picks up a new plugin when it starts again or on `/reload-plugins`. An installation from before omp support gets the omp extension only when you run `rexume install` again.
+Upgrading the program, with `brew upgrade` or by installing over it, is enough: the daemon notices that its executable was replaced, its job starts the new one, and it replaces the Pi and omp extensions `install` wrote when the new version's differ, and adds the Claude Code hooks a new version needs beside the `SessionStart` hook `install` wrote. It never creates an extension, or a Claude Code hook without that `SessionStart` hook, so a removed extension stays removed, and so does a Claude Code turn hook once you remove the `SessionStart` hook with it. It likewise rewrites the skill stubs `install` wrote but never creates one, and rewrites the Claude Code plugin's files but never creates their directory, so an installation from before the plugin gets it only when you run `rexume install` again; a running Claude Code session picks up a new plugin when it starts again or on `/reload-plugins`. An installation from before omp support gets the omp extension only when you run `rexume install` again.
 
 ## Check a restore
 
@@ -109,7 +110,7 @@ Upgrading the program, with `brew upgrade` or by installing over it, is enough: 
 
 ## Hand work to a worker
 
-Run the task commands from the orchestrator's own Rex pane: they find the orchestrator through `REX_BLOCK`. Start the worker without `REX_SESSION` and with `REX_BLOCK`, as Rex sets it, so that it reports from its own pane. Register the worker right after starting it, with its pane's block ID:
+An agent with Rexume's skill learns all of this from the guide `rexume skill show` prints, which also covers starting agents in Rex panes and reading their answers. Run the task commands from the orchestrator's own Rex pane: they find the orchestrator through `REX_BLOCK`. Start the worker without `REX_SESSION` and with `REX_BLOCK`, as Rex sets it, so that it reports from its own pane. Register the worker right after starting it, with its pane's block ID:
 
 ```sh
 rexume task add --worker "$WORKER_BLOCK" --title 'review the parser'
@@ -138,6 +139,7 @@ Rex and the agents do not provide what these would need:
 - Claude Code runs no hook for a turn you interrupt, and runs Rexume's hook for a prompt before another `UserPromptSubmit` hook of yours can reject it, without telling either apart. So a Claude Code worker whose turn you interrupt, or whose request your hook rejects, keeps its round open until it takes other input, when the round ends as `cancelled`; `rexume task abandon` stops waiting for it.
 - A Claude Code `Stop` hook of yours that makes Claude Code go on after it finished responding leaves the conversation `working` with an answer in its record. A restore after the server stops then continues the conversation, also when the server stopped in the moment between a finished answer and Claude Code's `done` status.
 - Codex holds queued messages while a conversation's last turn was interrupted and no turn has run since, so a notice or request to it waits until someone gives it input. This was observed on Codex 0.164.0, and [openai/codex#56914](https://github.com/openai/codex/issues/56914) asks Codex to show when it holds them.
+- Codex 0.167.1 passes over a `SKILL.md` that is a symbolic link when it looks for skills, so it does not load Rexume's skill if the stub links to a file elsewhere, such as one in a dotfiles repository.
 
 These are Rexume's own trade-offs:
 
@@ -153,7 +155,7 @@ These are Rexume's own trade-offs:
 rexume uninstall
 ```
 
-This removes Rexume's hooks (and any hook group left empty), the Claude Code plugin, through the `claude` on your `PATH`, the Pi and omp extensions if `install` wrote them, and the LaunchAgent or systemd service, which stops the daemon. It keeps `~/.local/state/rexume`, which holds recorded panes, conversations, and task results; delete that directory to remove them too. Then remove the program with `brew uninstall rexume`, or delete `~/.local/bin/rexume`.
+This removes Rexume's hooks (and any hook group left empty), the Claude Code plugin, through the `claude` on your `PATH`, the Pi and omp extensions and the skill stubs if `install` wrote them, and the LaunchAgent or systemd service, which stops the daemon. It keeps `~/.local/state/rexume`, which holds recorded panes, conversations, and task results; delete that directory to remove them too. Then remove the program with `brew uninstall rexume`, or delete `~/.local/bin/rexume`.
 
 ## Contributing
 

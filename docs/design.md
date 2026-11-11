@@ -8,7 +8,7 @@ A job runs `rexume daemon`: a LaunchAgent on macOS, a systemd user service on Li
 
 A commit writes its frames to the write-ahead log, which wakes the processes watching it, before it becomes visible in the log's memory-mapped index, which no watch sees. So after each wake from the log, the daemon and `task wait` take the write lock, which waits for a commit in progress, before they read; otherwise a reader woken early could find nothing new and sleep through the commit.
 
-The daemon alone records panes, drives restores, sends notices, and closes worker panes; hooks, gates, and task commands are short processes that write the same database in short transactions. When the executable at the path the job starts is replaced or removed, as an upgrade does (Homebrew relinks it, Cargo renames a new file over it), the daemon exits and the job starts the new one; restores and notices resume from the database, and the new daemon brings the Claude Code plugin and the Pi and omp extensions install wrote up to date and adds the Claude Code turn hooks an earlier install left out ([cli.md](cli.md#daemon)).
+The daemon alone records panes, drives restores, sends notices, and closes worker panes; hooks, gates, and task commands are short processes that write the same database in short transactions. When the executable at the path the job starts is replaced or removed, as an upgrade does (Homebrew relinks it, Cargo renames a new file over it), the daemon exits and the job starts the new one; restores and notices resume from the database, and the new daemon brings the Claude Code plugin, the Pi and omp extensions, and the skill stubs install wrote up to date and adds the Claude Code turn hooks an earlier install left out ([cli.md](cli.md#daemon)).
 
 ## What is saved
 
