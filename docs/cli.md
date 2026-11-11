@@ -4,7 +4,7 @@ A command that succeeds prints one JSON object on stdout, when it has a result, 
 
 A command's JSON object carries `version` at its top level, which changes only when a field changes meaning or goes away. Times are Unix milliseconds. `rexume COMMAND --help` lists each command's options.
 
-`daemon`, `status`, `export`, `report`, and `task` take `--state-dir DIR`, the directory holding `state.db`; it defaults to `$HOME/.local/state/rexume`. The Pi and omp extensions always use the default. A directory there, and each missing parent, is created with mode `0700` by whichever command or extension needs it first. An existing directory keeps its mode, except the state directory itself, which the daemon restricts when it starts.
+`daemon`, `status`, `export`, `report`, and `task` take `--state-dir DIR`, the directory holding `state.db`; it defaults to `$HOME/.local/state/rexume`. The Pi and omp extensions always use the default. The state directory, each missing parent, and every directory Rexume creates in it are created with mode `0700` by whichever command or extension needs one first. An existing directory keeps its mode, except the state directory itself, which the daemon restricts when it starts.
 
 ## install
 

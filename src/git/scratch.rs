@@ -27,7 +27,7 @@ pub(super) struct Scratch {
 
 impl Scratch {
     pub fn create(task_dir: &Path) -> Result<Self> {
-        std::fs::create_dir_all(object_directory(task_dir))?;
+        crate::store::create_private_dir(&object_directory(task_dir))?;
         // Absolute, as Git runs in the working tree and the lock file records it for whoever next
         // takes the lock.
         let temp_dir = std::path::absolute(std::env::temp_dir())?;
@@ -94,7 +94,7 @@ impl Scratch {
     }
 
     pub fn staging(&self) -> Result<Isolation> {
-        std::fs::create_dir(&self.dir)?;
+        DirBuilder::new().mode(0o700).create(&self.dir)?;
         Ok(Isolation {
             index: self.index(),
             objects: self.dir.clone(),
@@ -256,7 +256,9 @@ fn move_objects(from: &Path, to: &Path) -> Result<()> {
     for file in files(from)? {
         let kept = to.join(file.strip_prefix(from)?);
         kept.parent()
-            .map_or(Ok(()), std::fs::create_dir_all)
+            .map_or(Ok(()), |dir| {
+                DirBuilder::new().recursive(true).mode(0o700).create(dir)
+            })
             .and_then(|()| std::fs::rename(&file, &kept))
             .with_context(|| format!("failed to keep `{}`", file.display()))?;
     }

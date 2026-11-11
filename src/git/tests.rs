@@ -222,6 +222,24 @@ fn a_split_index_gets_no_snapshot() -> Result<()> {
 }
 
 #[test]
+fn a_snapshot_creates_its_directories_for_its_user_alone() -> Result<()> {
+    let root = tempfile::tempdir()?;
+    let state = tempfile::tempdir()?;
+    let repo = repository(root.path())?;
+    write(&repo.join("new/c.txt"), "c\n")?;
+    capture(&worktree(&repo)?, &state.path().join("snapshots/t"))?;
+    let dirs: Vec<_> = listing(state.path())?
+        .into_iter()
+        .filter(|(_, (mode, ..))| mode & 0o170_000 == 0o040_000)
+        .map(|(path, (mode, ..))| (path, mode & 0o777))
+        .collect();
+    // `snapshots`, the task's directory, `objects`, and at least one directory of objects.
+    assert!(dirs.len() >= 4, "{dirs:?}");
+    assert!(dirs.iter().all(|(_, mode)| *mode == 0o700), "{dirs:?}");
+    Ok(())
+}
+
+#[test]
 fn a_snapshot_copies_no_more_than_the_limit() -> Result<()> {
     let root = tempfile::tempdir()?;
     let state = tempfile::tempdir()?;
