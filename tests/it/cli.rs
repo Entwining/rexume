@@ -1,5 +1,3 @@
-//! Exit statuses and error shapes that callers branch on, from commands that need no server.
-
 use std::process::Output;
 
 use crate::common::rexume;
@@ -80,8 +78,6 @@ fn a_report_outside_a_rex_pane_reads_its_input_before_it_exits() {
     assert_eq!(output.status.code(), Some(0), "{}", stderr(&output));
 }
 
-/// Claude Code's turn hooks add to the conversation's turn record without reaching the server,
-/// keeping a prompt's token and no other text.
 #[test]
 fn a_claude_turn_hook_appends_to_the_turn_record() {
     let dir = tempfile::tempdir().unwrap();
@@ -113,8 +109,6 @@ fn a_claude_turn_hook_appends_to_the_turn_record() {
     );
 }
 
-/// An export of a database with nothing in it is still whole: a header and an `end` that counts
-/// no entities. A state directory without a database fails with one line and stays absent.
 #[test]
 fn export_prints_a_header_and_an_end_and_creates_nothing() {
     let dir = tempfile::tempdir().unwrap();
@@ -147,7 +141,6 @@ fn export_prints_a_header_and_an_end_and_creates_nothing() {
     );
 }
 
-/// A `REXUME_TASK_META` that is not a JSON object refuses the task before anything is recorded.
 #[test]
 fn task_add_refuses_a_task_meta_that_is_not_a_json_object() {
     let dir = tempfile::tempdir().unwrap();

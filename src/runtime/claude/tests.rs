@@ -37,8 +37,6 @@ fn completed(reference: &str, text: &str) -> Turn {
     }
 }
 
-/// Input the running turn takes in, typed or from another session, carries that turn's prompt ID
-/// and does not start another; the turn's end shows its token received.
 #[test]
 fn input_a_running_turn_takes_in_belongs_to_it() -> Result<()> {
     let peer = r#"{"event":"prompt","prompt_id":"p1","token":"[rexume d1]"}"#;
@@ -59,9 +57,6 @@ fn input_a_running_turn_takes_in_belongs_to_it() -> Result<()> {
     Ok(())
 }
 
-/// A prompt nothing ended when the next one starts was interrupted or rejected by another hook:
-/// it ends as cancelled where the next starts, and its token is not shown received, while the
-/// next turn's is.
 #[test]
 fn a_prompt_without_an_end_is_cancelled_when_another_starts() -> Result<()> {
     let rejected = r#"{"event":"prompt","prompt_id":"p1","token":"[rexume r1]"}"#;
@@ -93,8 +88,6 @@ fn a_prompt_without_an_end_is_cancelled_when_another_starts() -> Result<()> {
     Ok(())
 }
 
-/// A Stop hook that makes Claude Code go on records a second stop under the same prompt ID, which
-/// ends a turn of its own.
 #[test]
 fn each_stop_ends_a_turn() -> Result<()> {
     let again = r#"{"event":"stop","prompt_id":"p1","id":"s2","answer":"More."}"#;
@@ -139,8 +132,6 @@ fn turn_states_follow_the_records() -> Result<()> {
     Ok(())
 }
 
-/// The hooks' input becomes a record line with the prompt's token and nothing else of its text; a
-/// subagent's events and other events write nothing.
 #[test]
 fn a_hook_input_becomes_its_turn_event() {
     let event = |input: Value| turn_event(&input);
@@ -154,7 +145,6 @@ fn a_hook_input_becomes_its_turn_event() {
     for text in ["count", "see [rexume d1]", "[rexume ] x", "[rexume a b] x"] {
         assert_eq!(prompt(text).unwrap()["token"], Value::Null, "{text}");
     }
-    // A Rex server instance ID is a UUID and a block ID `block:` and a UUID.
     let resumed = prompt(&super::super::continuation_prompt(
         "0f8e7d6c-5b4a-4392-8170-6f5e4d3c2b1a",
         "block:01a00000-0000-7000-8000-000000000001",

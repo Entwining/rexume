@@ -3,11 +3,8 @@ use std::path::Path;
 use super::*;
 use crate::task::tests::turn_record;
 
-/// A Claude Code turn record, as its turn hooks write it.
 const PROMPT: &str = r#"{"event":"prompt","prompt_id":"p1","token":null}"#;
 
-/// Conversation `<block>-conversation` reported from `block` as process 10, with `transcript`,
-/// which for Claude Code is its turn record too.
 fn conversation(store: &Store, block: &str, runtime: &str, transcript: &Path) -> Result<()> {
     if runtime == "claude" {
         turn_record(store.dir(), &format!("{block}-conversation"), transcript)?;
@@ -29,7 +26,6 @@ fn conversation(store: &Store, block: &str, runtime: &str, transcript: &Path) ->
     Ok(())
 }
 
-/// How the daemon saw instance `i1` end.
 fn ended(store: &Store, reason: &str) -> Result<()> {
     store.conn().execute(
         "INSERT INTO epoch (instance_id, started_at, ended_at, end_reason) VALUES ('i1', 0, 1, ?1)",
@@ -38,7 +34,6 @@ fn ended(store: &Store, reason: &str) -> Result<()> {
     Ok(())
 }
 
-/// The way the server's end was seen.
 fn end_reason(server_gone: bool) -> &'static str {
     if server_gone {
         "server_gone"
@@ -62,7 +57,6 @@ fn only_a_turn_the_servers_end_cut_off_continues() -> Result<()> {
             )?;
             ended(&store, end_reason(server_gone))?;
             let planned = candidate(store.conn(), store.dir(), "i2", "b")?;
-            // The gate reads on from where the plan read the record to continue.
             if planned.start == Start::Continue {
                 assert_eq!(
                     planned.plan.record_length,
@@ -79,25 +73,19 @@ fn only_a_turn_the_servers_end_cut_off_continues() -> Result<()> {
             start_from(&transcript, status, status_pid, server_gone)
         };
     assert_eq!(start(&[PROMPT], "working", 10, true)?, Start::Continue);
-    // The server may have stopped on purpose or not at all; without seeing it go, nothing reruns.
     assert_eq!(start(&[PROMPT], "working", 10, false)?, Start::Agent);
     assert_eq!(start(&[PROMPT], "blocked", 10, true)?, Start::Agent);
     assert_eq!(start(&[PROMPT, ANSWER], "idle", 10, true)?, Start::Agent);
-    // The runtime recorded the failure before its status reached the server.
     assert_eq!(
         start(&[PROMPT, FAILURE], "working", 10, true)?,
         Start::Agent
     );
-    // Claude Code still working after its `Stop` went on as a Stop hook told it to.
     assert_eq!(
         start(&[PROMPT, ANSWER], "working", 10, true)?,
         Start::Continue
     );
-    // A status from another process, such as a nested agent, says nothing about this turn.
     assert_eq!(start(&[PROMPT], "working", 11, true)?, Start::Agent);
-    // A line that is not JSON may be what ended the turn.
     assert_eq!(start(&[PROMPT, "{cut"], "working", 10, true)?, Start::Agent);
-    // So may whatever is in a record that cannot be read, here a directory.
     let dir = tempfile::tempdir()?;
     let unreadable = dir.path().join("t.jsonl");
     std::fs::create_dir(&unreadable)?;
@@ -105,8 +93,6 @@ fn only_a_turn_the_servers_end_cut_off_continues() -> Result<()> {
     Ok(())
 }
 
-/// Codex works on after no end its record shows, so its recorded answer wins over a working status
-/// the server's end kept from changing.
 #[test]
 fn a_codex_answer_wins_over_a_working_status() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -135,12 +121,6 @@ fn a_codex_answer_wins_over_a_working_status() -> Result<()> {
     Ok(())
 }
 
-/// Pane `b` as recorded on instance `i1`, with the foreground and exit given, and a Claude Code
-/// conversation that reported from it as process 10 as `occupant` (its instance and whether it
-/// was the terminal's own program) with a prompt still open in its record, and the server's end
-/// seen. `run` registered a
-/// non-interactive run in the pane on the process given, if any, and `elsewhere` reported the
-/// conversation from pane `c` at that time, where it was still the foreground program or not.
 struct Pane<'a> {
     fg_pid: Option<i64>,
     last_exit: Option<i64>,
@@ -202,8 +182,6 @@ fn a_pane_restores_as_it_was_last_used() -> Result<()> {
         elsewhere: None,
     };
     let here = Some("i1");
-    // The conversation was the terminal's own program and exited: it reopens. One reported before
-    // version 3 may have been.
     assert_eq!(
         planned(&pane(None, Some(0), Some((here, Some(true)))))?,
         Start::Agent
@@ -212,7 +190,6 @@ fn a_pane_restores_as_it_was_last_used() -> Result<()> {
         planned(&pane(None, Some(0), Some((None, None))))?,
         Start::Agent
     );
-    // The conversation ran in another pane after it exited here, so that pane reopens it.
     let elsewhere = |reported_at, running| Pane {
         elsewhere: Some((reported_at, running)),
         ..pane(None, Some(0), Some((here, Some(true))))
@@ -220,8 +197,6 @@ fn a_pane_restores_as_it_was_last_used() -> Result<()> {
     assert_eq!(planned(&elsewhere(1, false))?, Start::Shell);
     assert_eq!(planned(&elsewhere(-1, true))?, Start::Shell);
     assert_eq!(planned(&elsewhere(-1, false))?, Start::Agent);
-    // Another program was the terminal's own, such as the shell an agent ran from, or the record
-    // is of an earlier terminal.
     assert_eq!(planned(&pane(None, Some(2), None))?, Start::Shell);
     assert_eq!(
         planned(&pane(None, Some(-1), Some((here, Some(false)))))?,
@@ -231,7 +206,6 @@ fn a_pane_restores_as_it_was_last_used() -> Result<()> {
         planned(&pane(None, Some(127), Some((Some("i0"), Some(true)))))?,
         Start::Shell
     );
-    // A conversation still in the foreground reopens; one that left keeps the shell.
     assert_eq!(
         planned(&pane(Some(10), None, Some((here, Some(true)))))?,
         Start::Agent
@@ -244,8 +218,6 @@ fn a_pane_restores_as_it_was_last_used() -> Result<()> {
         planned(&pane(Some(30), None, Some((here, Some(false)))))?,
         Start::Shell
     );
-    // A PID names a process only on its own instance; a report from before instances were
-    // recorded counts as the pane's.
     assert_eq!(
         planned(&pane(Some(10), None, Some((Some("i0"), Some(false)))))?,
         Start::Shell
@@ -254,15 +226,12 @@ fn a_pane_restores_as_it_was_last_used() -> Result<()> {
         planned(&pane(Some(10), None, Some((None, None))))?,
         Start::Agent
     );
-    // A run cut off while working reopens its conversation without continuing it; a run the pane
-    // held earlier is not this conversation.
     let working = |run| Pane {
         status: "working",
         run,
         ..pane(Some(10), None, Some((here, Some(true))))
     };
     assert_eq!(planned(&working(None))?, Start::Continue);
-    // A copy started later in another pane that exited does not take it from the one running.
     let copied = Pane {
         elsewhere: Some((1, false)),
         ..working(None)
@@ -287,15 +256,12 @@ fn a_conversation_without_a_record_yet_reopens_only_in_pi() -> Result<()> {
         )?;
         Ok(candidate(store.conn(), store.dir(), "i2", "b")?.start)
     };
-    // Claude Code and Codex write their record with the first prompt and cannot resume before.
     assert_eq!(start("claude")?, Start::Shell);
     assert_eq!(start("codex")?, Start::Shell);
-    // Pi opens the missing session file as a new session with the reported settings.
     assert_eq!(start("pi")?, Start::Agent);
     Ok(())
 }
 
-/// A conversation whose launcher declared a command Rexume cannot use keeps the shell.
 #[test]
 fn a_conversation_with_an_unusable_launch_declaration_keeps_the_shell() -> Result<()> {
     let dir = tempfile::tempdir()?;

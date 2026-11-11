@@ -1,6 +1,3 @@
-//! The systemd user service that runs the daemon: its unit file and the user manager's loaded
-//! copy of it.
-
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 
@@ -8,12 +5,10 @@ use anyhow::{Context, Result};
 
 use super::{Install, Outcome, remove_file, run_manager, write};
 
-/// The keys of install's and uninstall's output, and the unit's name.
 pub(super) const KEY: &str = "systemd_unit";
 pub(super) const NAME_KEY: &str = "systemd_unit_name";
 pub(super) const NAME: &str = "rexume.service";
 
-/// Where the user manager reads the user's own units.
 fn unit_path(home: &Path) -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
@@ -23,8 +18,6 @@ fn unit_path(home: &Path) -> PathBuf {
         .join(NAME)
 }
 
-/// Writes the unit when it differs, and restarts the service unless it is active, enabled, and
-/// loaded from that unit: a running service keeps the definition it started with.
 pub(super) fn install(install: &Install, home: &Path) -> Result<&'static str> {
     let path = unit_path(home);
     let wanted = unit(install);
@@ -65,7 +58,6 @@ pub(super) fn install(install: &Install, home: &Path) -> Result<&'static str> {
     })
 }
 
-/// Stops the service and drops it from `default.target` when the manager has it.
 pub(super) fn unload(home: &Path) -> Result<()> {
     let state = match state() {
         Ok(state) => state,
@@ -82,7 +74,6 @@ pub(super) fn unload(home: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Removes the unit of a service already stopped, and has the manager forget it.
 pub(super) fn remove(home: &Path) -> Result<Outcome> {
     let outcome = remove_file(&unit_path(home), |_| true)?;
     if outcome.0 == "removed" {
@@ -130,8 +121,8 @@ WantedBy=default.target
     )
 }
 
-/// Quotes one word of a unit setting. systemd expands `%` specifiers in every setting and, where
-/// `variables` says so, `$` variables, and reads C escapes inside quotes.
+/// systemd expands `%` specifiers in every setting and, where `variables` says so, `$` variables,
+/// and reads C escapes inside quotes.
 fn quote(word: &str, variables: bool) -> String {
     let mut quoted = String::from('"');
     for c in word.chars() {
@@ -150,9 +141,7 @@ fn quote(word: &str, variables: bool) -> String {
     quoted
 }
 
-/// The manager's view of the service.
 struct State {
-    /// The manager has read a unit file for it.
     loaded: bool,
     /// Started and not between restarts.
     active: bool,
@@ -160,7 +149,6 @@ struct State {
     /// The service stopped on an error or its start limit.
     failed: bool,
     enabled: bool,
-    /// The unit file changed since the manager read it.
     stale: bool,
 }
 

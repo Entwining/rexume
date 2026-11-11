@@ -1,5 +1,3 @@
-//! The macOS queue: one kqueue, with a filter for each descriptor, process, file, and signal.
-
 use std::collections::HashMap;
 use std::fs::{File, OpenOptions};
 use std::os::fd::{AsRawFd, BorrowedFd};
@@ -16,7 +14,7 @@ use super::{Fired, Token};
 
 pub struct Queue {
     queue: Kqueue,
-    /// Open files of the vnode watches; closing one removes its watch.
+    /// Closing a file removes its vnode watch.
     files: HashMap<Token, File>,
 }
 
@@ -52,8 +50,7 @@ impl Queue {
         )?)
     }
 
-    /// Fires when `signal` is sent to this process. The kqueue records the signal even while it
-    /// is blocked, which is how the daemon takes it without a handler.
+    /// The kqueue records the signal even while the caller blocks it.
     pub fn signal(&self, signal: Signal, token: Token) -> Result<()> {
         let ident = usize::try_from(signal as i32)?;
         Ok(self.change(
@@ -65,7 +62,6 @@ impl Queue {
         )?)
     }
 
-    /// Watches for a process's exit; `false` when it has already exited.
     pub fn exit(&self, pid: i64, token: Token) -> Result<bool> {
         let Ok(ident) = usize::try_from(pid) else {
             return Ok(false);
@@ -95,14 +91,10 @@ impl Queue {
         }
     }
 
-    /// Watches a file for writes, or a directory for entries added or removed, replacing an
-    /// earlier watch under the same token; `false` when nothing exists at the path.
     pub fn file(&mut self, path: &Path, token: Token) -> Result<bool> {
         self.watch(path, token, libc::O_EVTONLY)
     }
 
-    /// Like `file`, but a symbolic link at the path is watched itself, so replacing the link
-    /// fires even though the file it pointed to is unchanged.
     pub fn entry(&mut self, path: &Path, token: Token) -> Result<bool> {
         self.watch(path, token, libc::O_EVTONLY | libc::O_SYMLINK)
     }
@@ -134,7 +126,6 @@ impl Queue {
         self.files.remove(&token);
     }
 
-    /// Waits for at least one registered event, or until `timeout` passes when one is given.
     pub fn wait(&self, timeout: Option<Duration>) -> Result<Vec<Fired>> {
         let timeout = timeout.map(|t| libc::timespec {
             tv_sec: i64::try_from(t.as_secs()).unwrap_or(i64::MAX),

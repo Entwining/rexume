@@ -1,13 +1,10 @@
-//! A worker that blocks on a dialog or a question: its owner learns of each episode once, in a
-//! `task wait` or through a notice, and still gets the round's result.
-
 use std::io::Read as _;
 use std::process::Stdio;
 use std::time::Instant;
 
 use super::*;
 
-/// Has the worker's shell report a program status, as an agent showing a dialog does.
+/// OSC 7501 reports a program status to Rex, as an agent showing a dialog does.
 fn report(world: &Orchestration, pairs: &str) {
     let status = world
         .server
@@ -33,7 +30,6 @@ fn a_blocked_worker_is_reported_once_per_episode_and_its_result_still_arrives() 
         ..
     } = &world;
 
-    // The owner is inside `task wait` when the worker blocks.
     let mut waiting = task_command(server, state, owner, &["wait", id, "--timeout", "20"])
         .stdout(Stdio::piped())
         .spawn()
@@ -65,11 +61,9 @@ fn a_blocked_worker_is_reported_once_per_episode_and_its_result_still_arrives() 
         (printed["state"].as_str(), printed["timed_out"].as_bool()),
         (Some("blocked"), Some(false))
     );
-    // That episode has been reported, so the next wait waits for what comes after it.
     let again = run_task(server, state, owner, &["wait", id, "--timeout", "2"]);
     assert_eq!(failure(&again), (Some(124), String::new()));
 
-    // The worker gets past the dialog and blocks again while its owner is idle.
     report(&world, "state=working");
     wait_until("the round to run again", WAIT, || {
         query::<String>(state, "SELECT state FROM task_round").filter(|s| s == "running")
@@ -90,7 +84,6 @@ fn a_blocked_worker_is_reported_once_per_episode_and_its_result_still_arrives() 
         "Review the diff",
         Some("Looks good."),
     );
-    // The next message is the finished notice, so the blocked one went once.
     let text = message(listener, "the finished notice");
     assert!(text.contains("finished round 1"), "{text}");
     let conn = db(state);

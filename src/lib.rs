@@ -1,6 +1,3 @@
-//! Reopens the coding-agent conversations in the panes the Rex server restores after it restarts,
-//! and carries dispatched worker results back to the orchestrator.
-
 pub mod cli;
 mod daemon;
 mod event;

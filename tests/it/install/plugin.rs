@@ -1,12 +1,9 @@
-//! Install and uninstall reach the Claude Code plugin through the `claude` on their own PATH.
-
 use std::os::unix::fs::PermissionsExt;
 
 use serde_json::{Value, json};
 
 use super::{Home, SERVER, session_start};
 
-/// Install and uninstall each find `claude` on their own PATH to register and remove the plugin.
 #[test]
 fn install_and_uninstall_register_the_plugin_through_claude() {
     let home = Home::new();
@@ -35,7 +32,7 @@ fn install_and_uninstall_register_the_plugin_through_claude() {
     );
     assert!(plugin.join("hooks/rexume.ts").exists());
 
-    // Claude Code names what it registered in the settings.
+    // Claude Code records what it registered in the settings; this fake `claude` does not.
     let path = home.home().join(".claude/settings.json");
     let mut settings: Value = serde_json::from_slice(&std::fs::read(&path).unwrap()).unwrap();
     settings["extraKnownMarketplaces"] = json!({ "rexume": {} });
@@ -53,8 +50,6 @@ fn install_and_uninstall_register_the_plugin_through_claude() {
     assert!(!plugin.exists());
 }
 
-/// Uninstall needs `claude` only for a plugin the settings name, and removes everything else
-/// first, so a machine without it is left with only that registration.
 #[test]
 fn uninstall_without_claude_removes_everything_else() {
     let home = Home::new();

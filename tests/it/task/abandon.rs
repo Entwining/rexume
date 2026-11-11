@@ -6,9 +6,6 @@ use super::orchestration::Orchestration;
 use super::{WAIT, failure, run_task, task, task_command};
 use crate::common::{claude, query, wait_until};
 
-/// The owner stops waiting for a round the worker has not answered: a running `task wait` returns
-/// with it and no notice is sent. The answer the worker gives later is unread, so the task is
-/// released only after `task next` takes it.
 #[test]
 #[ignore = "needs a Rex server"]
 fn an_abandoned_round_ends_a_wait_and_leaves_the_late_answer_unread() {

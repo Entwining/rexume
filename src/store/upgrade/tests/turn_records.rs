@@ -7,9 +7,6 @@ use crate::runtime::claude;
 use crate::store::Store;
 use crate::task::Follow;
 
-/// Version 8 reads a Claude Code conversation's turns from its turn record, so a Claude Code
-/// worker's task reads it from the start, its rounds keep their results without an offset, and
-/// its occupant's record starts empty; a Codex worker keeps its place in its transcript.
 #[test]
 fn open_upgrades_a_version_7_database_and_restarts_claude_turn_offsets() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -59,8 +56,6 @@ fn open_upgrades_a_version_7_database_and_restarts_claude_turn_offsets() -> Resu
     Ok(())
 }
 
-/// A version 7 database whose Claude Code worker `w` runs request round 1 of task `t`, with the
-/// request in `state`, opened at version 8.
 fn request_in_flight(dir: &std::path::Path, state: &str) -> Result<Store> {
     let conn = Connection::open(dir.join("state.db"))?;
     conn.execute_batch(include_str!("../../../../tests/fixtures/schema-v7.sql"))?;
@@ -84,8 +79,6 @@ fn request_in_flight(dir: &std::path::Path, state: &str) -> Result<Store> {
     )?;
     drop(conn);
     let store = Store::open(dir)?;
-    // The worker's hooks write its turn record only from the upgrade on: the request's prompt is
-    // not in it, only the end of the turn that took it in.
     claude::append(
         dir,
         "w",
@@ -102,8 +95,6 @@ fn round(store: &Store) -> Result<(String, Option<String>, String)> {
     )?)
 }
 
-/// A request received before the upgrade is received before the record its round now reads, so
-/// the round takes the first turn that record shows ending.
 #[test]
 fn a_request_received_before_the_upgrade_takes_the_next_turn() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -116,8 +107,6 @@ fn a_request_received_before_the_upgrade_takes_the_next_turn() -> Result<()> {
     Ok(())
 }
 
-/// A request whose receipt only the transcript before the upgrade shows is not known received:
-/// its round waits until the owner abandons it, and the request is not sent again.
 #[test]
 fn a_request_sent_but_not_seen_received_before_the_upgrade_waits() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -127,8 +116,6 @@ fn a_request_sent_but_not_seen_received_before_the_upgrade_waits() -> Result<()>
     Ok(())
 }
 
-/// A version 8 database already reads Claude Code turn records, so the upgrade to version 9, which
-/// adds the 'queued' and 'dropped' round states, keeps its tasks' places in them.
 #[test]
 fn open_upgrades_a_version_8_database_and_keeps_claude_turn_offsets() -> Result<()> {
     let dir = tempfile::tempdir()?;

@@ -7,8 +7,6 @@ use server::{MOVED_BACK, SHELL, STARTUP, Server, TYPED, connect};
 
 mod server;
 
-/// Instance `i1`'s panes `a`, the orchestrator's conversation `owner` in its foreground, and `b`,
-/// a worker; the server restarted as `i2` and shows both with the shell given.
 fn restarted(dir: &Path, a: &str, b: &str) -> Result<(Store, Arc<Mutex<Server>>, Rex)> {
     let store = task_world(dir, &dir.join("worker.jsonl"), None)?;
     store.conn().execute_batch(
@@ -38,7 +36,6 @@ fn restore_of(store: &Store, block: &str) -> Result<(String, String, Option<Stri
     )?)
 }
 
-/// Moves pane `a`'s recorded foreground, as the server's event about it does.
 fn foreground_moved(store: &Store) -> Result<()> {
     store
         .conn()
@@ -46,8 +43,6 @@ fn foreground_moved(store: &Store) -> Result<()> {
     Ok(())
 }
 
-/// The line goes in once the shell is the pane's foreground, and once only: neither another pass
-/// nor a daemon that starts again types it again.
 #[test]
 fn the_gate_is_typed_once_when_the_shell_is_ready() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -61,7 +56,6 @@ fn the_gate_is_typed_once_when_the_shell_is_ready() -> Result<()> {
         ("planned", Some("sleep runs in the pane"))
     );
     assert!(restorer.deadline().is_some());
-    // The worker's conversation wrote no record yet, so its pane keeps the shell.
     assert!(restore_of(&store, "b").is_err());
 
     server
@@ -69,7 +63,6 @@ fn the_gate_is_typed_once_when_the_shell_is_ready() -> Result<()> {
         .unwrap()
         .process
         .insert("a".into(), serde_json::from_str(SHELL)?);
-    // Nothing recorded the change yet, so the pane is not read again.
     restorer.reconcile(&mut rex, &mut store, "i2");
     assert!(server.lock().unwrap().written.iter().all(|(b, _)| b != "a"));
     foreground_moved(&store)?;
@@ -89,7 +82,6 @@ fn the_gate_is_typed_once_when_the_shell_is_ready() -> Result<()> {
     Ok(())
 }
 
-/// A pane in no window, which the server restores too, gets its conversation back like any other.
 #[test]
 fn a_detached_pane_is_restored() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -102,7 +94,6 @@ fn a_detached_pane_is_restored() -> Result<()> {
     Ok(())
 }
 
-/// Text at the prompt is the user's: nothing is typed over it, and past the wait the pane keeps it.
 #[test]
 fn a_pane_with_text_at_its_prompt_is_left_to_the_user() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -129,8 +120,6 @@ fn a_pane_with_text_at_its_prompt_is_left_to_the_user() -> Result<()> {
     Ok(())
 }
 
-/// A shell still reading its startup files takes the line whatever they printed before the cursor:
-/// it waits in the terminal for the first prompt.
 #[test]
 fn a_shell_reading_its_startup_files_takes_the_line() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -147,8 +136,6 @@ fn a_shell_reading_its_startup_files_takes_the_line() -> Result<()> {
     Ok(())
 }
 
-/// A refused line ran nothing; one whose answer was lost waits for its gate and is then left
-/// unknown, which the gate still claims, and is never typed again.
 #[test]
 fn a_typed_line_ends_by_its_answer_or_its_gate() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -176,9 +163,6 @@ fn a_typed_line_ends_by_its_answer_or_its_gate() -> Result<()> {
     Ok(())
 }
 
-/// A conversation that reported from another pane since the plan, or from another pane on this
-/// instance before it, as when someone reopened it while no daemon ran, runs there: its restore
-/// types nothing, and a round its worker left open goes on from the conversation's record.
 #[test]
 fn a_conversation_opened_elsewhere_is_not_reopened() -> Result<()> {
     for before_the_plan in [false, true] {
@@ -231,13 +215,8 @@ fn a_conversation_opened_elsewhere_is_not_reopened() -> Result<()> {
     Ok(())
 }
 
-/// The pane of a released worker that nothing used after its result comes back with the rest; it
-/// is closed while it shows only the server's shell, and kept when something else runs there, text
-/// is typed in it, the user looks at it, or the server will not describe it, past the wait.
 #[test]
 fn a_retired_workers_pane_is_closed_unless_it_is_in_use() -> Result<()> {
-    // A pane the server will not describe is kept at the end of its wait too, and nothing reads it
-    // again.
     for (shown, screen, focused, refuse, kept) in [
         (SHELL, None, None, None, None),
         (STARTUP, None, None, None, Some("sleep runs in the pane")),
@@ -296,8 +275,6 @@ fn a_retired_workers_pane_is_closed_unless_it_is_in_use() -> Result<()> {
     Ok(())
 }
 
-/// A hold lasts one epoch: the next one lets go of it first, and on the same instance, where the
-/// pane is no longer one the server restored, leaves it to the cleanup pass.
 #[test]
 fn a_pane_held_by_an_earlier_epoch_is_let_go() -> Result<()> {
     let dir = tempfile::tempdir()?;

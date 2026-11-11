@@ -48,7 +48,7 @@ fn a_resumed_claude_conversation_keeps_its_launch_model() -> Result<()> {
         tx.commit()?;
         Ok(model)
     };
-    // Inputs as Claude Code sends them on startup and on resume.
+    // Claude Code's session start on resume carries no `model`.
     let startup = json!({"session_id": "s", "source": "startup", "model": "claude-haiku-5-5"});
     assert_eq!(
         model(&mut store, startup)?.as_deref(),
@@ -76,10 +76,6 @@ fn process(pid: i64) -> Process {
     }
 }
 
-/// A task bound to a report reads the record from where the report found it ending, so it starts
-/// again for a new process, as a resumed conversation has, and for another conversation, as after
-/// `/clear`, but not for the same process reporting the same conversation again, as after a
-/// compaction, which may come in the middle of the turn a task is waiting for.
 #[test]
 fn a_new_process_or_conversation_moves_the_start_and_the_same_one_keeps_it() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -105,8 +101,6 @@ fn a_new_process_or_conversation_moves_the_start_and_the_same_one_keeps_it() -> 
     Ok(())
 }
 
-/// A PID names a process only on its own server instance, so a start the runtime does not mark
-/// takes the pane from an earlier instance's occupant with the same PID and name.
 #[test]
 fn an_unmarked_start_on_a_new_instance_is_not_the_old_occupants_inner_session() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -143,8 +137,6 @@ fn an_unmarked_start_on_a_new_instance_is_not_the_old_occupants_inner_session() 
     Ok(())
 }
 
-/// Reports each input from its process, in order, and returns the conversations recorded and the
-/// pane's occupant with whether it can be reopened.
 fn report_all(runtime: Runtime, inputs: &[(i64, &Value)]) -> Result<(Vec<String>, String, bool)> {
     let dir = tempfile::tempdir()?;
     let mut store = Store::open(dir.path())?;
@@ -166,10 +158,6 @@ fn report_all(runtime: Runtime, inputs: &[(i64, &Value)]) -> Result<(Vec<String>
     Ok((conversations, occupant, resumable))
 }
 
-/// Each runtime starts sessions of its own inside the pane's agent process, so their session starts
-/// come from the pane's foreground program too. Inputs as each runtime sends them: Claude Code for
-/// a subagent and an in-process teammate, Codex for a guardian review and a side conversation, and
-/// Pi for sessions an extension creates through the SDK in each mode but `tui`.
 #[test]
 fn an_agents_inner_sessions_do_not_replace_the_pane_conversation() -> Result<()> {
     let cases = [
@@ -220,9 +208,6 @@ fn an_agents_inner_sessions_do_not_replace_the_pane_conversation() -> Result<()>
     Ok(())
 }
 
-/// A start the runtime marks neither way is the agent's own conversation when it comes from a new
-/// process, such as an ephemeral `codex exec` or a `pi -p` run after the pane's conversation ended,
-/// and so is a Claude Code session started with `--agent`, which carries only `agent_type`.
 #[test]
 fn a_new_process_takes_the_pane_even_without_the_runtimes_mark() -> Result<()> {
     let cases = [
@@ -256,9 +241,6 @@ fn a_new_process_takes_the_pane_even_without_the_runtimes_mark() -> Result<()> {
     Ok(())
 }
 
-/// Launch settings are a patch like any other: a report that read its process names every launch
-/// key, so a valid declaration clears an earlier error, a start without one clears the declared
-/// command, and a report that cannot read its process names none and keeps them.
 #[test]
 fn a_report_replaces_or_removes_what_it_names_and_keeps_the_rest() -> Result<()> {
     let dir = tempfile::tempdir()?;

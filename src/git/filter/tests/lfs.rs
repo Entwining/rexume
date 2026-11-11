@@ -1,6 +1,3 @@
-//! When Git LFS's filter runs as Git LFS: only as Git LFS installs it, in a repository it has run
-//! in before, and never while the changed files are listed.
-
 use std::io::{Seek, SeekFrom, Write as _};
 
 use anyhow::Result;
@@ -9,8 +6,6 @@ use crate::git::filter::lfs_command;
 use crate::git::tests::{capture, fake_lfs, git, holds, lfs_repository, script, write};
 use crate::git::{CONTENT_LIMIT, worktree};
 
-/// Only the commands Git LFS installs are taken for it: Git runs a filter's command through the
-/// shell, so any other word, or any character the shell would expand, makes it another program.
 #[test]
 fn only_the_commands_git_lfs_installs_are_trusted() {
     for (kind, command) in [
@@ -37,10 +32,6 @@ fn only_the_commands_git_lfs_installs_are_trusted() {
     }
 }
 
-/// A repository Git LFS has not run in gets no snapshot that needs it, since its first run writes
-/// the repository's configuration; once it has, a linked working tree gets one too. Git LFS tells
-/// it from the repository's own configuration file alone, not from a working tree's, by the last
-/// value there, and takes an empty one for none.
 #[test]
 fn git_lfs_runs_only_where_it_has_run_before() -> Result<()> {
     let (root, state) = (tempfile::tempdir()?, tempfile::tempdir()?);
@@ -72,8 +63,6 @@ fn git_lfs_runs_only_where_it_has_run_before() -> Result<()> {
     Ok(())
 }
 
-/// A filter named `lfs` in any other form, or with a Git LFS extension, runs as any other filter
-/// does, so it writes nothing in the repository.
 #[test]
 fn git_lfs_in_another_form_runs_as_any_other_filter() -> Result<()> {
     let tools = tempfile::tempdir()?;
@@ -103,15 +92,11 @@ fn git_lfs_in_another_form_runs_as_any_other_filter() -> Result<()> {
             git(&repo, &["config", "lfs.extension.x.priority", "0"])?;
         }
         write(&repo.join("new.bin"), "large\n")?;
-        // A tree where Rexume can deny the filter writes, none where it cannot.
         let _ = holds(root.path(), &repo, state.path())?;
     }
     Ok(())
 }
 
-/// The changed files are listed with every filter off, so a file Git LFS stores that changed
-/// without changing size, which Git can tell only from its content, is not cleaned to compare it,
-/// and a file too large to copy is refused before any filter runs.
 #[test]
 fn listing_the_changed_files_runs_no_filter() -> Result<()> {
     let (root, tools, state) = (
@@ -135,6 +120,7 @@ fn listing_the_changed_files_runs_no_filter() -> Result<()> {
     let mut big = std::fs::OpenOptions::new()
         .write(true)
         .open(repo.join("big.bin"))?;
+    // The same size, so that the listing would clean it to compare its content were filters on.
     big.seek(SeekFrom::Start(0))?;
     big.write_all(b"x")?;
     std::fs::remove_file(&calls)?;
@@ -151,7 +137,6 @@ fn listing_the_changed_files_runs_no_filter() -> Result<()> {
     Ok(())
 }
 
-/// A filter's message is kept from the note, since a filter can print a file's content in it.
 #[test]
 fn a_note_keeps_nothing_a_filter_printed() -> Result<()> {
     let (root, tools, state) = (

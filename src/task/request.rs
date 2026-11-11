@@ -1,7 +1,3 @@
-//! The outbox of requests to workers. The daemon is the only sender: it claims a request as
-//! `sending` before it sends, and a send that may have happened is never repeated. Only the
-//! worker's own record settles a request, which the round's tracker reads.
-
 use std::sync::LazyLock;
 
 use anyhow::Result;
@@ -12,8 +8,7 @@ use super::{Interest, OPEN};
 use crate::runtime::{self, Runtime, Sent, Target, inbox};
 use crate::store::{Store, now_ms};
 
-/// The pending requests of open rounds, reached through the rounds so that the request table
-/// is never scanned: SQLite keeps the left table of a `CROSS JOIN` as the outer loop.
+/// SQLite keeps the left table of a `CROSS JOIN` as the outer loop, so `request` is not scanned.
 pub(super) static PENDING: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT q.id, q.task_id, q.note, q.text FROM task_round r
@@ -22,9 +17,6 @@ pub(super) static PENDING: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// The task's worker conversation where it reported from the worker's pane, whether it is that
-/// pane's foreground program on the instance the running daemon observes, and whether it is in a
-/// turn.
 pub(super) const WORKER: &str = "SELECT t.worker_runtime, t.worker_native_id, o.transport,
     e.ended_at IS NULL AND e.instance_id = b.instance_id AND b.fg_pid = o.pid
       AND (o.instance_id IS NULL OR o.instance_id = b.instance_id),
@@ -36,7 +28,6 @@ pub(super) const WORKER: &str = "SELECT t.worker_runtime, t.worker_native_id, o.
   JOIN epoch e ON e.id = (SELECT MAX(id) FROM epoch)
   WHERE t.id = ?1";
 
-/// Claims a pending request for sending at `?2` while its round is still unfinished.
 pub(super) static CLAIM: LazyLock<String> = LazyLock::new(|| {
     format!(
         "UPDATE request SET state = 'sending', sent_at = ?2, attempts = attempts + 1
@@ -48,7 +39,6 @@ pub(super) static CLAIM: LazyLock<String> = LazyLock::new(|| {
 
 pub(super) const ENDED: &str = "the round ended before it was sent";
 
-/// Whether a request's round is still open, so that it still needs the request.
 pub(super) static ROUND_OPEN: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT {OPEN} FROM request q
@@ -82,9 +72,6 @@ fn worker(conn: &Connection, task: &str) -> Result<Option<Worker>> {
         .optional()?)
 }
 
-/// Records a claimed request's send result. If nothing left, it returns to `pending` unless
-/// its round ended during the send. Ending a round drops only pending requests, so a request still
-/// `sending` then must be superseded here.
 fn record_send(tx: &Transaction, id: &str, sent: (&str, Option<String>)) -> Result<()> {
     let (mut state, mut note) = sent;
     if state == "pending" && !tx.query_row(&ROUND_OPEN, params![id], |row| row.get::<_, bool>(0))? {
@@ -100,9 +87,6 @@ fn record_send(tx: &Transaction, id: &str, sent: (&str, Option<String>)) -> Resu
     Ok(())
 }
 
-/// Sends each pending request once the worker's conversation is the foreground program of its pane
-/// on the current server and between turns, so that it takes the request as a turn of its own.
-/// Why a request still waits goes to its `note`, written only when it changes.
 pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<()> {
     let pending: Vec<(String, String, Option<String>, String)> = store
         .conn()
@@ -152,8 +136,6 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<()>
     settle_inbox(store, interest)
 }
 
-/// The requests of open rounds that no runtime has been seen to hold yet, reached through the
-/// rounds as in `PENDING`.
 pub(super) static SENT: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT q.id, t.worker_runtime, t.worker_native_id FROM task_round r
@@ -163,8 +145,6 @@ pub(super) static SENT: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// Marks requests the extension took from the worker's inbox as `accepted`: the runtime holds
-/// them, but the conversation may not have taken them in yet.
 fn settle_inbox(store: &mut Store, interest: &mut Interest) -> Result<()> {
     let sent: Vec<(String, Runtime, String)> = store
         .conn()

@@ -4,8 +4,6 @@ use super::*;
 use crate::runtime::claude;
 use crate::task::tests::{ANSWER, PROMPT, record, task_world, turn_record};
 
-/// Task `t`'s disposable worker in pane `b`, its round acknowledged and recorded exactly as its
-/// result left it, and the task released.
 fn released_worker(dir: &Path, transcript: &Path) -> Result<Store> {
     let store = task_world(dir, transcript, None)?;
     let position = i64::try_from(std::fs::metadata(transcript)?.len())?;
@@ -22,8 +20,6 @@ fn released_worker(dir: &Path, transcript: &Path) -> Result<Store> {
     Ok(store)
 }
 
-/// Task `t`'s non-interactive run in pane `b`, which exited 0 with its result; the round is
-/// acknowledged and the task released.
 fn released_run(dir: &Path) -> Result<Store> {
     let store = task_world(dir, &dir.join("unused.jsonl"), Some("/r"))?;
     store.conn().execute_batch(
@@ -35,9 +31,6 @@ fn released_run(dir: &Path) -> Result<Store> {
     Ok(store)
 }
 
-/// A run's round can end before the server reports the run's exit, which then counts as a change
-/// of foreground after the result but runs nothing. A pane restored on a later instance is a new
-/// terminal and may be anyone's, also once its own program exits.
 #[test]
 fn a_pane_whose_run_exited_is_retired_until_it_is_restored() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -57,7 +50,6 @@ fn a_pane_whose_run_exited_is_retired_until_it_is_restored() -> Result<()> {
         .conn()
         .execute_batch("UPDATE block SET fg_pid = NULL, last_exit = 0 WHERE lineage = 'b'")?;
     assert!(retired_workers(store.conn(), store.dir())?.is_empty());
-    // A round from before version 3 that the upgrade could not date.
     store
         .conn()
         .execute_batch("UPDATE task_round SET finished_instance_id = NULL")?;
@@ -65,8 +57,6 @@ fn a_pane_whose_run_exited_is_retired_until_it_is_restored() -> Result<()> {
     Ok(())
 }
 
-/// A pane the server restored that the restore did not hold for its close is a new terminal,
-/// which may be anyone's: the close pass keeps it.
 #[test]
 fn a_restored_pane_the_restore_did_not_hold_is_kept() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -96,8 +86,6 @@ fn a_restored_pane_the_restore_did_not_hold_is_kept() -> Result<()> {
     Ok(())
 }
 
-/// An untouched released worker is not restored. One whose record cannot be read, here a
-/// directory, may have a turn after its result, so it is, without holding back the restore.
 #[test]
 fn an_untouched_released_worker_is_retired_unless_its_record_cannot_be_read() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -110,7 +98,6 @@ fn an_untouched_released_worker_is_retired_unless_its_record_cannot_be_read() ->
     std::fs::remove_file(claude::record(dir.path(), "worker"))?;
     turn_record(dir.path(), "worker", dir.path())?;
     assert!(retired_workers(store.conn(), store.dir())?.is_empty());
-    // Any other error ends the restore's planning instead of deciding it.
     store
         .conn()
         .execute_batch("UPDATE task SET position = -1")?;
@@ -118,8 +105,6 @@ fn an_untouched_released_worker_is_retired_unless_its_record_cannot_be_read() ->
     Ok(())
 }
 
-/// A queued round withdrawn while the round before it ran never ran itself, so what the pane showed
-/// when it was dropped says nothing about whether the worker was touched since its result.
 #[test]
 fn a_dropped_round_does_not_keep_an_untouched_worker() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -137,8 +122,6 @@ fn a_dropped_round_does_not_keep_an_untouched_worker() -> Result<()> {
     Ok(())
 }
 
-/// A conversation reported in the pane on an earlier server instance is not what the pane runs
-/// now, as when the pane came back as a shell and the worker never reported again.
 #[test]
 fn a_worker_reported_on_another_instance_than_its_pane_is_not_retired() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -151,8 +134,6 @@ fn a_worker_reported_on_another_instance_than_its_pane_is_not_retired() -> Resul
     Ok(())
 }
 
-/// Acknowledging a result leaves the worker to the orchestrator, which may still start a round;
-/// only releasing it gives up the pane.
 #[test]
 fn an_acknowledged_worker_is_neither_closed_nor_retired_until_released() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -175,16 +156,12 @@ fn an_acknowledged_worker_is_neither_closed_nor_retired_until_released() -> Resu
 #[test]
 fn later_activity_in_the_worker_pane_keeps_it() -> Result<()> {
     for change in [
-        // A new conversation in the pane.
         "INSERT INTO conversation (runtime, native_id, resumable, reported_at) VALUES ('claude', 'new', 1, 300);
          UPDATE occupant SET native_id = 'new', pid = 200, reported_at = 300 WHERE block_lineage = 'b';",
         "UPDATE block SET status = 'working', status_at = 200 WHERE lineage = 'b'",
         "UPDATE block SET fg_pid = 300, fg_changes = fg_changes + 1 WHERE lineage = 'b'",
-        // The pane restored on a later instance, whose status and count happen to match.
         "UPDATE block SET instance_id = 'i2' WHERE lineage = 'b'",
-        // A pane an earlier close attempt found in use, whatever it shows now.
         "UPDATE task SET pane_state = 'kept', pane_note = 'the worker''s status changed after its result'",
-        // Another round started and not yet acknowledged.
         "INSERT INTO task_round (task_id, round, state, created_at) VALUES ('t', 2, 'running', 130)",
     ] {
         let dir = tempfile::tempdir()?;
@@ -196,9 +173,6 @@ fn later_activity_in_the_worker_pane_keeps_it() -> Result<()> {
     Ok(())
 }
 
-/// Claude Code reports `done` once its Stop hooks ran, after the record showed the turn's end and
-/// the round took it, so that status is no use of the pane; a worker still working after the end
-/// its record shows went on as a Stop hook told it to, and any other later status is use.
 #[test]
 fn only_the_status_that_ends_the_turn_leaves_the_worker_retired() -> Result<()> {
     for (status, at, retired) in [
@@ -228,7 +202,6 @@ fn a_new_turn_in_the_same_worker_process_is_restored() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let mut transcript = record(&[PROMPT, ANSWER])?;
     let store = released_worker(dir.path(), transcript.path())?;
-    // The prompt is in the record before the status event that would also show it.
     writeln!(transcript, "{PROMPT}")?;
     transcript.flush()?;
     assert!(retired_workers(store.conn(), store.dir())?.is_empty());

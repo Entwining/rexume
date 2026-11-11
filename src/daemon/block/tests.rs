@@ -10,8 +10,6 @@ use crate::store::{Store, now_ms};
 use crate::task::tests::{ANSWER, PROMPT, record, task_world};
 use crate::task::{Follow, retired_workers};
 
-/// Records, as its event does, that process `pid` in pane `block` of `instance` reports `status`,
-/// an object with Rex's `state` and, for a `blocked` one, its `kind` and `msg`.
 fn report(store: &mut Store, instance: &str, block: &str, status: Value, pid: i64) -> Result<()> {
     let now = chrono::DateTime::from_timestamp_millis(now_ms()).context("now is out of range")?;
     let mut record = status;
@@ -23,10 +21,8 @@ fn report(store: &mut Store, instance: &str, block: &str, status: Value, pid: i6
     Ok(())
 }
 
-/// A notice's state and note.
 type Notice = (String, Option<String>);
 
-/// Task `t`'s round state and its notices, in the order they were written.
 fn observed(store: &Store) -> Result<(String, Vec<Notice>)> {
     let state = store
         .conn()
@@ -43,10 +39,8 @@ fn superseded(note: &str) -> Notice {
     ("superseded".into(), Some(note.into()))
 }
 
-/// An episode's kind and message, and why it ended.
 type Episode = (Option<String>, Option<String>, Option<String>);
 
-/// Task `t`'s blocked episodes in the order they began.
 fn episodes(store: &Store) -> Result<Vec<Episode>> {
     Ok(store
         .conn()
@@ -65,7 +59,6 @@ fn episode(kind: Option<&str>, message: Option<&str>, ended: Option<&str>) -> Ep
     )
 }
 
-/// Pane `b`'s recorded status with its kind and message.
 fn status(store: &Store) -> Result<(Option<String>, Option<String>, Option<String>)> {
     Ok(store.conn().query_row(
         "SELECT status, status_kind, status_message FROM block WHERE lineage = 'b'",
@@ -78,8 +71,6 @@ fn blocked_on(kind: &str, msg: &str) -> Value {
     json!({ "state": "blocked", "kind": kind, "msg": msg })
 }
 
-/// `task_world` with its worker in a blocked episode on instance `i1`, whose notice a `task wait`
-/// took when `taken`.
 fn blocked_world(dir: &Path, transcript: &Path, taken: bool) -> Result<(Store, Follow)> {
     let mut store = task_world(dir, transcript, None)?;
     store.conn().execute_batch(
@@ -96,7 +87,6 @@ fn blocked_world(dir: &Path, transcript: &Path, taken: bool) -> Result<(Store, F
     Ok((store, follow))
 }
 
-/// How the first episode's notice ends: taken by a wait, or dropped unsent with the episode.
 fn first(taken: bool) -> Notice {
     if taken {
         superseded("taken by task wait")
@@ -105,9 +95,6 @@ fn first(taken: bool) -> Notice {
     }
 }
 
-/// The task's pass after both reports sees only the second; the first ended the episode, so the
-/// second begins its own once its grace passes, with its own notice and the kind and message
-/// `blocked_on("question", "Which branch?")` reported.
 fn second_episode(store: &mut Store, follow: &mut Follow, first: Notice) -> Result<()> {
     follow.pass(store, None)?;
     assert_eq!(observed(store)?, ("running".into(), vec![first.clone()]));
@@ -128,8 +115,6 @@ fn second_episode(store: &mut Store, follow: &mut Follow, first: Notice) -> Resu
     Ok(())
 }
 
-/// A worker that answers one dialog and stops on the next between two task passes, as two
-/// permission prompts in a row make it.
 #[test]
 fn a_worker_stopping_on_another_dialog_before_a_pass_tells_of_each() -> Result<()> {
     for taken in [false, true] {
@@ -164,8 +149,6 @@ fn a_worker_stopping_on_another_dialog_before_a_pass_tells_of_each() -> Result<(
     Ok(())
 }
 
-/// A blocked status that changes what it says while the worker stays blocked is the same episode,
-/// which keeps what it began with and tells nothing new.
 #[test]
 fn a_worker_still_blocked_with_another_message_stays_in_its_episode() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -190,8 +173,6 @@ fn a_worker_still_blocked_with_another_message_stays_in_its_episode() -> Result<
     Ok(())
 }
 
-/// A worker pane restored on a new server whose conversation, started again, stops on a dialog
-/// before the task's first pass there: the earlier episode went with the earlier server.
 #[test]
 fn a_restored_worker_stopping_on_a_dialog_before_a_pass_begins_a_new_episode() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -228,8 +209,6 @@ fn a_restored_worker_stopping_on_a_dialog_before_a_pass_begins_a_new_episode() -
     )
 }
 
-/// Records, as its event does, Rex's report `generation` that pane `b` of instance `i1` has the
-/// foreground process `pid`, or none.
 fn foreground(store: &mut Store, pid: Option<i64>, generation: i64) -> Result<()> {
     let foreground = pid.map(|pid| json!({ "pid": pid, "name": "claude" }));
     let payload = json!({ "foreground": foreground, "generation": generation });
@@ -238,10 +217,6 @@ fn foreground(store: &mut Store, pid: Option<i64>, generation: i64) -> Result<()
     Ok(())
 }
 
-/// Rex reports a pane again when its foreground process changes directory or a client starts
-/// receiving the terminal's output, which is no use of a released worker's pane: the pane is
-/// still closed. Another program that runs there is use, even once the worker's process is the
-/// foreground again.
 #[test]
 fn only_another_foreground_process_keeps_a_released_workers_pane() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -264,8 +239,6 @@ fn only_another_foreground_process_keeps_a_released_workers_pane() -> Result<()>
     Ok(())
 }
 
-/// The pane's own program ending clears its foreground, a change of process like any other; an
-/// empty foreground Rex reports after it is no further change.
 #[test]
 fn the_exit_of_the_panes_program_counts_as_a_foreground_change() -> Result<()> {
     let dir = tempfile::tempdir()?;

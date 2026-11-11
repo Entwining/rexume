@@ -2,9 +2,6 @@ use super::orchestration::Orchestration;
 use super::{message, task};
 use crate::common::claude;
 
-/// A request sent while round 1 runs is queued and reaches the worker once the worker answers
-/// round 1; the owner's next wait returns the round the request started. Round 1 is left
-/// unacknowledged when the queued round starts, so releasing the task acknowledges it too.
 #[test]
 #[ignore = "needs a Rex server"]
 fn a_request_sent_during_a_round_reaches_the_worker_after_it_finishes() {

@@ -7,9 +7,6 @@ use serde_json::{Value, json};
 use super::{WAIT, run_task, task, task_command};
 use crate::common::{Daemon, REXUME, Server, db, poll, query, shell_block, shell_pids, wait_until};
 
-/// A non-interactive worker is the terminal's own program, kept open after it exits. It prints
-/// before it exits, as `codex exec` does, after which the server reports an empty foreground once
-/// more, when the round already has its result.
 #[test]
 #[ignore = "needs a Rex server"]
 fn a_run_reaches_its_owner_and_its_pane_closes_after_release() {
@@ -42,7 +39,6 @@ fn a_run_reaches_its_owner_and_its_pane_closes_after_release() {
             &result.to_string_lossy(),
         ],
     );
-    // The run is in no repository, so it has no snapshots.
     let snapshot = &added["snapshot"];
     assert_eq!(snapshot["worktree"], Value::Null);
     assert!(
@@ -98,8 +94,6 @@ fn a_run_reaches_its_owner_and_its_pane_closes_after_release() {
     );
 }
 
-/// A run whose program reported its conversation from the pane before the run was registered is
-/// bound to it by `task add` itself, with no daemon running to bind it later.
 #[test]
 #[ignore = "needs a Rex server"]
 fn a_run_that_reported_its_conversation_is_bound_when_registered() {
@@ -178,9 +172,6 @@ fn a_run_that_reported_its_conversation_is_bound_when_registered() {
     assert_eq!(task["data"]["task"]["meta"], meta);
 }
 
-/// A session with an owner whose conversation the state records, beside a pane running `script`
-/// as its own program, kept open after it exits. Returns the session, owner, and worker IDs once
-/// the daemon has recorded the run as the worker's foreground.
 pub(super) fn owner_and_run(
     server: &Server,
     state: &Path,

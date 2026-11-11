@@ -1,13 +1,8 @@
-//! What a snapshot copies from the repository for Git to read, since Git isolated from the
-//! repository's objects would otherwise go on without them and record another tree.
-
 use anyhow::Result;
 
 use super::{git, holds, random, repository, write};
 use crate::git::CONTENT_LIMIT;
 
-/// A file the index holds with CRLF stays so when changed, as Git keeps CRLF in a file whose
-/// staged version has it, which only the staged blob tells.
 #[test]
 fn a_file_staged_with_crlf_keeps_it() -> Result<()> {
     for autocrlf in ["input", "true"] {
@@ -24,9 +19,6 @@ fn a_file_staged_with_crlf_keeps_it() -> Result<()> {
     Ok(())
 }
 
-/// The rules of `.gitattributes`, `.gitignore`, and `.gitmodules` files a sparse checkout left out
-/// of the working tree still apply: a changed file is normalized, an ignored one stays out, and a
-/// submodule whose changes are ignored keeps its commit.
 #[test]
 fn rules_left_out_of_a_sparse_checkout_apply() -> Result<()> {
     let (root, state) = (tempfile::tempdir()?, tempfile::tempdir()?);
@@ -66,9 +58,6 @@ fn rules_left_out_of_a_sparse_checkout_apply() -> Result<()> {
     Ok(())
 }
 
-/// A `.gitattributes` missing from the working tree decides how a changed file is normalized as it
-/// does in `git add -A`: from the index when it is marked assume-unchanged, and not at all when
-/// `git add -A` stages its deletion first.
 #[test]
 fn rules_of_a_gitattributes_missing_from_the_working_tree_apply() -> Result<()> {
     for marked in [false, true] {
@@ -92,10 +81,6 @@ fn rules_of_a_gitattributes_missing_from_the_working_tree_apply() -> Result<()> 
     Ok(())
 }
 
-/// A sparse index, whose left-out directories Git reads as trees, gets the snapshot real Git
-/// stages, both with a left-out directory holding only ignored files and with a left-out file put
-/// back and changed, and none once the repository's settings no longer allow it. The repository
-/// is packed, so that Git refreshing its pack would show.
 #[test]
 fn a_sparse_index_gets_the_tree_git_stages() -> Result<()> {
     for scenario in [
@@ -114,6 +99,7 @@ fn a_sparse_index_gets_the_tree_git_stages() -> Result<()> {
             &repo,
             &["sparse-checkout", "set", "--cone", "--sparse-index", "dir"],
         )?;
+        // Packed, so that Git refreshing its pack would show.
         git(&repo, &["gc", "-q"])?;
         assert!(!repo.join("out").exists());
         match scenario {
@@ -126,8 +112,6 @@ fn a_sparse_index_gets_the_tree_git_stages() -> Result<()> {
         }
         let taken = holds(root.path(), &repo, state.path())?;
         match scenario {
-            // Git cannot expand the index without the trees, which Rexume finds only in a sparse
-            // index that stays so.
             "settings that no longer allow it" => {
                 let note = taken.expect_err("no tree");
                 assert!(note.contains("error: Could not read"), "{note}");
@@ -138,7 +122,6 @@ fn a_sparse_index_gets_the_tree_git_stages() -> Result<()> {
     Ok(())
 }
 
-/// The staged versions of the changed files are copied only up to the limit a snapshot copies.
 #[test]
 fn staged_versions_over_the_limit_are_not_copied() -> Result<()> {
     let (root, state) = (tempfile::tempdir()?, tempfile::tempdir()?);

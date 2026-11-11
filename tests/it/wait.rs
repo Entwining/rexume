@@ -31,7 +31,6 @@ fn a_daemon_starts_as_soon_as_a_server_appears_under_directories_that_did_not_ex
     std::fs::create_dir(dir.path().join("rex")).unwrap();
     std::fs::create_dir(dir.path().join("rex/run")).unwrap();
     std::fs::write(&socket, "").unwrap();
-    // A daemon woken by the directories, not by a timer, starts its client at once.
     wait_until(
         "the daemon to start its client",
         Duration::from_secs(2),

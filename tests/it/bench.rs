@@ -1,6 +1,3 @@
-//! Measurements, not assertions: run with
-//! `cargo test --release --test it bench -- --ignored --nocapture` and read the JSON it prints. `REXUME_BENCH_GOGC` sets `GOGC` for the daemon's `rex do`.
-
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
@@ -13,7 +10,6 @@ use crate::common::{Daemon, Server, claude, db, query, shell_block, shell_pids, 
 const SESSIONS: usize = 20;
 const WAIT: Duration = Duration::from_secs(60);
 
-/// A process's children, by pid and command name.
 fn children(pid: u32) -> Vec<(u32, String)> {
     let output = Command::new("ps")
         .args(["-axo", "pid=,ppid=,comm="])
@@ -30,7 +26,6 @@ fn children(pid: u32) -> Vec<(u32, String)> {
         .collect()
 }
 
-/// A command's stdout; a measurement the command could not make fails the bench.
 fn output(program: &str, args: &[&str]) -> String {
     let output = Command::new(program).args(args).output().unwrap();
     assert!(
@@ -41,7 +36,6 @@ fn output(program: &str, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).into_owned()
 }
 
-/// Resident memory in KiB and CPU time in seconds.
 fn usage(pid: u32) -> (u64, f64) {
     let text = output("ps", &["-o", "rss=,time=", "-p", &pid.to_string()]);
     let fields: Vec<&str> = text.split_whitespace().collect();
@@ -56,8 +50,8 @@ fn usage(pid: u32) -> (u64, f64) {
     (rss.parse().unwrap(), seconds)
 }
 
-/// The physical footprint in KiB, which `top` shows as MEM: the memory the kernel charges to the
-/// process, including compressed pages that resident memory leaves out.
+/// `top`'s MEM is the physical footprint: what the kernel charges the process, including the
+/// compressed pages resident memory leaves out.
 fn footprint(pid: u32) -> u64 {
     let pid = pid.to_string();
     let text = output("top", &["-l", "1", "-pid", &pid, "-stats", "pid,mem"]);
@@ -80,8 +74,6 @@ fn footprint(pid: u32) -> u64 {
     (number.parse::<f64>().unwrap() * kib) as u64
 }
 
-/// Resident memory and physical footprint of each process in KiB, the median of three samples
-/// a second apart.
 fn memory(pids: &[u32]) -> Vec<(u64, u64)> {
     let mut samples: Vec<Vec<(u64, u64)>> = vec![Vec::new(); pids.len()];
     for round in 0..3 {
@@ -107,7 +99,6 @@ fn memory(pids: &[u32]) -> Vec<(u64, u64)> {
         .collect()
 }
 
-/// The idle wakeups `top` counts for a process over `window`.
 fn idle_wakeups(pid: u32, window: Duration) -> Option<i64> {
     let output = Command::new("top")
         .args([
@@ -138,7 +129,6 @@ fn calls(daemon: &Daemon, method: &str) -> usize {
     daemon.log().matches(&format!("call {method}")).count()
 }
 
-/// The server call among the daemon's log `lines` that took longest, and its milliseconds.
 fn slowest_call<'a>(lines: impl Iterator<Item = &'a str>) -> Option<(&'a str, u64)> {
     lines
         .filter_map(|line| {
@@ -180,7 +170,6 @@ fn bench() {
                 "ratio": 0.5, "before": shell_block("b", &cwd), "after": shell_block("c", &cwd) } } } } }] }),
         );
         let session = created["session_id"].as_str().unwrap().to_owned();
-        // Each session's first pane runs a conversation, as its hook would have reported.
         let first = created["initial_windows"][0]["block_ids"][0]
             .as_str()
             .unwrap()
@@ -212,13 +201,11 @@ fn bench() {
         .map(|(pid, _)| *pid)
         .expect("the relay");
 
-    // Idle: CPU time and wakeups of the daemon over 30 s with nothing happening.
     let before = usage(daemon_pid).1;
     let wakeups = idle_wakeups(daemon_pid, Duration::from_secs(30));
     let idle_cpu = usage(daemon_pid).1 - before;
     let memory = memory(&[daemon_pid, adapter, relay]);
 
-    // The daemon's children from here on, through title changes and the restore.
     let seen = Arc::new(Mutex::new(std::collections::BTreeSet::new()));
     let stop = Arc::new(AtomicBool::new(false));
     let sampler = {
@@ -231,7 +218,6 @@ fn bench() {
         })
     };
 
-    // Title changes in a pane cost the daemon no call.
     let views_before = calls(&daemon, "");
     server
         .cli()
@@ -243,8 +229,6 @@ fn bench() {
     std::thread::sleep(Duration::from_secs(3));
     let title_calls = calls(&daemon, "") - views_before;
 
-    // Restore: from the new server's start, which restores the sessions itself, until every
-    // conversation's gate has claimed its pane.
     server.kill();
     wait_until("the epoch to end", WAIT, || {
         query::<String>(

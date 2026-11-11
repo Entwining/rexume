@@ -116,7 +116,6 @@ fn env_keeps_provider_variables_sorted_and_nothing_else() {
     );
 }
 
-/// What process 7 was started with: a launch flag, a provider variable, and `vars`.
 fn launch(vars: &[&str]) -> proc::Launch {
     let mut env = strings(&["CLAUDE_CODE_USE_VERTEX=1"]);
     env.extend(strings(vars));
@@ -126,9 +125,6 @@ fn launch(vars: &[&str]) -> proc::Launch {
     }
 }
 
-/// A declaration counts only for the process `REXUME_LAUNCH_PID` names: without it, the provider
-/// variables are saved as for any launch, and the patch names every key so that the report removes
-/// what an earlier one saved.
 #[test]
 fn a_declaration_not_naming_the_process_leaves_the_provider_variables() {
     let command = r#"REXUME_LAUNCH=["w","--a"]"#;
@@ -146,8 +142,6 @@ fn a_declaration_not_naming_the_process_leaves_the_provider_variables() {
     }
 }
 
-/// The launcher sets the provider again when the declared command runs, so its variables are not
-/// saved beside it.
 #[test]
 fn a_declaration_naming_the_process_gives_the_command_in_place_of_the_provider_variables() {
     let vars = [
@@ -161,8 +155,6 @@ fn a_declaration_naming_the_process_gives_the_command_in_place_of_the_provider_v
     );
 }
 
-/// A declaration of the process's own without a command Rexume can run is an error, so the
-/// conversation keeps the shell instead of reopening by the launcher's default.
 #[test]
 fn a_declaration_naming_the_process_without_a_usable_command_is_an_error() {
     for command in [

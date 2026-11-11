@@ -38,7 +38,6 @@ fn inbox_notices_are_accepted_once_and_delivered_only_from_the_owners_record() -
         assert!(interest.files.contains(&inbox));
         send_due(&mut store, &mut interest)?;
         assert!(!pending.exists(), "accepted notices must not be sent twice");
-        // The owner's answer mentions the token, then the record shows the notice taken in.
         let token = runtime::token("d");
         let (mention, receipt) = (
             answer_line(runtime, "a1", &token),

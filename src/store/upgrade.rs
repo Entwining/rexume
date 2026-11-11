@@ -1,8 +1,3 @@
-//! Brings the database of an earlier released version up to `schema.sql`, inside the transaction
-//! that holds the write lock. Each step rebuilds the tables whose shape changed, and the tables
-//! that reference them, and copies their rows into the new shape; `schema.sql` creates whatever is
-//! missing and sets the version.
-
 use anyhow::{Result, bail};
 use rusqlite::{Transaction, params};
 
@@ -12,11 +7,11 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
     if !(1..SCHEMA_VERSION).contains(&version) {
         bail!("schema {version} has no upgrade");
     }
-    // Version 10 counts the times the daemon found another foreground process in a pane, where a
-    // round recorded Rex's generation of the pane's reports, which also moves on reports about the
-    // same process. A round whose pane's recorded generation has not moved since saw no report,
-    // so it takes the count the upgraded pane starts at; any other can take none. Added before any
-    // step copies `task_round`, which keeps the columns both shapes have.
+    // Before version 10 a round recorded Rex's generation of its pane's reports, which also moves
+    // on reports about the same process. A round whose pane's recorded generation has not moved
+    // since saw no report, so it takes the count the upgraded pane starts at; any other can take
+    // none.
+    // Added before any step copies `task_round`, which keeps only the columns both shapes have.
     tx.execute_batch(
         "ALTER TABLE task_round ADD COLUMN finished_fg_changes INTEGER;
          UPDATE task_round SET finished_fg_changes = 0
@@ -24,7 +19,6 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
                          WHERE t.id = task_round.task_id
                            AND b.fg_generation = task_round.finished_generation);",
     )?;
-    // Read before any step rebuilds `task_round` without the column.
     let blocked = if version >= 5 {
         open_episodes(tx)?
     } else {
@@ -33,12 +27,6 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
     if version < 7 {
         to_v7(tx, version)?;
     }
-    // Version 9 adds the 'queued' and 'dropped' round states to a `CHECK`, which changes only with
-    // its table. Version 10 adds `epoch.host_id` and `epoch.daemon_version`, the pane's
-    // `status_kind`, `status_message`, and `fg_changes`, `task.meta`, `task.worktree` and
-    // `task.worktree_note`, the delivery columns of `request` and `notice`, `blocked_episode`,
-    // which replaces `task_round.blocked_at`, `task_round.finished_fg_changes`, which replaces
-    // `finished_generation`, and `snapshot`, and drops two of `task`'s `CHECK`s.
     rebuild(
         tx,
         &["notice", "request", "task_round", "task", "epoch", "block"],
@@ -64,14 +52,10 @@ fn to_v7(tx: &Transaction, version: i64) -> Result<()> {
     if version < 5 {
         blocked_episodes(tx)?;
     }
-    // Version 7 drops the saved layouts and the restores of sessions Rexume recreated, which no
-    // longer move once the server restores its own sessions, and the pane columns only they read.
     tx.execute_batch("DROP TABLE restore_slot; DROP TABLE restore_op; DROP TABLE session;")?;
-    // Version 6 adds `epoch.error`.
     match version {
         1 => from_v1(tx)?,
         2 => rebuild(tx, &["notice", "request", "task_round", "task"])?,
-        // Version 4 adds `occupant.start_position`.
         3 => {
             return rebuild(
                 tx,
@@ -90,12 +74,11 @@ fn to_v7(tx: &Transaction, version: i64) -> Result<()> {
         _ => return rebuild(tx, &["block"]),
     }
     rebuild(tx, &["occupant", "epoch", "block"])?;
-    // Version 3 also records the server instance of a task's worker, of a pane's occupant, and of
-    // the pane when a round finished. An earlier one's is the instance an epoch was observing at
-    // the time, which is the server `task add` or the report reached. Only an epoch whose end is
-    // known dates it: one the server's end closed, or one the next epoch, on the same instance,
-    // followed. A daemon that died left its epoch open, and the next daemon closed it when it
-    // started, by when another server may have been running.
+    // A row from before version 3 takes the instance an epoch was observing at the time, which is
+    // the server `task add` or the report reached. Only an epoch whose end is known dates it: one
+    // the server's end closed, or one the next epoch, on the same instance, followed. A daemon that
+    // died left its epoch open, and the next daemon closed it when it started, by when another
+    // server may have been running.
     for (table, column, at) in [
         ("task", "worker_instance_id", "created_at"),
         ("occupant", "instance_id", "reported_at"),
@@ -114,9 +97,8 @@ fn to_v7(tx: &Transaction, version: i64) -> Result<()> {
     Ok(())
 }
 
-/// Rebuilds `tables`, each listed before the tables it references, in the shape `schema.sql`
-/// gives them, keeping every row and the columns both shapes have; a new column takes its
-/// default. Dropping a referenced table first would cascade into the rows that reference it.
+/// `tables` lists each table before the tables it references: dropping a referenced table first
+/// would cascade into the rows that reference it.
 fn rebuild(tx: &Transaction, tables: &[&str]) -> Result<()> {
     for table in tables {
         tx.execute_batch(&format!(
@@ -141,14 +123,10 @@ fn rebuild(tx: &Transaction, tables: &[&str]) -> Result<()> {
     Ok(())
 }
 
-/// Version 2 binds a task's worker conversation to the task instead of each round, keeps the task's
-/// position in that record and when it was released, records the turn each round took, and adds
-/// requests. A version 1 task stands as its latest round left it: that round's conversation is the
-/// task's, and its `cursor` the position, an offset in that conversation's record. A task whose
-/// latest round is unbound binds the conversation that reports next and reads its record from the
-/// start, where the answers earlier rounds took stay taken. Acknowledging the latest round released
-/// only a disposable worker; a `--keep-pane` worker took further rounds. Children are dropped
-/// before their parents so that no foreign key cascades.
+/// A task whose latest version 1 round is unbound binds the conversation that reports next and
+/// reads its record from the start, where the answers earlier rounds took stay taken. Acknowledging
+/// the latest round released only a disposable worker; a `--keep-pane` worker took further rounds.
+/// Children are dropped before their parents so that no foreign key cascades.
 fn from_v1(tx: &Transaction) -> Result<()> {
     tx.execute_batch(
         "CREATE TEMP TABLE v1_task AS SELECT * FROM main.task;
@@ -185,9 +163,7 @@ fn from_v1(tx: &Transaction) -> Result<()> {
     Ok(())
 }
 
-/// Version 5 records blocked episodes: a round's `blocked_at`, and a notice's `kind`, so that a
-/// round can have a blocked notice per episode besides its finished one, and a notice's own
-/// `created_at`. Every earlier notice told of a finished round, written when the round finished. A
+/// Every notice before version 5 told of a finished round, written when the round finished. A
 /// blocked round becomes running, with no episode and no notice, so that the daemon judges it again
 /// from its pane's status. The earlier tables take the new values in place, so that the step of
 /// each version copies them with the rest of their rows.
@@ -202,7 +178,6 @@ fn blocked_episodes(tx: &Transaction) -> Result<()> {
     Ok(())
 }
 
-/// The blocked rounds of a version 5 to 9 database, each with when its episode began.
 fn open_episodes(tx: &Transaction) -> Result<Vec<(String, i64, i64)>> {
     Ok(tx
         .prepare("SELECT task_id, round, blocked_at FROM task_round WHERE state = 'blocked'")?
@@ -210,9 +185,8 @@ fn open_episodes(tx: &Transaction) -> Result<Vec<(String, i64, i64)>> {
         .collect::<rusqlite::Result<_>>()?)
 }
 
-/// Gives a round that was blocked before version 10 its open episode, of no known kind or message,
-/// and links the episode's notice, the blocked notice written when it began. The round stays
-/// blocked, so its owner gets no second notice for the same dialog.
+/// A blocked notice before version 10 took the round's `blocked_at` as its `created_at`. The round
+/// stays blocked, so its owner gets no second notice for the same dialog.
 fn carry_episode(tx: &Transaction, task: &str, round: i64, started_at: i64) -> Result<()> {
     let id = new_id();
     tx.execute(

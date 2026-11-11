@@ -9,7 +9,6 @@ use crate::common::{Daemon, Server, query, rex_bin, wait_until};
 
 mod killed;
 
-/// Runs `git` in `dir` with nothing of this machine's own that could sign or run a hook.
 fn git(dir: &Path, args: &[&str]) -> String {
     let output = Command::new("git")
         .args([
@@ -31,7 +30,6 @@ fn git(dir: &Path, args: &[&str]) -> String {
         .to_owned()
 }
 
-/// Every entry under `root` with its size, modification time, and a file's content.
 fn listing(root: &Path) -> BTreeMap<PathBuf, (u64, SystemTime, Option<Vec<u8>>)> {
     let mut found = BTreeMap::new();
     let mut pending = vec![root.to_path_buf()];
@@ -49,9 +47,6 @@ fn listing(root: &Path) -> BTreeMap<PathBuf, (u64, SystemTime, Option<Vec<u8>>)>
     found
 }
 
-/// A worker in a repository: `task add` snapshots the clean tree before the worker writes, the
-/// owner's `task wait` that takes the result snapshots the tree the worker left, which is what
-/// `git add -A` stages, and neither writes in the repository's Git directory.
 #[test]
 #[ignore = "needs a Rex server"]
 fn a_round_is_snapshotted_at_registration_and_at_the_owners_next_command() {
@@ -112,7 +107,6 @@ fn a_round_is_snapshotted_at_registration_and_at_the_owners_next_command() {
         listing(&repo.join(".git")) == git_dir,
         "the Git directory changed"
     );
-    // Read as `docs/cli.md` says, with the snapshots' objects as an alternate.
     let diff = Command::new("git")
         .env(
             "GIT_ALTERNATE_OBJECT_DIRECTORIES",
@@ -134,8 +128,6 @@ fn a_round_is_snapshotted_at_registration_and_at_the_owners_next_command() {
     assert_eq!(after, git(&repo, &["write-tree"]));
 }
 
-/// A registration refused after its snapshot deletes what the snapshot kept, which would
-/// otherwise count against the snapshots' space until the sweep found no task for it.
 #[test]
 #[ignore = "needs a Rex server"]
 fn a_refused_registration_deletes_its_snapshot() {
@@ -162,9 +154,6 @@ fn a_refused_registration_deletes_its_snapshot() {
     );
 }
 
-/// A relative state directory and `TMPDIR` name the directories under the one the command runs
-/// in, though Git runs in the working tree: the snapshot is taken, writes nothing in the
-/// repository, and names its object directory by an absolute path.
 #[test]
 #[ignore = "needs a Rex server"]
 fn relative_directories_are_taken_from_where_the_command_runs() {
@@ -205,9 +194,6 @@ fn relative_directories_are_taken_from_where_the_command_runs() {
     assert!(temporary.is_empty(), "{temporary:?}");
 }
 
-/// Git LFS runs as the environment configures it, while nothing else of Git's in the environment
-/// reaches it: a filter configured only there cleans the file, and the progress file Git LFS
-/// would write is not written.
 #[test]
 #[ignore = "needs a Rex server and Git LFS"]
 fn git_lfs_runs_with_the_configuration_the_environment_gives() {

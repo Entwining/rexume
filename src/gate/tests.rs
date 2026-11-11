@@ -5,12 +5,9 @@ use crate::runtime::claude;
 use crate::task::Follow;
 use crate::task::tests::{record, task_world, turn_record};
 
-/// Lines of a Claude Code turn record, as its turn hooks write them.
 const PROMPT: &str = r#"{"event":"prompt","prompt_id":"p1","token":null}"#;
 const ANSWER: &str = r#"{"event":"stop","prompt_id":"p1","id":"s1","answer":"Done."}"#;
 
-/// A store with restore `r` on instance `i2`, typed into pane `b`, which Rex restored under its
-/// own ID, to continue conversation `c`, whose turn record is `transcript`, as the plan read it now.
 fn typed(dir: &Path, transcript: &Path) -> Result<Store> {
     turn_record(dir, "c", transcript)?;
     let mut store = Store::open(dir)?;
@@ -46,8 +43,6 @@ fn started(store: &Store) -> Result<(String, Option<String>)> {
     )?)
 }
 
-/// The claim runs once, from a typed line or one whose gate was late, keeps the gate's process,
-/// and leaves the pane's record as it was: Rex restored the pane under the ID its lineage is.
 #[test]
 fn a_claim_continues_a_turn_still_open_once() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -83,7 +78,6 @@ fn a_claim_continues_a_turn_still_open_once() -> Result<()> {
     let again = claim(&mut store, "r", "b", 43);
     assert!(again.unwrap_err().to_string().contains("has run already"));
 
-    // A line run before the daemon typed it, as from another pane's history, claims nothing.
     let other = tempfile::tempdir()?;
     let mut store = typed(other.path(), &transcript)?;
     store
@@ -107,8 +101,6 @@ fn a_turn_that_ended_after_the_plan_reopens_without_the_prompt() -> Result<()> {
     Ok(())
 }
 
-/// Work a Stop hook made Claude Code go on with after the end its record shows continues while
-/// the record shows nothing after what the plan read.
 #[test]
 fn work_after_a_turn_end_the_plan_read_continues() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -126,7 +118,6 @@ fn a_conversation_reported_elsewhere_since_the_plan_starts_nothing() -> Result<(
     let transcript = dir.path().join("t.jsonl");
     std::fs::write(&transcript, format!("{PROMPT}\n"))?;
     let mut store = typed(dir.path(), &transcript)?;
-    // Reported in the same millisecond as the plan: counted as later.
     store.conn().execute(
         "INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env,
            reported_at) VALUES ('other', 'claude', 'c', 1, 0, 100)",
@@ -174,9 +165,6 @@ fn a_reopen_command_takes_its_variables_as_assignments() -> Result<()> {
     Ok(())
 }
 
-/// A turn the server's end cut off goes on under the continuation prompt the restore sends, so
-/// the round that waited for it, also one waiting for a request the turn took in, takes the
-/// answer the continuation finishes with.
 #[test]
 fn the_round_a_cut_off_turn_left_takes_the_answer_its_continuation_finishes() -> Result<()> {
     for request in [None, Some("[rexume q]")] {

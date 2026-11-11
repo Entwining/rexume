@@ -27,8 +27,6 @@ fn open_creates_the_schema_once_and_reopens_without_writing() -> Result<()> {
     Ok(())
 }
 
-/// The state directory, each parent it needed, and the directories under it are created for their
-/// user alone, whether a turn hook or the database creates them first.
 #[test]
 fn the_state_directory_is_created_for_its_user_alone() -> Result<()> {
     use std::os::unix::fs::PermissionsExt;
@@ -87,7 +85,6 @@ fn bind_live_is_idempotent_and_refuses_a_second_lineage() -> Result<()> {
     bind_live(&tx, "i2", "block:new", "block:old")?;
     assert!(bind_live(&tx, "i2", "block:new", "block:other").is_err());
     assert!(bind_live(&tx, "i2", "block:another", "block:old").is_err());
-    // The same live ID on another instance is a different resource.
     bind_live(&tx, "i3", "block:new", "block:third")?;
     Ok(())
 }
@@ -103,10 +100,6 @@ fn ensure_lineage_keeps_a_binding_made_by_a_gate() -> Result<()> {
     Ok(())
 }
 
-/// Rex's own restore brings sessions and panes back under their IDs. A pane it restored keeps the
-/// lineage its ID had on the latest earlier instance that bound it, unless another resource of the
-/// instance holds that lineage already, as a copy an earlier version restored beside Rex's holds
-/// the original's.
 #[test]
 fn ensure_lineage_keeps_the_lineage_of_an_id_the_server_brought_back() -> Result<()> {
     let (_dir, mut store) = store();
@@ -127,7 +120,6 @@ fn ensure_lineage_keeps_the_lineage_of_an_id_the_server_brought_back() -> Result
     Ok(())
 }
 
-/// An earlier instance's pane goes unless an open task names it, and so do its live IDs.
 #[test]
 fn sweep_keeps_the_pane_an_open_task_still_names() -> Result<()> {
     let (_dir, mut store) = store();
@@ -155,8 +147,6 @@ fn sweep_keeps_the_pane_an_open_task_still_names() -> Result<()> {
     Ok(())
 }
 
-/// A pane the sweep forgets takes its occupant along, so the conversation's row can expire; an
-/// occupant reported on the current instance before the daemon has seen its pane stays.
 #[test]
 fn sweep_forgets_the_occupant_of_a_pane_it_forgets() -> Result<()> {
     let (_dir, mut store) = store();
@@ -225,8 +215,6 @@ fn settle_returns_after_another_connections_commit() -> Result<()> {
     writer.join().unwrap()
 }
 
-/// A turn record this tool keeps goes once nothing has written to it for the retention period
-/// and no conversation of its runtime names it.
 #[test]
 fn sweep_records_deletes_only_old_records_of_forgotten_conversations() -> Result<()> {
     let (dir, store) = store();
@@ -256,7 +244,6 @@ fn sweep_records_deletes_only_old_records_of_forgotten_conversations() -> Result
     }
     sweep_records(&store)?;
     assert_eq!(left(Runtime::Claude)?, ["known.jsonl", "recent.jsonl"]);
-    // A Claude Code conversation of the same ID keeps no omp record.
     assert_eq!(left(Runtime::Omp)?, ["recent.jsonl"]);
     Ok(())
 }

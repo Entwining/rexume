@@ -1,10 +1,3 @@
-//! The Claude Code plugin through which notices and requests reach a conversation as the user's own
-//! prompts (`runtime::claude::PLUGIN`). Its files are Rexume's own directory, which is also the
-//! marketplace Claude Code installs it from; a directory marketplace is read in place, so the
-//! daemon updates the plugin by rewriting the files. Registering and removing it go through
-//! `claude plugin`: Claude Code keeps an installed plugin in a registry of its own besides the
-//! settings, and only its commands remove it from there.
-
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -18,11 +11,9 @@ use crate::runtime::claude;
 pub(super) const KEY: &str = "claude_plugin";
 const MARKETPLACE: &str = "rexume";
 const PLUGIN: &str = "rexume@rexume";
-/// Where Claude Code's settings name the marketplace and the plugin once they are registered.
 const MARKETPLACE_KEY: &str = "/extraKnownMarketplaces/rexume";
 const PLUGIN_KEY: &str = "/enabledPlugins/rexume@rexume";
 
-/// The marketplace and the plugin are one directory, whose files are these.
 const FILES: [(&str, &str); 4] = [
     (
         ".claude-plugin/marketplace.json",
@@ -46,9 +37,8 @@ fn dir(home: &Path) -> PathBuf {
     home.join(".local/share/rexume/claude-plugin")
 }
 
-/// Writes the plugin's files and registers what Claude Code's settings lack: the marketplace, then
-/// the plugin. A plugin the settings name is left as it is, since `claude plugin install` would
-/// enable one the user disabled.
+/// A plugin the settings name is not installed again: `claude plugin install` would enable one the
+/// user disabled.
 pub(super) fn install(home: &Path, path: &str) -> Result<Outcome> {
     if !home.join(".claude").is_dir() {
         return Ok(("skipped", Some("`~/.claude` does not exist".to_owned())));
@@ -84,8 +74,6 @@ pub(super) fn install(home: &Path, path: &str) -> Result<Outcome> {
     Ok((outcome, note))
 }
 
-/// Removes the plugin and its marketplace from Claude Code, then the directory. Returns `removed`
-/// or `absent`.
 pub(super) fn uninstall(home: &Path, path: &str) -> Result<&'static str> {
     let settings = read_json(&Targets::new(home).claude)?;
     let mut removed = false;
@@ -107,9 +95,7 @@ pub(super) fn uninstall(home: &Path, path: &str) -> Result<&'static str> {
     Ok(if removed { "removed" } else { "absent" })
 }
 
-/// Rewrites the plugin's files when they differ from this version's, so that an upgrade reaches
-/// Claude Code without another install. A missing directory stays missing, so that uninstall stays
-/// final. Returns `updated`, `unchanged`, or `absent`.
+/// Claude Code reads a directory marketplace in place, so rewriting the files updates the plugin.
 pub fn refresh(home: &Path) -> Result<&'static str> {
     let dir = dir(home);
     if !dir.is_dir() {
@@ -118,8 +104,6 @@ pub fn refresh(home: &Path) -> Result<&'static str> {
     write_files(&dir)
 }
 
-/// Returns `created` when the directory was new, `updated` when any file changed, and otherwise
-/// `unchanged`.
 fn write_files(dir: &Path) -> Result<&'static str> {
     let existed = dir.is_dir();
     let mut changed = false;
@@ -133,8 +117,8 @@ fn write_files(dir: &Path) -> Result<&'static str> {
     })
 }
 
-/// Runs `claude plugin ARGS` for `home` with `PATH` as given, or returns `None` when no `claude` is
-/// there.
+/// Claude Code keeps an installed plugin in a registry of its own besides the settings, which only
+/// `claude plugin` changes.
 fn run_claude(home: &Path, path: &str, args: &[&str]) -> Result<Option<()>> {
     let output = Command::new("claude")
         .arg("plugin")

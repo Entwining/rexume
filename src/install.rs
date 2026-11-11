@@ -1,11 +1,3 @@
-//! `rexume install` and `rexume uninstall`: the hooks of Claude Code and Codex, the Claude Code
-//! plugin, the Pi and omp extensions, the stub of Rexume's skill, and the job that runs the daemon,
-//! a LaunchAgent on macOS and a systemd user service on Linux. The daemon also refreshes the
-//! plugin, the extensions, and the stub, and adds Claude Code's turn hooks. Each entry is
-//! recognized by its identity (the hook's command, the plugin's name, the `Written by` line of the
-//! extensions and the stub, and the job's paths), so install changes only what is missing or
-//! different, and uninstall removes only these entries.
-
 mod claude_plugin;
 mod extension;
 mod file;
@@ -31,16 +23,14 @@ use extension::{OMP_EXTENSION, PI_EXTENSION};
 use file::{read_json, refresh_file, remove_file, write, write_json};
 pub use skill::refresh_skills;
 
-/// What the job runs.
 pub struct Install {
     pub exe: PathBuf,
     pub rex: PathBuf,
     pub server: String,
-    /// The daemon's `PATH`, install's own, so that it starts the same `codex` the user does.
+    /// Install's own `PATH`, so that the daemon starts the same `codex` the user does.
     pub path: String,
 }
 
-/// Where install writes, under one home directory.
 struct Targets {
     claude: PathBuf,
     codex: PathBuf,
@@ -55,7 +45,6 @@ impl Targets {
     }
 }
 
-/// Runs one command of the service manager, failing with what it printed when it fails.
 fn run_manager(program: &str, args: &[&str]) -> Result<String> {
     let output = Command::new(program)
         .args(args)
@@ -64,7 +53,6 @@ fn run_manager(program: &str, args: &[&str]) -> Result<String> {
     check(&format!("{program} {}", args.join(" ")), &output)
 }
 
-/// What `command` printed, or a failure with what it printed when it exited unsuccessfully.
 fn check(command: &str, output: &Output) -> Result<String> {
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
@@ -76,12 +64,9 @@ fn check(command: &str, output: &Output) -> Result<String> {
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-/// The events Rexume's Claude Code hook runs on: the session start, which records the pane's
-/// conversation, and the turn events, which write its turn record (`runtime::claude::turn_event`).
 const CLAUDE_EVENTS: [&str; 4] = ["SessionStart", "UserPromptSubmit", "Stop", "StopFailure"];
 const CODEX_EVENTS: [&str; 1] = ["SessionStart"];
 
-/// What install or uninstall did to one entry, and why when that needs saying.
 type Outcome = (&'static str, Option<String>);
 
 fn outcomes<const N: usize>(entries: [(&str, Outcome); N]) -> Value {
@@ -110,7 +95,7 @@ pub fn install(home: &Path, install: &Install) -> Result<Value> {
     let pi = PI_EXTENSION.install(home)?;
     let omp = OMP_EXTENSION.install(home)?;
     let daemon = job::install(install, home)?;
-    // After the job, which a stub that cannot be written must not keep from running.
+    // After the job, so that a stub that cannot be written does not keep the daemon from running.
     let [agents_skill, claude_skill] = skill::install(home)?;
     // Last: notices and requests reach Claude Code without the plugin, so a failing `claude`
     // leaves only the plugin for the next install.
@@ -129,7 +114,6 @@ pub fn install(home: &Path, install: &Install) -> Result<Value> {
     Ok(out)
 }
 
-/// `path` is the `PATH` through which uninstall finds `claude`.
 pub fn uninstall(home: &Path, path: &str) -> Result<Value> {
     let targets = Targets::new(home);
     // The daemon rewrites the plugin, the extensions, and the stub when it starts, so it is stopped
@@ -155,11 +139,6 @@ pub fn uninstall(home: &Path, path: &str) -> Result<Value> {
     ]))
 }
 
-/// Adds the Claude Code turn hooks an earlier install did not write, once Rexume's session-start
-/// hook is there, so that an upgrade records turns without another install: each runs the
-/// session-start hook's own command, which may name rexume by its path. Settings without that hook
-/// are left as they are, so that uninstall stays final. Returns `created`, `unchanged`, or
-/// `absent`.
 pub fn refresh_claude_hooks(home: &Path) -> Result<&'static str> {
     let path = Targets::new(home).claude;
     let settings = read_json(&path)?;
@@ -170,8 +149,6 @@ pub fn refresh_claude_hooks(home: &Path) -> Result<&'static str> {
     Ok(add_hook(&path, "claude", &CLAUDE_EVENTS[1..], &hook)?.0)
 }
 
-/// Claude Code turn events missing Rexume's hook, but only when its session-start hook is present:
-/// uninstall removes that hook too, so its absence is not an incomplete installation.
 pub fn missing_claude_hooks(home: &Path) -> Result<Vec<&'static str>> {
     let settings = read_json(&Targets::new(home).claude)?;
     if ours(&settings, "SessionStart", "claude").is_none() {
@@ -184,7 +161,6 @@ pub fn missing_claude_hooks(home: &Path) -> Result<Vec<&'static str>> {
         .collect())
 }
 
-/// Rexume's hook for `runtime` in any group of `event`.
 fn ours<'a>(settings: &'a Value, event: &str, runtime: &str) -> Option<&'a Value> {
     settings
         .get("hooks")?
@@ -196,7 +172,6 @@ fn ours<'a>(settings: &'a Value, event: &str, runtime: &str) -> Option<&'a Value
         .find(|h| is_ours(h, runtime))
 }
 
-/// Whether a hook runs `rexume report <runtime>`, by whatever path to rexume.
 fn is_ours(hook: &Value, runtime: &str) -> bool {
     let Some(argv) = hook
         .get("command")
@@ -209,9 +184,7 @@ fn is_ours(hook: &Value, runtime: &str) -> bool {
         if Path::new(exe).file_name().is_some_and(|n| n == "rexume") && report == "report" && r == runtime)
 }
 
-/// Appends the hook in a group of its own to each event that lacks it: Codex keys a hook's approval
-/// by its position, so existing groups are never rewritten. Returns `created` when it appended
-/// any.
+/// Appends the hook in a group of its own: Codex keys a hook's approval by its position.
 fn add_hook(path: &Path, runtime: &str, events: &[&str], hook: &Value) -> Result<Outcome> {
     if !path.parent().is_some_and(Path::is_dir) {
         let dir = path.parent().and_then(Path::file_name).unwrap_or_default();

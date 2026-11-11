@@ -5,8 +5,6 @@ use crate::task::acknowledge::abandon_round;
 use crate::task::end_left_to_server;
 use crate::task::tests::{PROMPT, record, task_world};
 
-/// Starting a round with none open acknowledges every earlier round, also those a queued round
-/// started behind without acknowledging, and drops their notices not yet sent.
 #[test]
 fn starting_a_round_acknowledges_every_earlier_round() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -41,9 +39,6 @@ fn starting_a_round_acknowledges_every_earlier_round() -> Result<()> {
     Ok(())
 }
 
-/// A queued round belongs to the server instance its request was sent on, also once it starts on a
-/// later one: when that instance restores the worker's pane with a shell, the round ends with the
-/// rest of the earlier instance's rounds.
 #[test]
 fn a_queued_round_started_on_a_later_instance_ends_with_its_pane() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -62,7 +57,6 @@ fn a_queued_round_started_on_a_later_instance_ends_with_its_pane() -> Result<()>
     Ok(())
 }
 
-/// A pane takes a new task only once its task is released and the daemon is not closing it.
 #[test]
 fn a_pane_takes_no_second_task_until_its_task_is_released() -> Result<()> {
     let dir = tempfile::tempdir()?;

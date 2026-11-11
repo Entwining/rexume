@@ -1,5 +1,3 @@
-//! What bounds a snapshot: its deadline, the paths it takes, and what it reads of Git's output.
-
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
@@ -9,8 +7,6 @@ use super::{fake_lfs, left, lfs_repository, repository, write};
 use crate::git::run::Git;
 use crate::git::{BUDGET, Capture, PATH_LIMIT, worktree};
 
-/// A snapshot still running at its deadline ends with every process it started, and leaves
-/// nothing behind.
 #[test]
 fn a_snapshot_ends_with_its_processes_at_its_deadline() -> Result<()> {
     let (root, tools, state) = (
@@ -37,7 +33,6 @@ fn a_snapshot_ends_with_its_processes_at_its_deadline() -> Result<()> {
     Ok(())
 }
 
-/// More changed and untracked paths than a snapshot takes get none.
 #[test]
 fn a_snapshot_takes_no_more_than_its_paths() -> Result<()> {
     let (root, state) = (tempfile::tempdir()?, tempfile::tempdir()?);
@@ -57,7 +52,6 @@ fn a_snapshot_takes_no_more_than_its_paths() -> Result<()> {
     Ok(())
 }
 
-/// A note quotes only the beginning of a command's standard error, however much it prints.
 #[test]
 fn a_note_quotes_the_beginning_of_what_a_command_printed() -> Result<()> {
     let mut git = Git::new(BUDGET)?;

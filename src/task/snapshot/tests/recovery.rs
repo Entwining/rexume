@@ -1,16 +1,9 @@
-//! What captures leave when they fail or are killed, and who finishes it: the task's next capture,
-//! a refused registration, and the sweep.
-
 use std::fs::Permissions;
 use std::os::unix::fs::PermissionsExt;
 use std::time::SystemTime;
 
 use super::*;
 
-/// The sweep deletes the snapshot directory of a task the database no longer has once nothing was
-/// written to it for `RETENTION` and no capture runs in it, and keeps a task's own and a recent
-/// one, as a registration still running leaves; it deletes the rows of `snapshot_space` of every
-/// task without a directory, and finishes what killed captures left in every directory.
 #[test]
 fn the_sweep_deletes_only_old_directories_of_tasks_gone() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -53,7 +46,6 @@ fn the_sweep_deletes_only_old_directories_of_tasks_gone() -> Result<()> {
         ["objects", "running.lock"]
     );
     assert_eq!(counted(&store)?, ["orphaned", "registering", "t"]);
-    // A `task add` killed while its Git children ran: deleted once they end.
     drop(orphaned);
     let snapshots = dir.path().join("snapshots");
     finished(&mut store, sweep, |_| {
@@ -63,8 +55,6 @@ fn the_sweep_deletes_only_old_directories_of_tasks_gone() -> Result<()> {
     Ok(())
 }
 
-/// A capture whose objects fail to move once their space is recorded as kept gets no snapshot and
-/// leaves them in its own directory with their row, and the task's next capture moves them.
 #[test]
 fn objects_that_failed_to_move_are_moved_by_the_next_capture() -> Result<()> {
     let (dir, root) = (tempfile::tempdir()?, tempfile::tempdir()?);
@@ -106,7 +96,6 @@ fn objects_that_failed_to_move_are_moved_by_the_next_capture() -> Result<()> {
     Ok(())
 }
 
-/// The total size of the files under `dir`.
 fn size(dir: &Path) -> Result<u64> {
     let mut total = 0;
     for entry in std::fs::read_dir(dir)? {
@@ -120,9 +109,6 @@ fn size(dir: &Path) -> Result<u64> {
     Ok(total)
 }
 
-/// A capture that fails after Git wrote objects and cannot delete them deletes its temporary
-/// directory and keeps its reservation, which then counts what it left, and its lock file, so that
-/// the objects count until the task's next capture deletes them.
 #[test]
 fn objects_a_failed_capture_cannot_delete_keep_their_reservation() -> Result<()> {
     let (dir, root, tools) = (
@@ -177,9 +163,6 @@ fn objects_a_failed_capture_cannot_delete_keep_their_reservation() -> Result<()>
     Ok(())
 }
 
-/// A registration refused after its snapshot finishes what its captures left before it deletes
-/// the task's directory and then its rows, so that a temporary directory a capture failed to
-/// delete goes with them; a directory a capture still runs in stays, with its rows.
 #[test]
 fn a_refused_registration_deletes_what_its_captures_left() -> Result<()> {
     let (dir, temp) = (tempfile::tempdir()?, tempfile::tempdir()?);

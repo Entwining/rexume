@@ -11,26 +11,21 @@ use crate::task::queue::Queued;
 use crate::task::register::{Kind, Started, start_round};
 use crate::task::tests::{PROMPT, record, task_world};
 
-/// The lock file of capture `capture` of task `task`, which the returned file holds while it lives,
-/// as a running capture's processes hold it.
 pub(super) fn running(state_dir: &Path, task: &str, capture: &str) -> Result<File> {
     let lock = idle(state_dir, task, capture)?;
     lock.try_lock()?;
     Ok(lock)
 }
 
-/// The lock file of capture `capture` of task `task` that no process holds, as a killed capture
-/// leaves it.
 pub(super) fn idle(state_dir: &Path, task: &str, capture: &str) -> Result<File> {
     let dir = task_dir(state_dir, task);
     std::fs::create_dir_all(&dir)?;
     Ok(File::create(dir.join(format!("{capture}.lock")))?)
 }
 
-/// Runs `finish`, which finishes the captures whose locks it can take, until `done`. A process
-/// another test starts holds the files open in this one until it runs its program, so a lock this
-/// test held stays held a while after, and a capture's lock, which its processes inherit, until
-/// they exit; `finish` leaves a capture whose lock is held as one still running.
+/// Polls: a process another test starts keeps this test's files open until it runs its program,
+/// so a lock this test dropped stays held a while, and a capture's processes hold its lock until
+/// they exit.
 pub(super) fn finished(
     store: &mut Store,
     mut finish: impl FnMut(&mut Store) -> Result<()>,
@@ -47,9 +42,6 @@ pub(super) fn finished(
     }
 }
 
-/// What capture `capture` of task `task` left when it was killed: its lock file, naming a
-/// temporary directory in `temp` that holds a copy of the index, and `objects` in its objects
-/// directory. Returns the temporary directory.
 pub(super) fn killed(
     state_dir: &Path,
     temp: &Path,
@@ -69,7 +61,6 @@ pub(super) fn killed(
     Ok(temp)
 }
 
-/// The names in `dir`, sorted.
 pub(super) fn names(dir: &Path) -> Result<Vec<String>> {
     let mut names: Vec<String> = std::fs::read_dir(dir)?
         .map(|entry| Ok(entry?.file_name().to_string_lossy().into_owned()))
@@ -86,7 +77,6 @@ fn taken(tree: &str, created_at: i64) -> Taken {
     }
 }
 
-/// Each snapshot row of task `t`, as (round, side, tree).
 fn rows(conn: &Connection) -> Result<Vec<(i64, String, Option<String>)>> {
     Ok(conn
         .prepare("SELECT round, side, tree FROM snapshot WHERE task_id = 't' ORDER BY round, side")?
@@ -102,9 +92,6 @@ fn finished_at(conn: &Connection, round: i64) -> Result<i64> {
     )?)
 }
 
-/// A round's `after` is a snapshot that began once it had finished, recorded once: an unfinished
-/// round and a snapshot that began before the round finished leave none, and a later snapshot
-/// does not replace it.
 #[test]
 fn an_after_is_recorded_once_from_a_snapshot_begun_after_the_round_finished() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -122,8 +109,6 @@ fn an_after_is_recorded_once_from_a_snapshot_begun_after_the_round_finished() ->
     Ok(())
 }
 
-/// A round a queued round followed is not the latest once it finishes, so no snapshot is its
-/// `after`: its worker went on with the queued round before any command ran.
 #[test]
 fn a_round_a_queued_round_followed_gets_no_after() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -140,9 +125,6 @@ fn a_round_a_queued_round_followed_gets_no_after() -> Result<()> {
     Ok(())
 }
 
-/// The snapshot a command took before starting a round is the latest round's `after` and the new
-/// round's `before`; a round the command queued gets no `before`, as it starts when no command
-/// runs.
 #[test]
 fn a_round_started_at_once_gets_a_before_and_a_queued_one_none() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -171,9 +153,6 @@ fn a_round_started_at_once_gets_a_before_and_a_queued_one_none() -> Result<()> {
     Ok(())
 }
 
-/// A round a command starts at once needs a snapshot begun after the latest round finished: with
-/// none, or with one begun before, as when the round finished while the command took it, nothing
-/// is written and the command is told to take one.
 #[test]
 fn a_round_starts_at_once_only_with_a_snapshot_begun_after_the_latest_finished() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -207,8 +186,6 @@ fn a_round_starts_at_once_only_with_a_snapshot_begun_after_the_latest_finished()
     Ok(())
 }
 
-/// TASK's `snapshot`: a task without a working tree says why, and a side is `null` until a
-/// snapshot is taken for it, or a failed one with its note.
 #[test]
 fn task_shows_the_working_tree_and_each_side_taken() -> Result<()> {
     let dir = tempfile::tempdir()?;

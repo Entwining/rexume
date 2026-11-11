@@ -8,7 +8,6 @@ use crate::task::follow::Follow;
 use crate::task::gone::block_gone;
 use crate::task::tests::{ANSWER, PROMPT, record, round, task_world};
 
-/// The worker's pane `b` reports `status`, last at `at`.
 fn report(store: &Store, status: &str, at: i64) -> Result<()> {
     store.conn().execute(
         "UPDATE block SET status = ?1, status_at = ?2 WHERE lineage = 'b'",
@@ -17,12 +16,10 @@ fn report(store: &Store, status: &str, at: i64) -> Result<()> {
     Ok(())
 }
 
-/// A report old enough that its grace has passed.
 fn long_ago() -> i64 {
     now_ms() - GRACE_MS - 1
 }
 
-/// Task `t`'s notices in the order they were written, with kind, state, and note.
 fn notices(store: &Store) -> Result<Vec<(String, String, Option<String>)>> {
     Ok(store
         .conn()
@@ -43,7 +40,6 @@ fn ended() -> (String, String, Option<String>) {
     )
 }
 
-/// When the round's open episode began.
 fn open_since(store: &Store) -> Result<Option<i64>> {
     Ok(store
         .conn()
@@ -55,7 +51,6 @@ fn open_since(store: &Store) -> Result<Option<i64>> {
         .optional()?)
 }
 
-/// Why each of the round's episodes ended, in the order they began.
 fn ends(store: &Store) -> Result<Vec<Option<String>>> {
     Ok(store
         .conn()
@@ -68,7 +63,6 @@ fn ended_by(reason: &str) -> Option<String> {
     Some(reason.into())
 }
 
-/// Whether every superseded notice records when it was superseded.
 fn stamped(store: &Store) -> Result<bool> {
     Ok(store.conn().query_row(
         "SELECT NOT EXISTS (SELECT 1 FROM notice WHERE state = 'superseded' AND superseded_at IS NULL)",
@@ -77,7 +71,6 @@ fn stamped(store: &Store) -> Result<bool> {
     )?)
 }
 
-/// When task `t`'s notice of `kind` was written.
 fn written_at(store: &Store, kind: &str) -> Result<i64> {
     Ok(store.conn().query_row(
         "SELECT created_at FROM notice WHERE kind = ?1",
@@ -96,7 +89,6 @@ fn a_round_blocks_once_its_pane_has_reported_blocked_for_the_grace() -> Result<(
     follow.pass(&mut store, None)?;
     assert_eq!(round(&store)?.0, "running");
     assert!(follow.deadline().is_some());
-    // A dialog answered within the grace makes no episode, and the next one starts the grace again.
     report(&store, "working", now_ms())?;
     follow.pass(&mut store, None)?;
     report(&store, "blocked", now_ms())?;
@@ -163,9 +155,6 @@ fn an_episode_that_ends_drops_only_an_unsent_notice_and_the_next_tells_again() -
     Ok(())
 }
 
-/// A status from another process in the pane, such as a program started there after the worker
-/// exited or another conversation that took the pane over, is that program's, so it neither begins
-/// an episode nor keeps the worker's.
 #[test]
 fn a_block_another_process_in_the_pane_reports_is_not_the_worker_s() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -201,9 +190,6 @@ fn a_block_another_process_in_the_pane_reports_is_not_the_worker_s() -> Result<(
     Ok(())
 }
 
-/// The worker's process and its dialog go with the server, so a pane last recorded on an earlier
-/// instance neither keeps an episode nor begins one, while a daemon started again on the same
-/// instance keeps it.
 #[test]
 fn an_episode_does_not_outlive_its_server_instance() -> Result<()> {
     for (instance, kept) in [("i1", true), ("i2", false)] {
@@ -238,8 +224,6 @@ fn an_episode_does_not_outlive_its_server_instance() -> Result<()> {
     Ok(())
 }
 
-/// A round that finishes while blocked, by its answer or by its pane closing, leaves its finished
-/// notice as the only one to send.
 #[test]
 fn a_round_that_finishes_while_blocked_ends_its_episode() -> Result<()> {
     for closes in [false, true] {

@@ -1,12 +1,7 @@
-//! The guide Rexume's skill gives agents, which `rexume skill show` prints. The skill install
-//! writes is a stub that runs that command, so the guide an agent follows always describes the
-//! installed binary.
-
 use anyhow::{Context, Result};
 use serde::Deserialize;
 use serde_json::{Value, json};
 
-/// The skill's own `SKILL.md`, which install writes as the stub.
 pub const STUB: &str = include_str!("../skills/rexume/SKILL.md");
 const GUIDE: &str = include_str!("../skills/rexume/guide.md");
 const AGENTS: &str = include_str!("../skills/rexume/agents.md");
@@ -35,7 +30,6 @@ pub fn text(topic: Option<Topic>) -> Result<String> {
     })
 }
 
-/// The Rex version and guide hash that the guide's last finished review used, for `skill status`.
 pub fn status() -> Result<Value> {
     #[derive(Deserialize)]
     struct Review {
@@ -51,8 +45,6 @@ pub fn status() -> Result<Value> {
     }))
 }
 
-/// `docs/cli.md` up to its first section, which gives the exit codes, JSON, times, and state
-/// directory the task section relies on, followed by that section.
 fn task_contract() -> Result<String> {
     let mut starts: Vec<usize> = CLI.match_indices("\n## ").map(|(i, _)| i + 1).collect();
     starts.insert(0, 0);

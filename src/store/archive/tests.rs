@@ -11,7 +11,6 @@ fn store() -> (tempfile::TempDir, Store) {
     (dir, store)
 }
 
-/// A time before the retention cutoff.
 fn old() -> i64 {
     now_ms() - i64::try_from(RETENTION.as_millis()).unwrap() - 1
 }
@@ -31,9 +30,6 @@ fn archived(store: &Store, entity_type: &str, id: &str) -> Result<(i64, i64, Val
     Ok((version, archived_at, serde_json::from_str(&data)?))
 }
 
-/// Three tasks of one owner: `old` with every round finished and acknowledged, or finished if
-/// never acknowledged, before the cutoff; `open` with an unfinished round; `recent` with a round
-/// acknowledged since the cutoff. An old dropped round does not let either of the last two go.
 fn tasks(store: &Store) -> Result<()> {
     store.conn().execute_batch(&format!(
         "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
@@ -68,8 +64,6 @@ fn tasks(store: &Store) -> Result<()> {
     Ok(())
 }
 
-/// A task whose rounds are all old becomes one archive row holding its rows as they stood, in the
-/// transaction that deletes them; a task still open or recently acknowledged stays as it is.
 #[test]
 fn sweep_archives_a_task_once_all_its_rounds_are_old() -> Result<()> {
     let (_dir, mut store) = store();
@@ -104,7 +98,6 @@ fn sweep_archives_a_task_once_all_its_rounds_are_old() -> Result<()> {
     Ok(())
 }
 
-/// A task the sweep listed but which took a new round before its transaction is left as it is.
 #[test]
 fn a_task_no_longer_expired_is_not_archived() -> Result<()> {
     let (_dir, mut store) = store();
@@ -123,10 +116,6 @@ fn a_task_no_longer_expired_is_not_archived() -> Result<()> {
     Ok(())
 }
 
-/// An earlier instance's old restore is archived, its plan as the text the column holds, and so is
-/// an old epoch of an instance no pane is recorded on; the current instance's restore, a recent
-/// one, an epoch whose instance still has a pane, and a recent epoch stay. A conversation goes once
-/// nothing names it.
 #[test]
 fn sweep_archives_old_restores_and_epochs_of_earlier_instances() -> Result<()> {
     let (_dir, mut store) = store();
@@ -181,8 +170,6 @@ fn sweep_archives_old_restores_and_epochs_of_earlier_instances() -> Result<()> {
     Ok(())
 }
 
-/// A task whose document is over the limit stays in use, and so does the conversation it names,
-/// while the same sweep archives another task and forgets that one's owner.
 #[test]
 fn a_document_over_the_limit_stays_in_use() -> Result<()> {
     let (_dir, mut store) = store();

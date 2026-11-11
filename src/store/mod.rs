@@ -1,7 +1,3 @@
-//! The state database. Every writer (the daemon, hooks, gates, and task commands) is a short
-//! transaction through this module, so related records change together and no writer needs the
-//! daemon to be running. No transaction waits on Rex, a socket, or a file.
-
 pub mod archive;
 #[cfg(test)]
 mod tests;
@@ -21,12 +17,8 @@ use rusqlite::{
 use crate::runtime::Runtime;
 
 const SCHEMA: &str = include_str!("schema.sql");
-/// The `user_version` that `schema.sql` sets.
 pub const SCHEMA_VERSION: i64 = 10;
-/// The `application_id` that `schema.sql` sets: 'rexu' in ASCII.
 const APPLICATION_ID: i64 = 0x7265_7875;
-/// How long finished restores, tasks, and epochs stay in their tables before the sweep archives
-/// them, and unused conversations and turn records before it deletes them.
 pub(crate) const RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 
 pub fn default_dir() -> Result<PathBuf> {
@@ -34,10 +26,8 @@ pub fn default_dir() -> Result<PathBuf> {
     Ok(home.join(".local/state/rexume"))
 }
 
-/// Creates `dir` and each missing parent for its user alone; an existing directory keeps its mode.
-/// Rexume creates every directory in the state directory here, and the Pi and omp extensions with
-/// the same mode, whichever needs it first, so none is ever open to other users (`docs/design.md`,
-/// "What is saved").
+/// The Pi and omp extensions create their directories in the state directory with this mode too,
+/// whichever needs one first.
 pub fn create_private_dir(dir: &Path) -> Result<()> {
     DirBuilder::new()
         .recursive(true)
@@ -52,7 +42,6 @@ pub fn now_ms() -> i64 {
         .map_or(0, |d| i64::try_from(d.as_millis()).unwrap_or(i64::MAX))
 }
 
-/// A time-ordered ID for records this tool creates (RFC 9562 UUIDv7).
 pub fn new_id() -> String {
     uuid::Uuid::now_v7().to_string()
 }
@@ -63,7 +52,6 @@ pub struct Store {
 }
 
 impl Store {
-    /// Opens the database in `dir`, creating both on first use.
     pub fn open(dir: &Path) -> Result<Self> {
         create_private_dir(dir)?;
         let path = dir.join("state.db");
@@ -96,7 +84,6 @@ impl Store {
         })
     }
 
-    /// Opens an existing database without writing to it or creating anything.
     pub fn open_read_only(dir: &Path) -> Result<Connection> {
         let path = dir.join("state.db");
         if !path.exists() {
@@ -120,8 +107,6 @@ impl Store {
         &self.dir
     }
 
-    /// A write transaction that takes the write lock up front, so what it reads cannot change
-    /// under another writer before it writes.
     pub fn write(&mut self) -> Result<Transaction<'_>> {
         Ok(self
             .conn
@@ -141,7 +126,6 @@ impl Store {
         Ok(())
     }
 
-    /// Changes whenever another connection commits, and not for this one's own commits.
     pub fn data_version(&self) -> Result<i64> {
         Ok(self
             .conn
@@ -152,14 +136,10 @@ impl Store {
 #[derive(Debug, PartialEq, Eq)]
 enum Found {
     Current,
-    /// A new, empty file.
     Empty,
-    /// The schema of an earlier released version, which `upgrade` brings up to this one.
     Older(i64),
 }
 
-/// Which schema the database holds. Anything but this version's, an earlier one's, or none is an
-/// error, since writing to it could lose another program's or version's data.
 fn check_version(conn: &Connection, path: &Path) -> Result<Found> {
     let pragma = |name| conn.pragma_query_value(None, name, |row| row.get::<_, i64>(0));
     let (application_id, version) = (pragma("application_id")?, pragma("user_version")?);
@@ -205,8 +185,6 @@ pub fn live_of(conn: &Connection, instance: &str, lineage: &str) -> Result<Optio
         .optional()?)
 }
 
-/// Binds a live ID to a lineage. Binding it again to the same lineage changes nothing; a
-/// different lineage, or a lineage already bound to another live ID, is an error.
 pub fn bind_live(tx: &Transaction, instance: &str, live_id: &str, lineage: &str) -> Result<()> {
     tx.execute(
         "INSERT INTO live (instance_id, live_id, lineage) VALUES (?1, ?2, ?3)
@@ -223,12 +201,6 @@ pub fn bind_live(tx: &Transaction, instance: &str, live_id: &str, lineage: &str)
     }
 }
 
-/// The lineage of a live resource, bound the first time it is seen on this instance. A resource
-/// the server brought back under the ID it had on an earlier instance, as Rex's own restore does,
-/// keeps the lineage that ID was last bound to, until the sweep forgets the earlier instances; any
-/// other takes its own ID. A lineage another resource on this instance holds already, as a copy
-/// that an earlier version restored beside Rex's own may, is not taken twice: the resource gets a
-/// new one.
 pub fn ensure_lineage(tx: &Transaction, instance: &str, live_id: &str) -> Result<String> {
     if let Some(lineage) = lineage_of(tx, instance, live_id)? {
         return Ok(lineage);
@@ -256,7 +228,6 @@ pub fn ensure_lineage(tx: &Transaction, instance: &str, live_id: &str) -> Result
     Ok(lineage)
 }
 
-/// Forgets what the server said about a pane and the conversation that ran in it.
 pub fn forget_block(tx: &Transaction, lineage: &str) -> Result<()> {
     tx.execute("DELETE FROM block WHERE lineage = ?1", params![lineage])?;
     tx.execute(
@@ -266,10 +237,6 @@ pub fn forget_block(tx: &Transaction, lineage: &str) -> Result<()> {
     Ok(())
 }
 
-/// Deletes the turn records this tool keeps (`Runtime::records`) of conversations the sweep
-/// forgot, once nothing has written to them for `RETENTION`; a record whose conversation never
-/// reported is one too. Run after the sweep commits, since no file is changed inside a
-/// transaction. A file that cannot be deleted stays for the next sweep.
 pub fn sweep_records(store: &Store) -> Result<()> {
     let cutoff = SystemTime::now() - RETENTION;
     let mut known = store.conn().prepare(
@@ -305,17 +272,13 @@ pub fn sweep_records(store: &Store) -> Result<()> {
     Ok(())
 }
 
-/// Deletes the rows of earlier instances that nothing refers to any more. Run by the daemon once
-/// the current instance's baseline is saved, before its restores; `archive::sweep` removes the
-/// finished records after them.
 pub fn sweep(tx: &Transaction, instance: &str) -> Result<()> {
     tx.execute(
         "DELETE FROM live WHERE instance_id != ?1",
         params![instance],
     )?;
     // The baseline has moved every pane this instance shows to it, so an earlier instance's pane
-    // was closed, or not saved, while the daemon was not observing. A task's worker pane stays, and
-    // so does an occupant reported on this instance before its pane's row.
+    // was closed, or not saved, while the daemon was not observing.
     tx.execute(
         "DELETE FROM block WHERE instance_id != ?1
            AND lineage NOT IN (SELECT worker_lineage FROM task WHERE pane_state != 'closed')",

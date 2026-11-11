@@ -14,7 +14,6 @@ use crate::restore;
 use crate::runtime::claude;
 use crate::store::Store;
 
-/// Lines of a Claude Code turn record, as its turn hooks write them.
 pub(crate) const PROMPT: &str = r#"{"event":"prompt","prompt_id":"p1","token":null}"#;
 pub(crate) const ANSWER: &str = r#"{"event":"stop","prompt_id":"p1","id":"m1","answer":"Done."}"#;
 pub(super) const PROMPT_2: &str = r#"{"event":"prompt","prompt_id":"p2","token":null}"#;
@@ -30,8 +29,6 @@ pub(crate) fn record(lines: &[&str]) -> Result<tempfile::NamedTempFile> {
     Ok(file)
 }
 
-/// Makes `file` the turn record of Claude Code conversation `native_id` in state directory `dir`,
-/// where its turn hooks would write it.
 pub(crate) fn turn_record(dir: &Path, native_id: &str, file: &Path) -> Result<()> {
     let path = claude::record(dir, native_id);
     std::fs::create_dir_all(claude::records(dir))?;
@@ -39,9 +36,6 @@ pub(crate) fn turn_record(dir: &Path, native_id: &str, file: &Path) -> Result<()
     Ok(())
 }
 
-/// The owner `claude/owner` in pane `a` and task `t` on its first round, running in pane `b`,
-/// whose occupant is `claude/worker` with turn record `transcript` and foreground pid 100. Without
-/// `result_file` the round follows that conversation; with it the task is a run of pid 100.
 pub(crate) fn task_world(
     dir: &Path,
     transcript: &Path,
@@ -111,7 +105,6 @@ fn a_new_round_needs_a_finished_one_on_an_unreleased_interactive_pane() -> Resul
     assert!(error(attempt("", &next)).contains("is running"));
     let finished = "UPDATE task_round SET state = 'completed', result = 'Done.', result_ref = 'm1',
                       finished_at = 1;";
-    // Another task on the same pane holds it for a close.
     assert!(
         error(attempt(
             &format!(
@@ -127,7 +120,6 @@ fn a_new_round_needs_a_finished_one_on_an_unreleased_interactive_pane() -> Resul
                   UPDATE task SET pane_state = 'closed', pane_closed_at = 2";
     assert!(error(attempt(closed, &next)).contains("no turn is unread"));
     assert!(error(attempt("", &Kind::Request("go"))).contains("is closed"));
-    // A closed pane's record still holds turns no round took.
     assert_eq!(attempt("", &Kind::Next { unread: Some(1) })?, 2);
     assert!(
         error(attempt(
@@ -165,7 +157,6 @@ fn a_new_round_needs_a_finished_one_on_an_unreleased_interactive_pane() -> Resul
     Ok(())
 }
 
-/// Turns the worker finishes after its task was released are no round's, so none is unread.
 #[test]
 fn a_released_task_has_no_unread_turns() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -182,8 +173,6 @@ fn a_released_task_has_no_unread_turns() -> Result<()> {
     Ok(())
 }
 
-/// A task registers on an instance unless the daemon started to observe another one after the
-/// instance answered: servers run one after another, so that one came later.
 #[test]
 fn a_task_on_an_instance_a_later_one_followed_is_refused() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -192,14 +181,11 @@ fn a_task_on_an_instance_a_later_one_followed_is_refused() -> Result<()> {
         "INSERT INTO epoch (instance_id, started_at) VALUES ('i1', 0), ('i1', 2), ('i2', 5)",
     )?;
     assert!(refuse_stopped(store.conn(), "i1", 3).is_err());
-    // Never observed before the later one, as when no daemon ran.
     assert!(refuse_stopped(store.conn(), "i0", 3).is_err());
     refuse_stopped(store.conn(), "i2", 3)?;
     refuse_stopped(store.conn(), "i3", 6)?;
     Ok(())
 }
-/// A round no record can finish, here one whose worker never reported, ends with its pane; a pane
-/// kept earlier keeps why it was kept, and a close put off is no longer pending.
 #[test]
 fn a_closed_worker_pane_ends_its_unbound_round_and_every_task_on_it() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -243,10 +229,7 @@ fn a_closed_worker_pane_ends_its_unbound_round_and_every_task_on_it() -> Result<
     Ok(())
 }
 
-/// The statements every daemon pass runs, and the one every pane status event runs, reach their
-/// rows through an index, apart from scans of `task` and `notice`, which retention bounds; the ones
-/// on unfinished rounds, and on one kind of a round's notice, use exactly the partial index their
-/// predicate names, which only a predicate matching its own text can use.
+/// Retention bounds `task` and `notice`, so their scans are allowed.
 #[test]
 fn every_pass_statement_uses_an_index() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -304,7 +287,6 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
             details.push(row.get::<_, String>(3)?);
         }
         for detail in &details {
-            // A `SELECT` without `FROM`, such as `SELECT EXISTS (...)`, scans no table.
             let Some(scanned) = detail
                 .strip_prefix("SCAN ")
                 .filter(|scanned| *scanned != "CONSTANT ROW")

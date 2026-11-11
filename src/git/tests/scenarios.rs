@@ -5,8 +5,6 @@ use anyhow::{Context, Result, anyhow};
 
 use super::{git, holds, repository, script, write};
 
-/// Each way a repository can stand that makes Git write in it while it reads or updates an index,
-/// set up on top of `repository`. Returns the working tree to snapshot.
 fn arrange(scenario: &str, root: &Path, repo: &Path) -> Result<PathBuf> {
     match scenario {
         "every kind of change" => {
@@ -75,9 +73,6 @@ fn arrange(scenario: &str, root: &Path, repo: &Path) -> Result<PathBuf> {
     Ok(repo.to_path_buf())
 }
 
-/// A snapshot changes nothing in the repository, its Git directory included, down to modification
-/// times, and its tree is the one `git add -A` then `git write-tree` record. All it leaves in its
-/// directory is objects, and no file Git LFS cleaned.
 #[test]
 fn a_snapshot_is_what_git_add_stages_and_leaves_the_repository_as_it_was() -> Result<()> {
     for scenario in [

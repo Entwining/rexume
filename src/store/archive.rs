@@ -1,8 +1,3 @@
-//! Keeps what the retention sweep removes: each finished task, restore, and epoch past
-//! `RETENTION` becomes one `archive` row, inserted in the transaction that deletes its rows
-//! (`docs/design.md`, "What is saved"). `export` describes an entity still in use with the same
-//! document.
-
 #[cfg(test)]
 mod tests;
 
@@ -13,9 +8,6 @@ use serde_json::{Map, Value};
 
 use super::{RETENTION, SCHEMA_VERSION, Store};
 
-/// The largest document the sweep archives, in bytes of JSON; a larger entity stays in use. Larger
-/// archives more entities, but the daemon holds the whole document in memory and writes it in one
-/// transaction.
 const DOCUMENT_LIMIT: usize = 64 << 20;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -28,7 +20,6 @@ pub enum EntityType {
 impl EntityType {
     pub const ALL: [Self; 3] = [Self::Restore, Self::Task, Self::Epoch];
 
-    /// The entity's table, whose name is also its `entity_type`.
     pub fn table(self) -> &'static str {
         match self {
             Self::Restore => "restore",
@@ -37,14 +28,9 @@ impl EntityType {
         }
     }
 
-    /// The rows of the entity's table that the sweep archives, with the current instance as `?1`
-    /// and the retention cutoff as `?2`. A task's notices do not extend its retention
-    /// (`docs/design.md`, "What is saved").
     fn expired(self) -> &'static str {
         match self {
             Self::Restore => "instance_id != ?1 AND created_at < ?2",
-            // Every round finished, and was acknowledged before the cutoff, or finished before it
-            // if never acknowledged.
             Self::Task => {
                 "(SELECT COUNT(finished_at) = COUNT(*) AND MAX(COALESCE(acked_at, finished_at)) < ?2
                   FROM task_round WHERE task_id = task.id)"
@@ -55,8 +41,6 @@ impl EntityType {
     }
 }
 
-/// The entity as `archive.data` holds it: its row and, for a task, the rows of its rounds, blocked
-/// episodes, requests, notices, and snapshots, keyed by table name.
 pub fn document(conn: &Connection, entity_type: EntityType, id: &str) -> Result<Value> {
     let table = entity_type.table();
     let own = rows(conn, &format!("SELECT * FROM {table} WHERE id = ?1"), id)?
@@ -78,7 +62,6 @@ pub fn document(conn: &Connection, entity_type: EntityType, id: &str) -> Result<
     Ok(Value::Object(document))
 }
 
-/// Each row `sql` returns for `id`, as an object of its columns by name.
 fn rows(conn: &Connection, sql: &str, id: &str) -> Result<Vec<Value>> {
     let mut statement = conn.prepare_cached(sql)?;
     let names: Vec<String> = statement.column_names().map(str::to_owned).collect();
@@ -102,12 +85,6 @@ fn rows(conn: &Connection, sql: &str, id: &str) -> Result<Vec<Value>> {
     Ok(found)
 }
 
-/// Archives every expired task, restore, and epoch, each in a transaction of its own, so that one
-/// task's results do not hold the write lock, or grow the write-ahead log, through every other's;
-/// then deletes the conversations nothing refers to any more. The daemon runs it when it starts
-/// observing an instance, after its first restores, so what the sweep finds is what expired since
-/// the previous epoch began. An entity whose document exceeds `DOCUMENT_LIMIT` stays in use, with
-/// a warning at each sweep.
 pub fn sweep(store: &mut Store, instance: &str, now: i64) -> Result<()> {
     let cutoff = now - i64::try_from(RETENTION.as_millis())?;
     for entity_type in EntityType::ALL {
@@ -120,6 +97,8 @@ pub fn sweep(store: &mut Store, instance: &str, now: i64) -> Result<()> {
             ))?
             .query_map(params![instance, cutoff], |row| row.get(0))?
             .collect::<rusqlite::Result<_>>()?;
+        // A transaction per entity, so that one task's results do not hold the write lock, or
+        // grow the write-ahead log, through every other's.
         for id in ids {
             let tx = store.write()?;
             let too_large = archive(&tx, entity_type, &id, instance, cutoff, now)?;
@@ -155,10 +134,7 @@ pub fn sweep(store: &mut Store, instance: &str, now: i64) -> Result<()> {
     Ok(())
 }
 
-/// Archives one entity the sweep listed, if it is still expired: a task may have taken a new
-/// round since. Deleting its row deletes a task's rounds, blocked episodes, requests, notices, and
-/// snapshots with it. Returns the size of a document too large to archive, whose entity stays as
-/// it is.
+/// The sweep lists entities before this transaction, and a task may have taken a new round since.
 fn archive(
     tx: &Transaction,
     entity_type: EntityType,

@@ -1,6 +1,3 @@
-//! What a round's worker showed: its pane as last recorded and a non-interactive run's result
-//! file, read before the transaction that judges the round.
-
 use std::fs::File;
 use std::io::{ErrorKind, Read};
 
@@ -9,36 +6,26 @@ use rusqlite::{Connection, OptionalExtension, params};
 
 use crate::runtime::{Tracker, Turn};
 
-/// The largest result file a non-interactive round saves.
 const RESULT_LIMIT: u64 = 1 << 20;
 
-/// What a round's worker showed, read before the transaction that judges it.
 pub(super) enum Evidence {
-    /// What an interactive worker's record shows for the round, or why it could not be read.
     Turn(Result<Reading, String>),
-    /// A non-interactive run's pane and, once the pane showed it exited 0, its result file: the
-    /// text, or why there is none. Only the daemon writes `block`, so the pane read before the
-    /// transaction is the one inside it.
+    /// Only the daemon writes `block`, so `pane`, read before the transaction, holds inside it.
     Run {
         pane: Pane,
         file: Option<Result<String, String>>,
     },
 }
 
-/// A turn a round can take, with the task's position once it is taken.
 pub(super) struct Take {
     pub turn: Turn,
     pub start: u64,
     pub position: u64,
 }
 
-/// An interactive worker's record as the round's tracker read it.
 pub(super) struct Reading {
-    /// The round's turn, once one finished.
     pub chosen: Option<Take>,
-    /// The record shows the round's request received.
     pub received: bool,
-    /// The record was replaced or cut.
     pub replaced: bool,
 }
 
@@ -57,7 +44,6 @@ impl Reading {
     }
 }
 
-/// Reads a non-interactive run's result file, bounded by `RESULT_LIMIT`.
 pub(super) fn read_result(path: &str) -> Result<String, String> {
     let file = match File::open(path) {
         Ok(file) => file,
@@ -89,20 +75,14 @@ pub(super) struct Pane {
     pub status_at: Option<i64>,
     pub fg_pid: Option<i64>,
     pub last_exit: Option<i64>,
-    /// Recorded on the server instance the daemon observes last. A row of an earlier instance
-    /// keeps what that instance last showed, which restore planning reads.
     pub current: bool,
 }
 
-/// The process a non-interactive run is: the pane's foreground when the task was registered, on
-/// the server instance it ran on, `None` for a task from before version 3 that no epoch dated.
 pub(super) struct RunProcess<'a> {
     pub instance: Option<&'a str>,
     pub pid: Option<i64>,
 }
 
-/// Whether process `pid` on `instance` was registered in pane `lineage` as a non-interactive run.
-/// A run registered before the pane had a foreground process may be any process there.
 pub fn is_run(conn: &Connection, lineage: &str, instance: &str, pid: i64) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM task WHERE worker_lineage = ?1 AND result_file IS NOT NULL
@@ -113,7 +93,6 @@ pub fn is_run(conn: &Connection, lineage: &str, instance: &str, pid: i64) -> Res
     )?)
 }
 
-/// One pane's record, for `Pane::read`.
 pub(super) const PANE: &str = "SELECT b.instance_id, b.status, b.status_kind, b.status_message,
     b.status_pid, b.status_at, b.fg_pid, b.last_exit, b.instance_id IS e.instance_id
   FROM block b LEFT JOIN epoch e ON e.id = (SELECT MAX(id) FROM epoch)
@@ -140,13 +119,10 @@ impl Pane {
             .unwrap_or_default())
     }
 
-    /// Whether a non-interactive run has ended with exit status 0.
     pub fn exited_zero(&self, run: &RunProcess) -> bool {
         self.ended(run) && self.last_exit == Some(0)
     }
 
-    /// Whether the record shows the run's process gone. A record of another instance shows
-    /// nothing of the run.
     pub fn ended(&self, run: &RunProcess) -> bool {
         run.instance
             .is_none_or(|instance| self.instance_id.as_deref() == Some(instance))

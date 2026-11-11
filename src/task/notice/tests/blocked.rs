@@ -1,8 +1,6 @@
 use super::*;
 use crate::task::EndReason;
 
-/// `notice_world` with round 1 blocked since long ago and `d` its blocked notice, the worker's pane
-/// `b` known on the observed instance as `block:w`.
 fn blocked_world(dir: &Path, transcript: &Path, state: &str) -> Result<(Store, UnixListener)> {
     let (store, listener) = notice_world(dir, transcript, state)?;
     store.conn().execute_batch(
@@ -53,7 +51,6 @@ fn a_blocked_notice_waits_for_a_live_waiter_and_goes_once_otherwise() -> Result<
     ] {
         assert!(sent.contains(part), "{part}: {sent}");
     }
-    // The program's own text is the worker's, which the owner would take in as a prompt.
     assert!(!sent.contains("Run the migration"), "{sent}");
     assert!(!sent.contains("task ack"), "{sent}");
     Ok(())
@@ -69,8 +66,6 @@ fn a_blocked_notice_left_mid_send_stays_unknown_and_unsent() -> Result<()> {
     Ok(())
 }
 
-/// A blocked notice whose send fails before anything leaves returns to `pending` if its episode
-/// continues, or becomes `superseded` if the episode ended during the send.
 #[test]
 fn a_failed_send_keeps_a_blocked_notice_only_while_its_episode_goes_on() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -100,8 +95,6 @@ fn a_failed_send_keeps_a_blocked_notice_only_while_its_episode_goes_on() -> Resu
     Ok(())
 }
 
-/// Once its episode ends, a blocked notice tells the owner nothing it can act on: it leaves the list
-/// and stays `sent`, also while a later episode of the same round lasts.
 #[test]
 fn a_blocked_notice_is_listed_only_while_its_episode_lasts() -> Result<()> {
     let dir = tempfile::tempdir()?;

@@ -1,6 +1,3 @@
-//! `task wait`: the owner taking a round's result, or learning that its worker is blocked, in its
-//! own turn.
-
 use std::path::Path;
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
@@ -16,23 +13,17 @@ use crate::event::{Queue, Token};
 use crate::proc;
 use crate::store::{Store, now_ms};
 
-/// Why a `task wait` returned, as decided in the transaction it returned from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Returned {
     Finished,
-    /// It reports a blocked episode of the round's worker.
     Blocked,
     TimedOut,
 }
 
-/// Every commit writes the write-ahead log, so a change to it is when the round may have moved.
 const WAL: Token = 0;
-/// The exit of the waiter this one stands behind, which writes nothing to the log.
+/// A waiter that dies writes nothing to the log, so the one behind it watches its exit.
 const HOLDER_EXIT: Token = 1;
 
-/// Waits in the owner's turn for the task's open or latest round to finish or its worker to block,
-/// and returns that round, with `timed_out`, and why it returned. The round is read after that
-/// decision, so it may have moved on since.
 pub fn wait(state_dir: &Path, id: &str, timeout: Duration) -> Result<(Value, Returned)> {
     let until = Instant::now() + timeout;
     let mut store = Store::open(state_dir)?;
@@ -54,8 +45,6 @@ pub fn wait(state_dir: &Path, id: &str, timeout: Duration) -> Result<(Value, Ret
     Ok((task, returned))
 }
 
-/// Waits until `until` for the round to finish or for an episode to report, standing towards the
-/// round as each look decides. `wal` is the database's write-ahead log.
 pub(super) fn wait_for(
     store: &mut Store,
     wal: &Path,
@@ -68,16 +57,16 @@ pub(super) fn wait_for(
     queue.file(wal, WAL)?;
     let mut waiter = None;
     loop {
-        // Whether the holder lives is read from `/proc` on Linux, so it is checked before the
-        // write lock, and the transaction replaces only the holder found gone.
+        // `proc::alive` reads `/proc` on Linux, so it runs before the write transaction, which
+        // then replaces only the holder found gone here.
         let seen: Option<i64> = store.conn().query_row(
             "SELECT waiter_pid FROM task_round WHERE task_id = ?1 AND round = ?2",
             params![id, round],
             |row| row.get(0),
         )?;
         let gone = seen.filter(|holder| *holder != pid && !proc::alive(*holder));
-        // Also before the first look, as a commit that wrote the log before the watch existed
-        // fires nothing. Taking the write lock settles the store, as `Store::settle` does.
+        // The write lock settles the store as `Store::settle` does, which the first look needs
+        // too: a commit that wrote the log before the watch existed fires nothing.
         let tx = store.write()?;
         let now = stand(&tx, id, round, pid, gone, waiter.as_ref())?;
         let returned = match returns(&tx, id, round, &now)? {
@@ -98,7 +87,6 @@ pub(super) fn wait_for(
             Some(Waiter::Behind { holder, .. }) => Some(holder),
             _ => None,
         };
-        // A holder that exited before its watch fires nothing, so the next look is at once.
         let unwatched = match now {
             Waiter::Behind { holder, .. } if watched != Some(holder) => {
                 !queue.exit(holder, HOLDER_EXIT)?
@@ -116,21 +104,15 @@ pub(super) fn wait_for(
     }
 }
 
-/// How a `task wait` stands towards its round.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(super) enum Waiter {
-    /// The round's registered waiter, which takes the round's notices itself, so the daemon leaves
-    /// them to it.
     Registered,
-    /// Behind the waiter `holder`, not found gone, having seen the round's open `episode` when it
-    /// came to stand behind one.
     Behind {
         holder: i64,
         episode: Option<String>,
     },
 }
 
-/// A round's waiter, state, and open blocked episode.
 static ROUND: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT r.waiter_pid, r.state,
@@ -146,9 +128,6 @@ fn round(tx: &Transaction, id: &str, round: i64) -> Result<(Option<i64>, String,
     })?)
 }
 
-/// Registers `pid` as the round's waiter when the round has none or still has `gone`, a holder
-/// found exited before the transaction, and otherwise stands behind the holder it has, whose exit
-/// or return wakes the wait. `before` is how it stood at its previous look.
 pub(super) fn stand(
     tx: &Transaction,
     id: &str,
@@ -177,9 +156,6 @@ pub(super) fn stand(
     }
 }
 
-/// Whether the wait returns, and why: the round finished, or the registered waiter took a blocked
-/// notice still pending, which tells of an episode that nobody reported to the owner yet. A waiter
-/// behind another returns on an episode that began after it came to stand behind it.
 pub(super) fn returns(
     tx: &Transaction,
     id: &str,

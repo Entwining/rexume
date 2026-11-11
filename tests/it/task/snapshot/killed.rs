@@ -1,7 +1,3 @@
-//! A command killed while it takes a snapshot leaves nothing a later one does not delete: a signal
-//! that stops it waits until it has ended the snapshot's processes and deleted what they wrote,
-//! and after `SIGKILL` the next capture deletes what is left once the snapshot's processes exit.
-
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::process::ExitStatusExt;
 use std::path::{Path, PathBuf};
@@ -15,8 +11,8 @@ use crate::common::{Daemon, Server, alive, query, wait_until};
 use crate::task::run::owner_and_run;
 use crate::task::{WAIT, run_task, task_command};
 
-/// A repository whose `big.bin` changed, which a program Git takes for Git LFS's filter cleans:
-/// it records its process ID in `pid` and waits while `hold` exists, then fails the file.
+/// Rexume takes the fake for Git LFS's filter by its name and arguments, and gives it storage in
+/// the capture's temporary directory.
 fn held_repository(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
     let (repo, tools) = (dir.join("repo"), dir.join("tools"));
     std::fs::create_dir_all(&repo).unwrap();
@@ -48,8 +44,6 @@ fn held_repository(dir: &Path) -> (PathBuf, PathBuf, PathBuf) {
     (repo, pid, hold)
 }
 
-/// Starts `task add` for `worker`, with `tmp` as its temporary directory, and returns it once
-/// the filter it runs has recorded `pid`.
 fn add_until_filtering(
     server: &Server,
     state: &Path,
@@ -75,8 +69,6 @@ fn add_until_filtering(
     (child, filter)
 }
 
-/// The entries of each task's snapshot directory but its objects: the captures' lock files and
-/// objects directories.
 fn scratch(state: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     for task in std::fs::read_dir(state.join("snapshots")).unwrap() {
@@ -90,7 +82,6 @@ fn scratch(state: &Path) -> Vec<PathBuf> {
     found
 }
 
-/// The captures' temporary directories left in `tmp`, which hold Git LFS's storage.
 fn temporary(tmp: &Path) -> Vec<PathBuf> {
     std::fs::read_dir(tmp)
         .unwrap()

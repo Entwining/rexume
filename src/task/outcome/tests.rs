@@ -12,7 +12,6 @@ use crate::task::unread;
 
 const ANSWER_3: &str = r#"{"event":"stop","prompt_id":"p3","id":"m3","answer":"Sent."}"#;
 
-/// Each round of task `t` in order, with its state and result.
 fn rounds(store: &Store) -> Result<Vec<(String, Option<String>)>> {
     Ok(store
         .conn()
@@ -58,7 +57,6 @@ fn a_finished_turn_is_taken_though_another_has_started_after_it() -> Result<()> 
     let mut store = task_world(dir.path(), transcript.path(), None)?;
     Follow::default().pass(&mut store, None)?;
     assert_eq!(rounds(&store)?, [completed("Done.")]);
-    // The position stops where the open turn starts, so the next round can take it.
     let position: i64 = store
         .conn()
         .query_row("SELECT position FROM task", [], |row| row.get(0))?;
@@ -73,7 +71,6 @@ fn a_turn_that_finished_between_rounds_is_the_next_rounds() -> Result<()> {
     let mut store = task_world(dir.path(), transcript.path(), None)?;
     let mut follow = Follow::default();
     follow.pass(&mut store, None)?;
-    // The worker's final report finishes while no round is open.
     writeln!(transcript, "{PROMPT_2}\n{ANSWER_2}")?;
     transcript.flush()?;
     follow.pass(&mut store, None)?;
@@ -91,7 +88,6 @@ fn a_request_round_takes_only_the_turn_that_took_its_request_in() -> Result<()> 
     let mut follow = Follow::default();
     follow.pass(&mut store, None)?;
     start(&mut store, &Kind::Request("go"))?;
-    // The user asks the worker something before the request arrives.
     writeln!(transcript, "{PROMPT_2}\n{ANSWER_2}")?;
     transcript.flush()?;
     follow.pass(&mut store, None)?;
@@ -111,7 +107,6 @@ fn a_request_round_takes_only_the_turn_that_took_its_request_in() -> Result<()> 
         .conn()
         .query_row("SELECT state FROM request", [], |row| row.get(0))?;
     assert_eq!(request, "delivered");
-    // The user's turn is left for `task next`, after which the position passes every turn.
     assert_eq!(unread(store.conn(), store.dir(), "t")?, Some(1));
     start(&mut store, &NEXT)?;
     follow.pass(&mut store, None)?;
@@ -124,10 +119,6 @@ fn a_request_round_takes_only_the_turn_that_took_its_request_in() -> Result<()> 
     Ok(())
 }
 
-/// Claude Code's `UserPromptSubmit` hook runs before another hook can reject the prompt, which
-/// then gets no `Stop`. A rejected request is not received, and an unrelated turn after it is
-/// not its answer: the request's round ends as cancelled once the worker takes other input, and
-/// that input's turn is unread.
 #[test]
 fn a_rejected_request_is_not_received_and_its_round_ends_cancelled() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -166,8 +157,6 @@ fn a_rejected_request_is_not_received_and_its_round_ends_cancelled() -> Result<(
     Ok(())
 }
 
-/// A Claude Code worker's turn record does not depend on the transcript its session start
-/// reported, so a pane that closes after its turn finished leaves the round that turn.
 #[test]
 fn a_closed_pane_leaves_a_claude_round_its_turn_without_a_reported_transcript() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -205,8 +194,6 @@ fn a_replaced_record_fails_the_round_instead_of_reading_it_again() -> Result<()>
     Ok(())
 }
 
-/// A pane that closes before its round's turn ended ends the round as `worker_closed`; its record
-/// still gives the turns no round took.
 #[test]
 fn a_closed_pane_ends_its_round_from_its_record() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -236,8 +223,6 @@ fn a_closed_pane_ends_its_round_from_its_record() -> Result<()> {
     Ok(())
 }
 
-/// A round upgraded from version 1 left the position inside the turn it took and recorded no
-/// start; its answer's ID still names that turn, which is not another.
 #[test]
 fn the_rest_of_an_answer_a_round_took_is_not_another_turn() -> Result<()> {
     let dir = tempfile::tempdir()?;

@@ -1,6 +1,3 @@
-//! The daemon's side of tasks: every pass reads the current state again, so any wake-up, whatever
-//! caused it, brings every task up to date.
-
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::LazyLock;
@@ -15,27 +12,21 @@ use crate::rex::Rex;
 use crate::runtime::{Receipt, Runtime, Taken, Tracker};
 use crate::store::{Store, now_ms};
 
-/// What the daemon asks to be woken for: changes to these files and these processes' exits.
 #[derive(Default)]
 pub struct Interest {
     pub files: HashSet<PathBuf>,
     pub pids: HashSet<i64>,
 }
 
-/// Moves tasks along from the daemon's event loop.
 #[derive(Default)]
 pub struct Follow {
     trackers: HashMap<(String, i64), Tracker>,
-    /// One reader per owner record, shared by every notice sent to it.
     receipts: HashMap<PathBuf, Receipt>,
     next_notice: Option<Instant>,
-    /// When a round that only time can settle is read again.
     next_round: Option<Instant>,
-    /// Released workers whose close was tried since the server last changed a session's view.
     tried: HashSet<String>,
 }
 
-/// The rounds that have not finished, with the record each follows and its request.
 pub(super) static OPEN_ROUNDS: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT r.task_id, r.round, t.result_file, t.worker_lineage, t.worker_pid, t.created_at,
@@ -48,7 +39,6 @@ pub(super) static OPEN_ROUNDS: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// The turns a task's rounds took, by where each starts and by its answer.
 pub(super) const TAKEN: &str = "SELECT turn_start, result_ref FROM task_round WHERE task_id = ?1";
 
 struct OpenRound {
@@ -63,7 +53,6 @@ struct OpenRound {
     native_id: Option<String>,
     transcript: Option<String>,
     position: i64,
-    /// The request's ID, and whether it was recorded as received.
     request: Option<(String, bool)>,
 }
 
@@ -72,13 +61,10 @@ impl Follow {
         self.next_notice.into_iter().chain(self.next_round).min()
     }
 
-    /// The pane that has focus may have changed, so closes that were put off are tried again.
     pub fn view_changed(&mut self) {
         self.tried.clear();
     }
 
-    /// Brings every task up to date. `connected` is the daemon's connection and the server
-    /// instance it observes; without one, no pane is closed.
     pub fn pass(
         &mut self,
         store: &mut Store,
@@ -102,8 +88,6 @@ impl Follow {
         Ok(interest)
     }
 
-    /// Settles the rounds of earlier server instances before `instance` restores their panes: a
-    /// round the saved records show ending ends that way, and a run still open was cut off.
     pub fn instance_started(&mut self, store: &mut Store, instance: &str) -> Result<()> {
         self.evaluate_open(store, &mut Interest::default())?;
         let tx = store.write()?;
@@ -112,8 +96,6 @@ impl Follow {
         Ok(())
     }
 
-    /// A worker's record that cannot be read fails its own round, so it holds back neither the
-    /// other rounds nor what runs after them, such as a restore.
     fn evaluate_open(&mut self, store: &mut Store, interest: &mut Interest) -> Result<()> {
         let open: Vec<OpenRound> = store
             .conn()
@@ -144,7 +126,6 @@ impl Follow {
             }
             let shown = match &round.result_file {
                 Some(file) => {
-                    // Read only once the run exited 0, and before the transaction.
                     let pane = Pane::read(store.conn(), &round.worker)?;
                     let run = RunProcess {
                         instance: round.worker_instance.as_deref(),
@@ -230,11 +211,6 @@ pub(super) fn taken(conn: &Connection, task: &str) -> Result<Taken> {
     Ok(taken)
 }
 
-/// Binds a task registered before its worker reported to the conversation that reported from the
-/// pane since the task was registered, or that runs as its foreground program, from the report's
-/// start position: an interactive worker's, whose rounds take its turns, and a run's, which only
-/// names it. The binding is made once; a conversation that takes over the pane later is not the
-/// task's.
 fn bind(store: &mut Store, round: &mut OpenRound) -> Result<()> {
     let found: Option<(Runtime, String, Option<String>, i64)> = store
         .conn()
@@ -252,7 +228,6 @@ fn bind(store: &mut Store, round: &mut OpenRound) -> Result<()> {
     let Some((runtime, native_id, transcript, position)) = found else {
         return Ok(());
     };
-    // The update binds only a task still unbound, so a binding made since the read stands.
     let tx = store.write()?;
     let bound = tx.execute(
         "UPDATE task SET worker_runtime = ?1, worker_native_id = ?2, position = ?3

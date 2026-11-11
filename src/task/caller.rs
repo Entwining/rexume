@@ -1,6 +1,3 @@
-//! The conversation a task command runs for, found through the pane the command runs in, and what
-//! ties a task to it: the conversation owns the task, and the worker runs on its machine.
-
 use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde_json::{Value, json};
@@ -12,7 +9,6 @@ use crate::store::{Store, lineage_of};
 pub(super) struct Caller {
     pub(super) rex: Rex,
     pub(super) instance: String,
-    /// The machine and account the caller's server runs as.
     host: Option<String>,
     pub(super) block: String,
     pub(super) lineage: String,
@@ -20,8 +16,8 @@ pub(super) struct Caller {
     pub(super) native_id: String,
 }
 
-/// The conversation in the calling pane. Inside an agent's sandbox the process tree cannot be
-/// read, so the pane's recorded conversation is the caller.
+/// Inside an agent's sandbox the process tree cannot be read, so the pane's recorded conversation
+/// is the caller.
 pub(super) fn caller(store: &Store) -> Result<Caller> {
     let block = std::env::var_os("REX_BLOCK")
         .context("REX_BLOCK is not set; run this from the orchestrator's own Rex pane")?
@@ -56,9 +52,6 @@ pub(super) fn caller(store: &Store) -> Result<Caller> {
 }
 
 impl Caller {
-    /// Refuses a worker pane in `session` that runs on another machine. A task follows its worker
-    /// through this machine's files and processes: the reports its hooks write here, its record or
-    /// result file, and its process IDs.
     pub(super) fn refuse_remote(&mut self, session: &str, worker: &str) -> Result<()> {
         let list = self
             .rex
@@ -67,9 +60,6 @@ impl Caller {
     }
 }
 
-/// Whether `worker` in a `session.list_blocks` reply runs as `host`. Rex gives a block the
-/// server's own `host_id` when it sees the server's files, and a server without a state directory
-/// reports none, so only equal values, both absent included, are this machine.
 fn on_host(list: &Value, worker: &str, host: Option<&str>) -> Result<()> {
     let block = items(list, "/blocks")
         .iter()

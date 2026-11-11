@@ -1,6 +1,3 @@
-//! The owner ending its interest in rounds: abandoning one unfinished, acknowledging a finished
-//! one, and releasing the worker (`docs/design.md`, "Acknowledging and releasing").
-
 use std::path::Path;
 
 use anyhow::{Result, bail};
@@ -12,11 +9,6 @@ use super::register::latest_finished;
 use super::{caller, finished, notice, outcome, owned, round_state, shown, snapshot, unread};
 use crate::store::{Store, now_ms};
 
-/// Ends a round still unfinished, the open one by default, as `abandoned` and acknowledges
-/// it: the owner stops waiting for it, and only the owner. The task is not released, so a turn the
-/// worker finishes later is unread and `task next` takes it, and `task release` still refuses
-/// until then. Abandoning the open round starts the next queued one; abandoning a queued round
-/// drops it, its request never sent.
 pub fn abandon(state_dir: &Path, id: &str, round: Option<i64>) -> Result<Value> {
     let mut store = Store::open(state_dir)?;
     let caller = caller(&store)?;
@@ -43,7 +35,6 @@ pub(super) fn abandon_round(tx: &Transaction, id: &str, round: Option<i64>) -> R
     Ok(round)
 }
 
-/// Records that the owner has a finished round's result.
 pub fn ack(state_dir: &Path, id: &str, round: Option<i64>) -> Result<Value> {
     let mut store = Store::open(state_dir)?;
     let caller = caller(&store)?;
@@ -59,8 +50,6 @@ pub fn ack(state_dir: &Path, id: &str, round: Option<i64>) -> Result<Value> {
     shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
 }
 
-/// Records that the orchestrator is done with the worker and acknowledges its rounds; only a
-/// released task's pane is ever closed. Releasing again changes nothing.
 pub fn release(state_dir: &Path, id: &str) -> Result<Value> {
     let mut store = Store::open(state_dir)?;
     let caller = caller(&store)?;
@@ -81,8 +70,6 @@ pub fn release(state_dir: &Path, id: &str) -> Result<Value> {
     shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
 }
 
-/// Records the owner's acknowledgement of a finished round; a notice not yet sent for it is
-/// dropped, since the owner has the result.
 pub(super) fn acknowledge(tx: &Transaction, id: &str, round: i64, by: &str) -> Result<()> {
     let now = now_ms();
     tx.execute(
@@ -93,9 +80,6 @@ pub(super) fn acknowledge(tx: &Transaction, id: &str, round: i64, by: &str) -> R
     Ok(())
 }
 
-/// Acknowledges every round of the task its owner has not acknowledged, which must all have
-/// finished. Rounds queued behind an open one start without acknowledging it, so earlier rounds
-/// than the latest can wait for an acknowledgement.
 pub(super) fn acknowledge_all(tx: &Transaction, id: &str, by: &str) -> Result<()> {
     let rounds: Vec<i64> = tx
         .prepare("SELECT round FROM task_round WHERE task_id = ?1 AND acked_at IS NULL")?

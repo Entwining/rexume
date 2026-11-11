@@ -11,8 +11,6 @@ use crate::task::notice::orphaned_sends;
 use crate::task::register::{Kind, start_round};
 use crate::task::tests::{record, task_world};
 
-/// Task `t` with an inbox worker `w` in pane `b` whose first round has finished, and a request
-/// round asking it to "go". Returns the request's ID.
 fn request_world(dir: &Path, transcript: &Path, runtime: Runtime) -> Result<(Store, String)> {
     let mut store = task_world(dir, transcript, None)?;
     store.conn().execute(
@@ -48,7 +46,6 @@ fn request(store: &Store) -> Result<(String, Option<String>)> {
         })?)
 }
 
-/// The request's attempts, and when it was sent and seen delivered.
 fn delivery(store: &Store) -> Result<(i64, Option<i64>, Option<i64>)> {
     Ok(store.conn().query_row(
         "SELECT attempts, sent_at, delivered_at FROM request",
@@ -71,7 +68,6 @@ fn request_lifecycle(runtime: Runtime) -> Result<()> {
             Some("waiting for the worker to end its turn".into())
         )
     );
-    // A pass that finds the same reason writes nothing, so it does not wake the daemon again.
     let hook = rusqlite::Connection::open(dir.path().join("state.db"))?;
     hook.execute_batch("BEGIN IMMEDIATE")?;
     send_due(&mut store, &mut interest)?;
@@ -85,7 +81,6 @@ fn request_lifecycle(runtime: Runtime) -> Result<()> {
         Some("waiting for the worker's conversation to run in its pane")
     );
     assert!(!inbox.exists());
-    // A PID names a process only on the server instance it was reported on.
     store.conn().execute_batch(
         "UPDATE block SET fg_pid = 100 WHERE lineage = 'b';
          UPDATE occupant SET instance_id = 'i0' WHERE block_lineage = 'b';",
@@ -104,7 +99,6 @@ fn request_lifecycle(runtime: Runtime) -> Result<()> {
     assert!(interest.files.contains(&inbox));
     let sent: Value = serde_json::from_slice(&std::fs::read(inbox.join(format!("{id}.json")))?)?;
     assert_eq!(sent["text"], format!("{} go", runtime::token(&id)));
-    // The extension takes the message from the inbox.
     std::fs::rename(
         inbox.join(format!("{id}.json")),
         inbox.join(format!("{id}.accepted")),
@@ -183,8 +177,6 @@ fn a_request_whose_round_ended_is_never_sent() -> Result<()> {
     Ok(())
 }
 
-/// Ending a round leaves its `sending` request unchanged. If the send then fails before anything
-/// leaves, recording that failure supersedes the request instead of returning it to `pending`.
 #[test]
 fn a_failed_send_drops_a_request_whose_round_ended() -> Result<()> {
     let dir = tempfile::tempdir()?;

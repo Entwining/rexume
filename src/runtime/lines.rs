@@ -1,6 +1,3 @@
-//! Reading a conversation's record as it grows: whole JSON lines from an offset, streamed to the
-//! caller, so a long record is never held in memory at once.
-
 use std::collections::HashSet;
 use std::fs::File;
 use std::io::{BufRead, BufReader, Read, Seek, SeekFrom};
@@ -12,16 +9,11 @@ use serde_json::Value;
 
 use super::{Parser, Runtime, Turn, mentions, token};
 
-/// Reads the whole records a conversation file holds past an offset, remembering where it stopped
-/// so the next read starts there. A line without its newline yet is left for the next read. A
-/// file that was replaced or shrank is read again from the start offset, which the batch reports;
-/// one that does not exist yet holds no records.
 pub struct Lines {
     path: PathBuf,
     start: u64,
     offset: u64,
     identity: Option<(u64, u64)>,
-    /// A whole line since `start` was not a JSON record.
     skipped: bool,
 }
 
@@ -36,7 +28,6 @@ impl Lines {
         }
     }
 
-    /// The records added since the last read, read one at a time as the caller takes them.
     pub fn read(&mut self) -> Result<Batch<'_>> {
         let mut file = match File::open(&self.path) {
             Ok(file) => file,
@@ -69,17 +60,14 @@ impl Lines {
     }
 }
 
-/// One read of a `Lines`: its records in order, each one taken from the file as it is asked for.
 pub struct Batch<'a> {
     lines: &'a mut Lines,
     reader: Option<BufReader<File>>,
-    /// Reading started over from the start offset, so earlier records no longer count.
     pub restarted: bool,
     line: Vec<u8>,
 }
 
 impl Batch<'_> {
-    /// The next record with where it starts and the offset after it.
     pub fn next_spanned(&mut self) -> Option<Result<(Value, Span)>> {
         let reader = self.reader.as_mut()?;
         loop {
@@ -123,37 +111,26 @@ impl Iterator for Batch<'_> {
     }
 }
 
-/// Where a record or a turn lies in its file: the offset it starts at and the one after it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Span {
     pub start: u64,
     pub end: u64,
 }
 
-/// A finished turn, in the order the record shows it. Its start offset names it however often the
-/// record is read again.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Sealed {
     pub turn: Turn,
     pub span: Span,
-    /// The notice and request tokens of the input the turn took in, for a runtime whose record
-    /// names the turn each input went to (Claude Code); other runtimes' records show each receipt
-    /// as a record of its own (`Runtime::received`).
     pub took: Vec<String>,
 }
 
 impl Sealed {
-    /// Whether the turn took in the input `token` names and the runtime ended it, which shows the
-    /// input received: a cancelled turn may never have taken it in.
+    /// A cancelled turn may be a prompt another hook rejected, which took nothing in.
     pub fn received(&self, token: &str) -> bool {
         self.turn != Turn::Cancelled && self.took.iter().any(|t| t == token)
     }
 }
 
-/// The turns earlier rounds of a task took. A turn is named by where it starts, and an answered one
-/// also by its answer's record ID when it has one, which names it from any offset inside it: a
-/// round upgraded from version 1 recorded no start and left the position after the first part of
-/// its answer.
 #[derive(Default)]
 pub struct Taken {
     pub starts: HashSet<u64>,
@@ -168,26 +145,17 @@ impl Taken {
     }
 }
 
-/// Follows one round through one conversation's record from the task's position: each turn that
-/// finishes, in order, and which of them is the round's. A request round's turn is the one that
-/// took the request in, where the record names it, or else the first to end after the record
-/// shows the request received; any other round's is the first that no earlier round took. A
-/// record that was replaced or cut is not read again from its start: the turns after the position
-/// could no longer be told apart.
 pub struct Tracker {
     runtime: Runtime,
     lines: Lines,
     parser: Parser,
     taken: Taken,
-    /// The request's token.
     request: Option<String>,
-    /// The request was recorded as received before this record was read: one the record shows
-    /// no receipt of was received before the position, in a record before version 8 replaced it.
+    /// The request is `delivered` already; one this record shows no receipt of was received in the
+    /// record that version 8 replaced.
     delivered: bool,
     receipt: Option<u64>,
-    /// While the receipt of a delivered request is not found, the first turn no round took.
     untaken: Option<Sealed>,
-    /// Each finished turn, and whether an earlier round took it.
     sealed: Vec<(Span, bool)>,
     chosen: Option<Sealed>,
     replaced: bool,
@@ -220,13 +188,14 @@ impl Tracker {
         &self.lines.path
     }
 
-    /// Reads what was added since the last update.
     pub fn update(&mut self) -> Result<()> {
         if self.replaced {
             return Ok(());
         }
         let mut batch = self.lines.read()?;
         if batch.restarted {
+            // The position and the taken turns' starts are offsets into the record before it was
+            // replaced or cut.
             self.replaced = true;
             return Ok(());
         }
@@ -270,12 +239,10 @@ impl Tracker {
         Ok(())
     }
 
-    /// The round's turn, once one finished.
     pub fn chosen(&self) -> Option<&Sealed> {
         self.chosen.as_ref()
     }
 
-    /// Whether the record shows the request received.
     pub fn received(&self) -> bool {
         self.receipt.is_some()
     }
@@ -284,13 +251,10 @@ impl Tracker {
         self.replaced
     }
 
-    /// The finished turns that no round took.
     pub fn unread(&self) -> usize {
         self.sealed.iter().filter(|(_, taken)| !taken).count()
     }
 
-    /// The task's position once the round takes the turn at `span`: past every finished turn from
-    /// the position on that a round took, in order.
     pub fn position_after(&self, span: Span) -> u64 {
         let mut position = self.lines.start;
         for (turn, taken) in &self.sealed {
@@ -303,14 +267,11 @@ impl Tracker {
     }
 }
 
-/// Whether a turn can be the round's as far as its request goes: a request round's turn ended after
-/// the record showed the request received, and any turn can be another round's.
 fn after_receipt(request: bool, receipt: Option<u64>, span: Span) -> bool {
     !request || receipt.is_some_and(|at| at < span.end)
 }
 
-/// Reads the last turn after byte offset `cursor` in one pass, or `None` when a whole line was
-/// not a JSON record: that line may be what ended the turn.
+/// `None` when a whole line after `cursor` was not JSON: that line may be what ended the turn.
 pub fn last_turn(runtime: Runtime, transcript: &Path, cursor: u64) -> Result<Option<Turn>> {
     let mut lines = Lines::new(transcript, cursor);
     let mut parser = runtime.parser();
@@ -324,10 +285,6 @@ pub fn last_turn(runtime: Runtime, transcript: &Path, cursor: u64) -> Result<Opt
     Ok((!lines.skipped).then(|| parser.turn()))
 }
 
-/// The last whole record in a conversation file that holds `needle` and that `pick` accepts, read
-/// backwards from the end, so finding a setting the runtime writes near the end costs little
-/// however long the record is. Only lines holding `needle` are parsed; a line without its newline
-/// yet is skipped, and a file that does not exist holds no records.
 pub fn last_record<T>(
     path: &Path,
     needle: &str,
@@ -341,9 +298,7 @@ pub fn last_record<T>(
     };
     let needle = needle.as_bytes();
     let mut pos = file.metadata()?.len();
-    // The end of the earliest line read so far, whose start lies before `pos`.
     let mut carry = Vec::new();
-    // No newline has been read yet, so what was read is a record still being written.
     let mut unfinished = true;
     while pos > 0 {
         let start = pos.saturating_sub(BLOCK);

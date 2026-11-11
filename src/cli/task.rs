@@ -1,5 +1,3 @@
-//! The `task` commands an orchestrator runs.
-
 use std::ffi::OsString;
 use std::io::Read as _;
 use std::path::{Path, PathBuf};
@@ -12,11 +10,9 @@ use serde_json::{Map, Value};
 
 use crate::task;
 
-/// The exit status of `task wait` when it returns because the round's worker is blocked.
 const BLOCKED: u8 = 3;
-/// The exit status of `task wait` when its timeout passes first, as coreutils `timeout` uses.
+/// The status coreutils `timeout` exits with when its time runs out.
 const TIMED_OUT: u8 = 124;
-/// The largest `REXUME_TASK_META`, in bytes.
 const META_LIMIT: usize = 1024;
 
 pub(super) const EXAMPLES: &str = "\
@@ -147,7 +143,6 @@ impl Message {
     fn read(self) -> Result<String> {
         match (self.message, self.message_file) {
             (Some(text), _) => Ok(text),
-            // One byte past the limit is enough to refuse it, also where it cuts a character.
             (None, Some(path)) => {
                 let mut bytes = Vec::new();
                 std::fs::File::open(&path)
@@ -162,8 +157,6 @@ impl Message {
     }
 }
 
-/// The task's `meta` from `REXUME_TASK_META`'s `value`: the JSON object as given, or `{}` when the
-/// variable is unset or empty.
 fn meta(value: Option<OsString>) -> Result<String> {
     let Some(value) = value.filter(|value| !value.is_empty()) else {
         return Ok("{}".to_owned());
@@ -188,7 +181,6 @@ fn absolute_path(text: &str) -> Result<PathBuf, &'static str> {
     }
 }
 
-/// Runs a task command, returning what it prints and its exit status.
 pub(super) fn run(command: Command, dir: &Path) -> Result<(Value, u8)> {
     let value = match command {
         Command::Add {
@@ -244,8 +236,6 @@ mod tests {
         }
     }
 
-    /// `REXUME_TASK_META` is kept as given when it is a JSON object within the limit, is `{}` when
-    /// unset or empty, and refuses the task otherwise.
     #[test]
     fn task_meta_is_a_small_json_object_or_nothing() {
         let meta = |value: Option<&str>| meta(value.map(OsString::from)).map_err(|e| e.to_string());
@@ -269,8 +259,6 @@ mod tests {
         }
     }
 
-    /// A message over the limit is refused before anything is recorded, as text or as a file whose
-    /// limit falls inside a character.
     #[test]
     fn a_message_over_the_limit_is_refused() -> Result<()> {
         let dir = tempfile::tempdir()?;

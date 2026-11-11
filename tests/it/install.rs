@@ -7,14 +7,11 @@ use serde_json::{Value, json};
 use crate::common::REXUME;
 
 const SERVER: &str = "unix:///tmp/rex.sock";
-/// Another server, which changes the job's definition.
 const OTHER_SERVER: &str = "unix:///tmp/other-rex.sock";
 
 mod manager;
 mod plugin;
 
-/// A home directory with Claude Code, Codex, Pi, and omp set up, and a fake of the service manager
-/// on its PATH.
 struct Home {
     dir: tempfile::TempDir,
 }
@@ -96,7 +93,6 @@ while :; do sleep 60 & sleeper=$!; wait $sleeper; done
         serde_json::from_slice(&output.stdout).unwrap()
     }
 
-    /// Install's arguments, with the job's server given.
     fn install_args(server: &str) -> [&str; 5] {
         ["install", "--rex", "/opt/rex/bin/rex", "--server", server]
     }
@@ -123,7 +119,6 @@ while :; do sleep 60 & sleeper=$!; wait $sleeper; done
         .collect()
     }
 
-    /// How many times the job was started and stopped.
     fn starts_and_stops(&self) -> (usize, usize) {
         (
             manager::calls(self.dir.path(), manager::STARTS),
@@ -156,7 +151,6 @@ fn session_start(path: &Path) -> Vec<String> {
         .collect()
 }
 
-/// The value and note install or uninstall reported for each entry.
 fn outcomes(out: &Value) -> [(&str, Option<&str>); 5] {
     let keys = [
         "claude_hook",
@@ -198,13 +192,11 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
     let path = format!("{}:/usr/bin:/bin", home.home().join("bin").display());
     assert!(job.contains(&path), "the daemon runs with install's PATH");
 
-    // Running it again changes nothing and loads the job no second time.
     let again = home.install(SERVER);
     assert!(outcomes(&again).iter().all(|o| *o == ("unchanged", None)));
     assert_eq!(home.targets(), installed);
     assert_eq!(home.starts_and_stops(), (1, 0));
 
-    // A partial install is completed without touching what is already right.
     std::fs::remove_file(home.home().join(".pi/agent/extensions/rexume.ts")).unwrap();
     std::fs::write(
         home.home().join(".codex/hooks.json"),
@@ -220,7 +212,6 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
     assert_eq!(home.targets()[0], installed[0]);
     assert_eq!(home.starts_and_stops(), (1, 0));
 
-    // A changed job definition is loaded again.
     let moved = home.install(OTHER_SERVER);
     assert_eq!(moved[manager::KEY], "updated");
     assert_eq!(home.starts_and_stops(), (2, 1));
@@ -264,8 +255,6 @@ fn a_runtime_that_is_not_set_up_is_skipped_with_a_note() {
     );
 }
 
-/// Each extension is the user's when it lacks install's first line: uninstall keeps it and removes
-/// the other runtime's extension install wrote.
 #[test]
 fn uninstall_keeps_an_extension_install_did_not_write() {
     let home = Home::new();
@@ -283,8 +272,6 @@ fn uninstall_keeps_an_extension_install_did_not_write() {
     );
 }
 
-/// A reload that fails part way leaves the definition differing or the job stopped, so the next
-/// install finishes it instead of finding nothing to do.
 #[test]
 fn the_next_install_finishes_a_reload_that_failed() {
     let home = Home::new();
@@ -296,7 +283,6 @@ fn the_next_install_finishes_a_reload_that_failed() {
     assert_eq!(home.starts_and_stops(), (2, 2));
 }
 
-/// A skill stub install cannot write fails install without keeping the job from running.
 #[test]
 fn a_stub_install_cannot_write_leaves_the_job_running() {
     let home = Home::new();
@@ -306,8 +292,6 @@ fn a_stub_install_cannot_write_leaves_the_job_running() {
     assert!(home.job().is_some());
 }
 
-/// Install starts a service that is not running: one that gave up at its start limit, as when its
-/// executable was missing, and one waiting to restart, which the manager shows as activating.
 #[cfg(target_os = "linux")]
 #[test]
 fn install_starts_a_service_that_is_not_running() {
@@ -325,7 +309,6 @@ fn install_starts_a_service_that_is_not_running() {
     }
 }
 
-/// Install writes the hooks before it finds no user manager, so uninstall removes them without one.
 #[cfg(target_os = "linux")]
 #[test]
 fn uninstall_removes_what_an_install_without_a_user_manager_wrote() {

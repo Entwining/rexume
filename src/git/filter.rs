@@ -1,10 +1,3 @@
-//! The clean and process filters a snapshot's `git add` may run, each only for a changed file whose
-//! attributes name it. Git LFS's runs as Git LFS installs it, with its storage in a directory
-//! deleted with the snapshot; any other filter, Git LFS's in another form included, runs only
-//! denied writes to the repository, since it is a program Rexume knows nothing of. Every filter is
-//! required, because Git stores a file unfiltered when a filter that is not required fails, and
-//! Rexume keeps no file a filter has not cleaned.
-
 use std::collections::BTreeMap;
 use std::ffi::{OsStr, OsString};
 use std::io::{Seek, Write};
@@ -17,21 +10,16 @@ use super::command::Isolation;
 use super::run::Git;
 
 pub(super) struct Filters {
-    /// Each driver with a clean or process command, and whether it is Git LFS's.
     drivers: BTreeMap<String, bool>,
-    /// Whether the repository's own configuration sets `lfs.repositoryformatversion` to 0, the
-    /// only value with which Git LFS runs there without writing it: Git LFS writes it when its
-    /// last value there is missing or empty, and fails on any other.
+    /// Git LFS reads `lfs.repositoryformatversion` from the repository's own configuration alone,
+    /// by its last value there: it writes it when that is missing or empty, and fails when it is
+    /// anything but 0.
     lfs_set_up: bool,
 }
 
-/// Each filter the changed files' attributes name, with the number of files that name it.
 pub(super) type Needed = BTreeMap<String, usize>;
 
 impl Filters {
-    /// The filters configured for the repository at `worktree`. Git LFS's is a driver named `lfs`
-    /// whose every command is one Git LFS installs, while no Git LFS extension, which runs a
-    /// program of its own inside Git LFS's, is configured.
     pub fn configured(git: &mut Git, worktree: &Path) -> Result<Self> {
         let pattern = r"^(filter\..*\.(clean|process)|lfs\.extension\..*\.clean|lfs\.repositoryformatversion)$";
         let args = ["config", "-z", "--show-scope", "--get-regexp", pattern];
@@ -46,7 +34,6 @@ impl Filters {
         }
         let found = ran.output()?;
         let mut extension = false;
-        // Each entry is its scope, then the key and its value on two lines, each ended by NUL.
         for [scope, entry] in found.split(|&b| b == 0).collect::<Vec<_>>().as_chunks().0 {
             let entry = String::from_utf8_lossy(entry);
             let (key, value) = entry.split_once('\n').unwrap_or((&entry, ""));
@@ -65,14 +52,15 @@ impl Filters {
                 *filters.drivers.entry(name.to_owned()).or_insert(true) &= lfs;
             }
         }
+        // A Git LFS extension runs a program of its own inside Git LFS's filter.
         if extension && let Some(lfs) = filters.drivers.get_mut("lfs") {
             *lfs = false;
         }
         Ok(filters)
     }
 
-    /// Settings for listing the changed files: every filter off, and not required, since a
-    /// required filter that does not run fails the listing.
+    /// Every filter off, since Git cleans a file whose size is unchanged to compare its content,
+    /// and not required, since a required filter that does not run fails the listing.
     pub fn listing(&self) -> Vec<OsString> {
         let mut config = Vec::new();
         for name in self.drivers.keys() {
@@ -83,7 +71,6 @@ impl Filters {
         config
     }
 
-    /// The filters the attributes of `files` name.
     pub fn needed(
         &self,
         git: &mut Git,
@@ -106,7 +93,6 @@ impl Filters {
         let found = git
             .run(command, &args, Stdio::from(input), false)?
             .output()?;
-        // Each path is printed with the attribute and its value, each ended by NUL.
         for [_, _, value] in found.split(|&b| b == 0).collect::<Vec<_>>().as_chunks().0 {
             let value = String::from_utf8_lossy(value);
             if self.drivers.contains_key(value.as_ref()) {
@@ -116,8 +102,6 @@ impl Filters {
         Ok(needed)
     }
 
-    /// Whether Git LFS's filter runs for `needed`. Refuses when Git LFS would write the
-    /// repository's configuration or fail.
     pub fn runs_lfs(&self, needed: &Needed) -> Result<bool> {
         let runs = needed.keys().any(|name| self.drivers[name]);
         if runs && !self.lfs_set_up {
@@ -130,10 +114,6 @@ impl Filters {
         Ok(runs)
     }
 
-    /// Runs `git add -A` with every filter required and `storage`, Git LFS's when it runs. A
-    /// filter that no file needs is replaced by a command that fails, so that it cannot run should
-    /// a file change meanwhile; when a file needs one other than Git LFS's, `git add` runs denied
-    /// writes to `repository`, the working tree and the Git and common directories.
     pub fn add(
         &self,
         git: &mut Git,
@@ -144,8 +124,10 @@ impl Filters {
     ) -> Result<()> {
         let mut config = Vec::new();
         for name in self.drivers.keys() {
+            // Git stores a file unfiltered when a filter that is not required fails.
             config.push(setting(name, "required=true"));
             if !needed.contains_key(name) {
+                // A file changed since `needed` would otherwise run the filter undenied.
                 config.push(setting(name, "clean=false"));
                 config.push(setting(name, "process="));
             }
@@ -163,6 +145,7 @@ impl Filters {
             let needs = needs(untrusted.into_iter());
             let command = add_denied(&config, isolation, &needs, repository)?;
             let ran = git.run(command, &["add", "-A"], Stdio::null(), filtered)?;
+            // `sandbox-exec` exits 71 without running Git when this process is sandboxed already.
             if ran.status.code() == Some(71) {
                 bail!(
                     "{needs}, which Rexume runs only denied writes to the repository, and a \
@@ -183,10 +166,8 @@ impl Filters {
     }
 }
 
-/// Whether `command`, a driver's `kind` of command, is one Git LFS installs: `git-lfs`, or an
-/// absolute path to a program named so, and the arguments Git LFS writes, each word separated by
-/// one space. Git runs the command through the shell, so anything else, a character the shell
-/// would expand included, makes it another program.
+/// Git runs a filter's command through the shell, so any form but those `git lfs install` writes,
+/// a character the shell would expand included, can run another program.
 fn lfs_command(kind: &str, command: &str) -> bool {
     let words: Vec<&str> = command.split(' ').collect();
     let Some((&program, args)) = words.split_first() else {
@@ -211,7 +192,6 @@ fn setting(name: &str, rest: &str) -> OsString {
     format!("filter.{name}.{rest}").into()
 }
 
-/// Says which filters the changed files need, as a snapshot's note begins.
 fn needs<'a>(needed: impl Iterator<Item = (&'a String, &'a usize)>) -> String {
     let (names, files): (Vec<String>, Vec<usize>) = needed
         .map(|(name, &files)| (format!("`{name}`"), files))
@@ -230,15 +210,11 @@ fn needs<'a>(needed: impl Iterator<Item = (&'a String, &'a usize)>) -> String {
     format!("{files} the {filters} {}", names.join(", "))
 }
 
-/// Seatbelt's profile for `git add`: anything but writing under the paths it is given.
 #[cfg(target_os = "macos")]
 const DENY_WRITES: &str = r#"(version 1)
 (allow default)
 (deny file-write* (subpath (param "WORKTREE")) (subpath (param "GIT_DIR")) (subpath (param "COMMON_DIR")))"#;
 
-/// `git add -A` under `sandbox-exec`, which Seatbelt rules by physical path. A process that is
-/// sandboxed already cannot sandbox its children further, and `sandbox-exec` then exits 71 without
-/// running Git.
 #[cfg(target_os = "macos")]
 fn add_denied(
     config: &[OsString],
@@ -253,6 +229,7 @@ fn add_denied(
         .zip(repository)
     {
         let mut define = OsString::from(format!("{key}="));
+        // Seatbelt rules by physical path.
         define.push(std::fs::canonicalize(path)?);
         sandbox.arg("-D").arg(define);
     }

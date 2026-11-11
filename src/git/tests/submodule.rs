@@ -1,13 +1,7 @@
-//! A populated submodule is recorded by the commit its gitlink names, as `git add -A` records a
-//! submodule whose working tree it does not read, and nothing runs in the submodule.
-
 use anyhow::Result;
 
 use super::{git, repository, script, staged, untouched, write};
 
-/// Every way a submodule can stand gets the tree real Git stages, and a submodule whose own
-/// configuration runs a filter on a changed file neither runs it nor has its Git directory
-/// changed, which `untouched` sees as part of the repository; `git add -A` runs both after.
 #[test]
 fn a_submodule_is_recorded_without_running_anything_in_it() -> Result<()> {
     for scenario in [

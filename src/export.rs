@@ -1,6 +1,3 @@
-//! `rexume export`: Rexume's history as JSON Lines, every task, restore, and epoch, both those in
-//! use and those the sweep archived (`docs/cli.md`, "export").
-
 #[cfg(test)]
 mod tests;
 
@@ -14,13 +11,9 @@ use serde_json::{Value, json};
 use crate::store::archive::{self, EntityType};
 use crate::store::{SCHEMA_VERSION, Store, now_ms};
 
-/// The header's `version`, which changes only when a field of the lines changes meaning or goes
-/// away.
+/// Changes only when a field of the lines changes meaning or goes away.
 const VERSION: i64 = 1;
 
-/// What one read transaction saw: the lines of the entities in use, and the keys of the archived
-/// ones, whose documents are read only as they are printed, so that memory does not grow with the
-/// archive.
 struct Snapshot {
     header: Value,
     live: Vec<Value>,
@@ -40,8 +33,8 @@ pub fn run(dir: &Path, out: &mut impl Write) -> Result<()> {
     print(&conn, &snapshot, out)
 }
 
-/// Reads one moment's state. Nothing is printed inside the transaction: a slow reader of the
-/// output would hold it open, and with it the write-ahead log, which no writer could then reset.
+/// Nothing is printed inside the transaction: a slow reader of the output would hold it open, and
+/// with it the write-ahead log, which no writer could then reset.
 fn snapshot(conn: &Connection) -> Result<Snapshot> {
     let tx = conn.unchecked_transaction()?;
     let source_id: String = tx.query_row("SELECT source_id FROM store", [], |row| row.get(0))?;
@@ -78,10 +71,6 @@ fn snapshot(conn: &Connection) -> Result<Snapshot> {
     })
 }
 
-/// Prints the snapshot, reading each archived document by its key. An entity archived after the
-/// snapshot is printed as it was in use, and its key is not in the snapshot, so it appears once.
-/// An archive row is never changed or deleted, so a key that no longer finds one fails the export
-/// before its last line, which a reader then lacks.
 fn print(conn: &Connection, snapshot: &Snapshot, out: &mut impl Write) -> Result<()> {
     let mut line = |value: &Value| writeln!(out, "{value}").context("failed to write to stdout");
     line(&snapshot.header)?;

@@ -1,5 +1,3 @@
-//! Finding receipts of notices in a conversation's record.
-
 use std::collections::HashSet;
 use std::path::Path;
 
@@ -7,8 +5,6 @@ use anyhow::Result;
 
 use super::{Lines, Parser, Runtime, mentions, token};
 
-/// Finds notices' receipts in one owner record, reading only what was added since the last
-/// check; one reader serves every notice sent to that record.
 pub struct Receipt {
     runtime: Runtime,
     lines: Lines,
@@ -24,9 +20,9 @@ impl Receipt {
         }
     }
 
-    /// The notices among `pending` whose receipt the records added since the last check show.
-    /// A notice's token appears only once it was sent, so a record read before cannot hold it;
-    /// a turn that took it in before the check may end after it, so the parser keeps its state.
+    /// A notice's token appears only once it was sent, so a record read at an earlier check cannot
+    /// hold it; a turn that took it in before a check may end after it, so the parser keeps its
+    /// state.
     pub fn found(&mut self, pending: &[String]) -> Result<HashSet<String>> {
         let tokens: Vec<(String, &String)> = pending.iter().map(|id| (token(id), id)).collect();
         let mut found = HashSet::new();

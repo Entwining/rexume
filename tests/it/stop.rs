@@ -5,7 +5,6 @@ use crate::common::{Daemon, Server, alive, query, wait_until};
 
 const WAIT: Duration = Duration::from_secs(20);
 
-/// Run by hand or by a test rather than by its job, nothing else ends the daemon's `rex do`.
 #[test]
 #[ignore = "needs a Rex server"]
 fn a_stopped_daemon_ends_its_rex_do_first() {
@@ -35,7 +34,6 @@ fn a_stopped_daemon_ends_its_rex_do_first() {
             "{}",
             daemon.log()
         );
-        // A stop ends the epoch, and is not an error `status` shows.
         assert_eq!(
             query::<bool>(
                 &state,

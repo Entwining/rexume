@@ -1,5 +1,3 @@
-//! The objects a capture writes, which it stages apart from the task's and keeps only whole.
-
 use std::time::{Duration, SystemTime};
 
 use anyhow::Result;
@@ -7,9 +5,6 @@ use anyhow::Result;
 use super::{fake_lfs, git, holds, left, lfs_repository, objects, random, repository, write};
 use crate::git::{BUDGET, Capture, worktree};
 
-/// A file changed in the same second the index recorded it, keeping its size and modification
-/// time, is found changed, as Git finds it from the index's own modification time, which the
-/// copy keeps.
 #[test]
 fn a_file_changed_as_the_index_was_written_is_found() -> Result<()> {
     let (root, state) = (tempfile::tempdir()?, tempfile::tempdir()?);
@@ -28,9 +23,6 @@ fn a_file_changed_as_the_index_was_written_is_found() -> Result<()> {
     Ok(())
 }
 
-/// Until it stages, a capture writes nothing in the task's snapshot directory but its lock file:
-/// what it copies for Git to read goes to the system's temporary directory, however large, such
-/// as the staged version of a large file shrunk since, which Git reads to keep its line endings.
 #[test]
 fn a_capture_writes_only_its_lock_file_before_it_stages() -> Result<()> {
     let (root, state) = (tempfile::tempdir()?, tempfile::tempdir()?);
@@ -47,8 +39,6 @@ fn a_capture_writes_only_its_lock_file_before_it_stages() -> Result<()> {
     Ok(())
 }
 
-/// A capture that fails after `git add` wrote objects keeps none of them, and one of a state
-/// already taken writes nothing new.
 #[test]
 fn a_capture_keeps_its_objects_only_whole_and_once() -> Result<()> {
     let (root, state) = (tempfile::tempdir()?, tempfile::tempdir()?);
@@ -71,8 +61,6 @@ fn a_capture_keeps_its_objects_only_whole_and_once() -> Result<()> {
     Ok(())
 }
 
-/// A file that grows after the listing past what a snapshot copies, here as Git LFS's filter runs
-/// for another file, gets no snapshot and leaves the task's objects as they were.
 #[test]
 fn a_file_grown_after_the_listing_gets_no_snapshot() -> Result<()> {
     let (root, tools, state) = (

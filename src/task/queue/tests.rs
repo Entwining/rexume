@@ -11,10 +11,8 @@ use crate::task::register::{Kind, Started, start_round};
 use crate::task::tests::{ANSWER, PROMPT, record, task_world};
 use crate::task::{shown, unacknowledged};
 
-/// A round's state, note, and whether it is acknowledged, with its request's state and note.
 type Row = (String, Option<String>, bool, Option<String>, Option<String>);
 
-/// Each round of task `t` in order.
 fn rounds(store: &Store) -> Result<Vec<Row>> {
     Ok(store
         .conn()
@@ -55,10 +53,6 @@ fn queued() -> Row {
     )
 }
 
-/// Requests sent while round 1 runs wait behind it in the order sent and acknowledge nothing, and
-/// none is sent while round 1 is open, even to a worker between turns; the pass that finishes round
-/// 1 starts the first of them and tries to send it, and the prompt that continues the owner lists
-/// every round it has not acknowledged.
 #[test]
 fn requests_sent_during_a_round_wait_in_order_and_start_once_it_finishes() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -89,7 +83,6 @@ fn requests_sent_during_a_round_wait_in_order_and_start_once_it_finishes() -> Re
     Follow::default().pass(&mut store, None)?;
     let rows = rounds(&store)?;
     assert_eq!((rows[0].0.as_str(), rows[0].2), ("completed", false));
-    // The worker still reports working, so the request waits for it to end its turn.
     let waiting = Some("waiting for the worker to end its turn".into());
     assert_eq!(
         rows[1..],
@@ -115,17 +108,11 @@ fn requests_sent_during_a_round_wait_in_order_and_start_once_it_finishes() -> Re
     Ok(())
 }
 
-/// How the worker stops taking requests while round 1 is open.
 enum Gone {
-    /// Its pane closes, after the record shows round 1's turn or before.
     Closed { answered: bool },
-    /// Its record is replaced, so its turns can no longer be told apart.
     Replaced,
 }
 
-/// When the worker can take no further request, the rounds queued behind the open one are dropped
-/// unsent, each with its own finished notice, also when the record already showed the open round's
-/// turn before the pane closed.
 #[test]
 fn queued_rounds_end_when_the_worker_can_take_no_further_request() -> Result<()> {
     for (gone, first, why) in [
@@ -161,7 +148,6 @@ fn queued_rounds_end_when_the_worker_can_take_no_further_request() -> Result<()>
                 block_gone(&tx, "b")?;
                 tx.commit()?;
             }
-            // The daemon must have read the record to see it replaced.
             Gone::Replaced => {
                 follow.pass(&mut store, None)?;
                 let replacement = record(&[PROMPT, ANSWER])?;

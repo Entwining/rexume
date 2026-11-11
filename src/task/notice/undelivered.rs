@@ -1,5 +1,3 @@
-//! The notices `task list` and `status` show as undelivered.
-
 use std::sync::LazyLock;
 
 use anyhow::Result;
@@ -9,8 +7,6 @@ use serde_json::Value;
 use super::WANTED;
 use crate::runtime::Runtime;
 
-/// Unconfirmed notices their rounds still need, with each round's state. A `pending` notice with
-/// a note has failed to send; other pending notices are still waiting for their first attempt.
 static UNDELIVERED: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT n.id, n.kind, n.task_id, n.round, r.state, n.state, n.note
@@ -23,7 +19,6 @@ static UNDELIVERED: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// The NOTICE objects of `docs/cli.md` that `UNDELIVERED` selects: one owner's, or all.
 pub fn undelivered(conn: &Connection, owner: Option<(Runtime, &str)>) -> Result<Vec<Value>> {
     let notice = |row: &rusqlite::Row| -> rusqlite::Result<Value> {
         Ok(serde_json::json!({

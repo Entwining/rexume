@@ -1,5 +1,3 @@
-//! The process tree, to tell which agent process a command runs under, and what a process was
-//! started with.
 #![cfg_attr(
     target_os = "macos",
     expect(
@@ -13,18 +11,14 @@ use std::ffi::CStr;
 #[cfg(target_os = "macos")]
 use std::mem::{MaybeUninit, size_of};
 
-/// Programs that only pass a command along: hooks and tool calls reach this tool through them.
 const WRAPPERS: &[&str] = &["sh", "bash", "zsh", "dash", "fish", "env", "rexume"];
 
-/// What a process was started with, as the kernel keeps it: its arguments, and its environment as
-/// `NAME=value` entries before the process changed any of them.
 pub struct Launch {
     pub argv: Vec<String>,
     pub env: Vec<String>,
 }
 
 impl Launch {
-    /// The value the process started with for the variable `name`.
     pub fn var(&self, name: &str) -> Option<&str> {
         self.env
             .iter()
@@ -32,8 +26,6 @@ impl Launch {
     }
 }
 
-/// NUL-terminated strings. A byte that is not UTF-8 reads as U+FFFD, so that one such string
-/// leaves the others readable.
 fn strings(bytes: &[u8]) -> Vec<String> {
     bytes
         .strip_suffix(&[0])
@@ -108,8 +100,8 @@ fn parse(bytes: &[u8]) -> Option<Launch> {
     })
 }
 
-/// A process's parent and executable name, or `None` when no such process is visible or it has
-/// exited and only waits to be reaped.
+/// A zombie counts as gone: a `task wait` that exited but is not reaped yet can no longer take its
+/// round's result.
 #[cfg(target_os = "linux")]
 fn info(pid: u32) -> Option<(u32, String)> {
     let status = std::fs::read_to_string(format!("/proc/{pid}/status")).ok()?;
@@ -125,7 +117,6 @@ fn info(pid: u32) -> Option<(u32, String)> {
     Some((field("PPid")?.parse().ok()?, field("Name")?.to_owned()))
 }
 
-/// A process's parent and executable name, or `None` when no such process is visible.
 #[cfg(target_os = "macos")]
 fn info(pid: u32) -> Option<(u32, String)> {
     let pid = i32::try_from(pid).ok()?;
@@ -152,7 +143,6 @@ fn info(pid: u32) -> Option<(u32, String)> {
     Some((info.pbi_ppid, name.to_string_lossy().into_owned()))
 }
 
-/// A process's parent, or `None` when no such process is visible.
 pub fn parent(pid: i64) -> Option<i64> {
     info(u32::try_from(pid).ok()?).map(|(parent, _)| i64::from(parent))
 }
@@ -161,8 +151,6 @@ pub fn alive(pid: i64) -> bool {
     u32::try_from(pid).is_ok_and(|pid| info(pid).is_some())
 }
 
-/// The nearest ancestor of `pid` that is not a shell or this tool: the program that ran the hook
-/// or tool call.
 pub fn program_above(pid: u32) -> Option<u32> {
     above(pid, info)
 }
@@ -218,7 +206,6 @@ mod tests {
         assert!(launch.env.contains(&path));
     }
 
-    /// A short read is unknown, which keeps what was recorded; it never reads as no arguments.
     #[cfg(target_os = "macos")]
     #[test]
     fn a_kernel_buffer_splits_into_arguments_and_environment() {
@@ -232,7 +219,6 @@ mod tests {
         }
     }
 
-    /// A `task wait` that exited but was not reaped yet can no longer take its round's result.
     #[cfg(target_os = "linux")]
     #[test]
     fn an_exited_process_is_not_alive_before_it_is_reaped() {

@@ -1,9 +1,3 @@
-//! The pane of a released disposable worker that nothing used after the worker's result, which
-//! the server restored with the rest. Rexume would have closed it had the server not stopped, so
-//! the daemon closes it once it reads that the pane shows only the shell the server started there
-//! with nothing typed and is not its session's focused pane, as cleanup closes one; a pane in use,
-//! focused, or not checked when the wait ends is kept.
-
 use super::{PANE_WAIT, Restorer, located, millis, pane};
 use crate::rex::Rex;
 use crate::store::{Store, now_ms};
@@ -17,7 +11,6 @@ pub(super) struct Retired {
     pub(super) until: i64,
 }
 
-/// The panes held for a close, each waited for as long as a restore waits for its pane.
 pub(super) fn held(store: &Store) -> Result<Vec<Retired>> {
     let until = now_ms() + millis(PANE_WAIT);
     Ok(task::held(store.conn())?
@@ -27,8 +20,6 @@ pub(super) fn held(store: &Store) -> Result<Vec<Retired>> {
 }
 
 impl Restorer {
-    /// Closes the held panes that are ready, keeps those found in use past their wait, and returns
-    /// when to look at the rest again.
     pub(super) fn close_retired(
         &mut self,
         rex: &mut Rex,
@@ -48,7 +39,8 @@ impl Restorer {
                     due.push(retired.until);
                     self.retired.push(retired);
                 }
-                // Reading again at once would fail the same way, with nothing to wake it later.
+                // Past the wait a retry would come at once and fail the same way, and nothing later
+                // would wake one.
                 Err(e) => {
                     let reason = format!("the pane could not be checked: {e:#}");
                     match keep(store, &retired.task, &reason) {
@@ -63,7 +55,6 @@ impl Restorer {
         due
     }
 
-    /// Returns whether the pane is settled: closed, gone, or kept.
     fn try_close(
         &mut self,
         rex: &mut Rex,
@@ -90,7 +81,6 @@ impl Restorer {
             (Pane::Busy(reason), _) => Some(reason),
             _ => None,
         };
-        // A pane still there is read again until the wait ends, and then left to the user.
         if kept.is_some() && now < retired.until {
             return Ok(false);
         }

@@ -2,10 +2,6 @@ use serde_json::Value;
 
 use super::*;
 
-/// Loads the plugin's hooks module in Node and runs its `session.receive` hook on each delivery
-/// with a fake `$.prompt.submit` that enters the prompt, has it dropped, or throws, as the case
-/// says. Prints, for each, what the hook returned or that it threw, and which of submit and `next`
-/// it called.
 const PLUGIN_HARNESS: &str = r#"
     const [plugin, cases] = process.argv.slice(1);
     let hook;
@@ -25,10 +21,6 @@ const PLUGIN_HARNESS: &str = r#"
     console.log(JSON.stringify(out));
 "#;
 
-/// A notice or request written to the socket is submitted as the user's prompt and not delivered
-/// again; anything else, and one whose prompt did not enter, goes on as Claude Code delivers it,
-/// and a submit that throws fails the hook for Claude Code to skip. The plugin takes a text exactly
-/// when the turn hook reads a token from it (`leading_token`).
 #[test]
 fn the_plugin_resubmits_only_rexume_lines_from_the_socket() -> Result<()> {
     let node = crate::runtime::tests::node()?;
@@ -37,7 +29,6 @@ fn the_plugin_resubmits_only_rexume_lines_from_the_socket() -> Result<()> {
     std::fs::write(&plugin, PLUGIN)?;
     let line = |text: &str| json!({ "origin": { "kind": "peer" }, "text": text });
     let notice = "[rexume d1] Worker task t finished.";
-    // What the hook returned, how often it called `next`, and what it submitted.
     let outcome = |result: Value, next: u32, text: Option<&str>| {
         let submitted: Vec<Value> = text
             .map(|text| json!({ "text": text, "asUser": true }))

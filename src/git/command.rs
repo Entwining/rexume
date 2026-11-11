@@ -1,17 +1,12 @@
-//! How each of a snapshot's Git commands is set up: the environment it keeps, the settings that
-//! keep Git from writing in the repository or running the user's programs, and where a command
-//! that reads the index finds it and its objects.
-
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
 use super::run::Git;
 
-/// Removes every `GIT_` variable but those that choose Git's configuration: one can point Git at
-/// another repository, index, or object directory, or name a file Git or Git LFS writes, such as a
-/// trace or Git LFS's progress. Configuration from the environment stays, since a filter configured
-/// only there would otherwise not run, and Git would store its file unfiltered.
+/// A `GIT_` variable can point Git at another repository, index, or object directory, or name a
+/// file Git or Git LFS writes, such as a trace. Configuration from the environment stays, since a
+/// filter configured only there would otherwise not run, and Git would store its file unfiltered.
 pub(super) fn scrub(command: &mut Command) {
     for (name, _) in std::env::vars_os() {
         let bytes = name.as_encoded_bytes();
@@ -32,18 +27,15 @@ pub(super) fn scrub(command: &mut Command) {
     }
 }
 
-/// Where an isolated command finds its index and objects: a copy of the repository's index, and
-/// an object directory of Rexume's with Rexume's other directories as its alternates, never the
-/// repository's own, since Git refreshes the modification time of an object it finds there.
 pub(super) struct Isolation {
     pub index: PathBuf,
     pub objects: PathBuf,
+    /// Not the repository's objects: Git refreshes the modification time of an object it is asked
+    /// to write again, in an alternate too.
     pub alternates: OsString,
 }
 
 impl Git {
-    /// `program`, which is `git` or a program that runs the `git` its arguments end with, set to
-    /// run in `dir` with Rexume's settings, `config`, and `isolation`.
     pub fn command(
         program: Command,
         dir: &Path,
@@ -53,8 +45,8 @@ impl Git {
         let mut command = program;
         scrub(&mut command);
         // Optional locks off keeps Git from refreshing an index it only reads; a fetch of a partial
-        // clone's missing objects would write to the repository. Git's messages stay untranslated,
-        // since a note quotes them and `Ran::check` reads one; `LANGUAGE` changes only messages.
+        // clone's missing objects would write to the repository. `Ran::check` matches one of Git's
+        // English messages; `LANGUAGE` changes only messages.
         command.envs([
             ("GIT_OPTIONAL_LOCKS", "0"),
             ("GIT_TERMINAL_PROMPT", "0"),

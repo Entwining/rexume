@@ -1,5 +1,3 @@
-//! Whether a released worker's pane still shows the worker as its latest result left it.
-
 use std::path::Path;
 
 use anyhow::Result;
@@ -8,8 +6,6 @@ use rusqlite::{Connection, OptionalExtension, params};
 use super::super::CURRENT_ROUND;
 use crate::runtime::{Runtime, Turn, last_turn};
 
-/// What the latest round that ran recorded when it finished, and where the task stands in its worker's
-/// record.
 pub(super) struct Taken {
     pub(super) interactive: bool,
     pub(super) worker: String,
@@ -54,14 +50,9 @@ pub(super) fn taken(conn: &Connection, id: &str) -> Result<Taken> {
 pub(super) enum Untouched {
     Yes(String),
     No(String),
-    /// The worker's record cannot be read, so whether it has a turn after the result is unknown.
     Unreadable(String),
 }
 
-/// Whether the worker's pane, as recorded, is unchanged since its result. A run's pane still shows
-/// the run's exit; an interactive worker's has had no other foreground process since, a status that
-/// leaves it as the result did (`idle_since`), the task's conversation still the pane's occupant on
-/// the pane's instance and not reported since, and no turn in its record after the task's position.
 pub(super) fn untouched(conn: &Connection, state_dir: &Path, id: &str) -> Result<Untouched> {
     let taken = taken(conn, id)?;
     let no = |reason: &str| Ok(Untouched::No(reason.to_owned()));
@@ -88,19 +79,14 @@ pub(super) fn untouched(conn: &Connection, state_dir: &Path, id: &str) -> Result
     let Some((instance, status, status_at, fg_changes, last_exit)) = pane else {
         return no("the worker's pane is not recorded");
     };
-    // The record of a later server instance is a new terminal, restored after the result, and its
-    // status time and foreground changes say nothing about the earlier one. A round the upgrade to
-    // version 3 could not date counts as finished where its task was registered; if it finished
-    // on a later instance, the pane is only kept.
+    // A round the upgrade to version 3 could not date counts as finished on the task's instance,
+    // which at worst keeps a pane it finished on a later one.
     let finished_on = taken.finished_instance.or(taken.worker_instance);
     if finished_on.is_some_and(|at| at != instance) {
         return no("the worker's pane was restored after its result");
     }
-    // A run's round ends on the exit of the terminal's own program, after which Rex starts nothing
-    // in that terminal. The round can end once the run is no longer the foreground, before Rex
-    // reports the exit, which the count of foreground changes then takes in after the result, so
-    // the count does not tell whether the pane was used. A pane without the exit is a new
-    // terminal, restored after the run.
+    // Rex starts nothing in a terminal whose program exited, so for a run the recorded exit alone
+    // shows the pane unused.
     if !taken.interactive {
         if last_exit.is_none() {
             return no("the worker's pane was restored after its run");
@@ -141,12 +127,7 @@ pub(super) fn untouched(conn: &Connection, state_dir: &Path, id: &str) -> Result
     Ok(Untouched::Yes(taken.worker))
 }
 
-/// Whether a worker's status, `state` as reported at `at`, leaves it as its result did, given the
-/// status time recorded with the result. A worker still working or blocked is not done, though its
-/// record shows the turn's end: Claude Code goes on after a Stop hook that blocks. Any other status
-/// reported since counts as use, except `done`, which a runtime reports once it finished a turn,
-/// and so after the round took that turn from the record when the record shows the end first, as
-/// Claude Code's does; a turn after the result shows in the record.
+/// Claude Code reports `done` after its Stop hooks, which can be after the round took the turn.
 pub(super) fn idle_since(
     state: Option<&str>,
     at: Option<i64>,

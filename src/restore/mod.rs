@@ -1,10 +1,3 @@
-//! Reopens conversations in the panes the server restored itself. Rex brings every session back
-//! under its IDs with a login shell in each pane; for a pane whose record on the earlier instance
-//! shows a conversation to reopen, the daemon types `rexume gate ID` into that shell, once, after
-//! reading that the shell is the pane's foreground with nothing typed at its prompt. The gate
-//! claims the pane's row before it starts anything, so the line starts the conversation at most
-//! once however often it runs.
-
 mod pane;
 mod plan;
 mod retired;
@@ -22,20 +15,13 @@ use crate::task;
 use pane::Pane;
 pub use plan::{Plan, Start, plan};
 
-/// How long a pane waits for the server's shell to be its foreground with nothing typed, from the
-/// plan; past it, the pane is the user's and nothing is typed there.
 const PANE_WAIT: Duration = Duration::from_secs(30);
-/// How long a typed line waits for its gate's claim before the restore is left unknown.
 const CLAIM_WAIT: Duration = Duration::from_secs(5);
 
-/// The restores of instance `?1` whose line the daemon may still type into their pane, or whose
-/// gate has not claimed them since the line was typed, oldest first.
 pub(crate) const OPEN_RESTORES: &str = "SELECT id, block_lineage, typed_at, created_at FROM restore
   WHERE instance_id = ?1 AND state IN ('planned', 'typed') ORDER BY created_at";
-/// A pane's recorded foreground, which a waiting restore compares with the one it last read.
 pub(crate) const FOREGROUND: &str = "SELECT fg_pid, fg_generation FROM block WHERE lineage = ?1";
 
-/// One restore that is planned or typed, as the database holds it.
 struct Open {
     id: String,
     block: String,
@@ -43,19 +29,10 @@ struct Open {
     created_at: i64,
 }
 
-/// Drives the restores of one server instance from the daemon's event loop. Nothing here sleeps:
-/// a pane that is not ready is read again when its recorded foreground changes or its wait ends,
-/// and a typed line waits for its gate's claim until its deadline.
 pub struct Restorer {
-    /// The gate's command, to which each restore adds its ID.
     gate: Vec<String>,
-    /// Whether a restore of this instance may still be planned or typed, or a retired worker's pane
-    /// is held.
     open: bool,
-    /// The recorded foreground (PID, generation) of each pane a restore waits for when it last
-    /// read the pane, by pane.
     read: HashMap<String, Foreground>,
-    /// Retired workers' panes held for a close.
     retired: Vec<retired::Retired>,
     deadline: Option<Instant>,
 }
@@ -77,15 +54,13 @@ impl Restorer {
         self.deadline
     }
 
-    /// Binds the sessions and panes the server holds, detached ones included, plans a restore for
-    /// each pane recorded on an earlier instance that has none yet on this one, and holds the panes
-    /// of retired workers for a close. A pane an earlier epoch held, which someone may have used
-    /// since, is let go first and held again only by this check. Run before the baseline moves the
-    /// panes' records to this instance; the panes are read once the baseline has recorded them, by
-    /// the next `reconcile`, since the baseline's own writes wake nothing.
+    /// Runs before the baseline moves the panes' `block` rows to this instance: a pane recorded on
+    /// an earlier instance is found by its row's `instance_id`.
     pub fn start(&mut self, rex: &mut Rex, store: &mut Store, instance: &str) -> Result<()> {
         {
             let tx = store.write()?;
+            // A pane an earlier epoch held may have been used since, so only the check below
+            // holds it again.
             task::release_held(&tx)?;
             tx.commit()?;
         }
@@ -133,7 +108,6 @@ impl Restorer {
         Ok(())
     }
 
-    /// Looks again at the restores of this instance that are planned or typed.
     pub fn reconcile(&mut self, rex: &mut Rex, store: &mut Store, instance: &str) {
         if !self.open {
             return;
@@ -180,8 +154,6 @@ impl Restorer {
         Ok(())
     }
 
-    /// Types the gate's line into a planned restore's pane once the pane is ready for it, and
-    /// returns when to look again.
     fn try_type(
         &mut self,
         rex: &mut Rex,
@@ -192,6 +164,8 @@ impl Restorer {
         let until = restore.created_at + millis(PANE_WAIT);
         let now = now_ms();
         if opened_elsewhere(store.conn(), &restore.id)? {
+            // Unlike `skip`, this leaves the pane's open rounds: they go on from the conversation's
+            // record in the other pane.
             let tx = store.write()?;
             tx.execute(
                 "UPDATE restore SET state = 'skipped', note = ?1 WHERE id = ?2 AND state = 'planned'",
@@ -255,11 +229,8 @@ impl Restorer {
         }
     }
 
-    /// Whether a pane waited for shows the foreground it showed when last read, before `until`.
-    /// The server reports no change of the screen, so a pane is read again when its foreground
-    /// changes and once more at `until`; a shell still reading its startup files takes the line at
-    /// once, so what waits for `until` is a prompt someone typed at. Otherwise records the
-    /// foreground read now.
+    /// Rex reports no change of a pane's screen, so a pane is read again only when its recorded
+    /// foreground changes or at `until`.
     fn unchanged(&mut self, store: &Store, block: &str, until: i64, now: i64) -> Result<bool> {
         let foreground: Foreground = store
             .conn()
@@ -276,8 +247,6 @@ impl Restorer {
     }
 }
 
-/// The session and live ID of a pane on this instance, or `None` when the server no longer shows
-/// it.
 fn located(
     rex: &mut Rex,
     store: &Store,
@@ -290,8 +259,8 @@ fn located(
     })
 }
 
-/// A typed line whose gate has not claimed its restore yet: past its wait, the restore is left
-/// unknown, which a gate that starts later still claims; nothing is typed again.
+/// Past the wait the restore is `unknown` rather than typed again: the line may have reached the
+/// shell, and a gate that starts later still claims it.
 fn claim_wait(store: &mut Store, restore: &Open, typed_at: i64) -> Result<Option<i64>> {
     let until = typed_at + millis(CLAIM_WAIT);
     if now_ms() < until {
@@ -312,25 +281,20 @@ fn claim_wait(store: &mut Store, restore: &Open, typed_at: i64) -> Result<Option
     Ok(None)
 }
 
-/// Whether restore `id`'s conversation reported from another pane since the plan, or from another
-/// pane on the restore's instance, as when someone reopened it before the daemon planned: it runs
-/// there, so this pane keeps its shell. A report in the same millisecond as the plan counts as
-/// later: leaving the shell is the safe side.
 pub fn opened_elsewhere(conn: &Connection, id: &str) -> Result<bool> {
     Ok(conn.query_row(OPENED_ELSEWHERE, params![id], |row| row.get(0))?)
 }
 
+/// `o.instance_id = r.instance_id` catches a conversation someone reopened on this instance
+/// before the plan. A report in the plan's millisecond counts as later: keeping the shell is the
+/// safe side.
 pub(crate) const OPENED_ELSEWHERE: &str = "SELECT EXISTS (SELECT 1 FROM restore r JOIN occupant o
   ON o.runtime = r.runtime AND o.native_id = r.native_id
   WHERE r.id = ?1 AND o.block_lineage != r.block_lineage
     AND (o.reported_at >= r.created_at OR o.instance_id = r.instance_id))";
 
-/// Why a restore whose conversation runs in another pane typed nothing. A round its pane's worker
-/// left open goes on there, from the conversation's record.
 const OPENED_IN_ANOTHER_PANE: &str = "the conversation was opened in another pane";
 
-/// Skips a restore that typed nothing, and ends the rounds the earlier instance left open in its
-/// pane, which nothing takes up again.
 fn skip(store: &mut Store, instance: &str, restore: &Open, note: &str) -> Result<Option<i64>> {
     let tx = store.write()?;
     tx.execute(
@@ -343,9 +307,8 @@ fn skip(store: &mut Store, instance: &str, restore: &Open, note: &str) -> Result
     Ok(None)
 }
 
-/// Ends the rounds the earlier instance left open in the pane of a restore that starts nothing,
-/// and in each pane that showed its conversation there and left the conversation to this restore,
-/// whose record would have taken them up.
+/// Each other pane of an earlier instance that showed this conversation and has no restore here
+/// left its open rounds to this restore's record; with nothing started, they end too.
 fn end_left(tx: &Transaction, instance: &str, restore: &Open) -> Result<()> {
     task::end_left_to_server(tx, instance, &restore.block)?;
     let deferred: Vec<String> = tx

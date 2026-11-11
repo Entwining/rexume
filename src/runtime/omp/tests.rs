@@ -18,7 +18,6 @@ fn a_session_reopens_from_its_file_only_once_it_exists() -> Result<()> {
         transcript: Some(path.clone()),
         settings: settings(&[("model", "fast")]),
     };
-    // omp refuses to resume a session file that does not exist.
     assert!(!Runtime::Omp.can_reopen(&c));
     std::fs::write(&session, "")?;
     assert!(Runtime::Omp.can_reopen(&c));
@@ -27,9 +26,6 @@ fn a_session_reopens_from_its_file_only_once_it_exists() -> Result<()> {
     Ok(())
 }
 
-/// Loads the extension in Node and calls its handlers as omp does, binding a fresh instance to the
-/// pane's session and to a subagent's, then switches the pane to another session. Prints what it
-/// passed to omp.
 const HARNESS: &str = r#"
     import { join } from "node:path";
     const [extension, home] = process.argv.slice(1);
@@ -79,16 +75,12 @@ const HARNESS: &str = r#"
     process.once("beforeExit", () => console.log(JSON.stringify(sent)));
 "#;
 
-/// Runs `HARNESS` in `home`, in the pane `block` names, with a `rexume` that saves each report in
-/// `home/reports` and a message in each session's inbox, and returns the messages the extension
-/// passed to omp.
 fn run_harness(home: &Path, block: Option<&str>) -> Result<Vec<String>> {
     let state = home.join(".local/state/rexume");
     for id in ["main", "sub", "off", "next"] {
         let inbox = Runtime::Omp.inbox(&state, id).context("no inbox")?;
         inbox::send(&inbox, "d", &format!("[rexume d] to {id}"))?;
     }
-    // A Pi conversation of the same ID, which omp can open from Pi's session file.
     let pi = Runtime::Pi.inbox(&state, "main").context("no inbox")?;
     inbox::send(&pi, "p", "[rexume p] to Pi")?;
     let extension = home.join("rexume.ts");
@@ -122,9 +114,6 @@ fn run_harness(home: &Path, block: Option<&str>) -> Result<Vec<String>> {
     Ok(serde_json::from_slice(&out.stdout)?)
 }
 
-/// The pane's session records its runs and input without prompt text, reports itself with its
-/// record's length, and takes its notices, also after omp moves it; a subagent's session does none
-/// of it.
 #[test]
 fn the_extension_records_and_reports_only_the_panes_session() -> Result<()> {
     let home = tempfile::tempdir()?;
@@ -189,8 +178,6 @@ fn the_extension_records_and_reports_only_the_panes_session() -> Result<()> {
         .collect::<Result<Vec<_>>>()?;
     reported.sort_by_key(|r| (r.0.to_string(), r.2.as_u64()));
     let file = |name: &str| home.path().join(name).to_string_lossy().into_owned();
-    // Each measured the record before the line it was about to write: the run after the move its
-    // start, and the second process its session line.
     let before = |line: usize| {
         text.split_inclusive('\n')
             .take(line)
@@ -210,7 +197,6 @@ fn the_extension_records_and_reports_only_the_panes_session() -> Result<()> {
     Ok(())
 }
 
-/// Outside a Rex pane the extension records, reports, and takes nothing.
 #[test]
 fn the_extension_does_nothing_outside_a_rex_pane() -> Result<()> {
     let home = tempfile::tempdir()?;
@@ -220,7 +206,6 @@ fn the_extension_does_nothing_outside_a_rex_pane() -> Result<()> {
     Ok(())
 }
 
-/// Each sealed turn with the index of the line it starts at, and the last turn.
 fn turns(lines: &[Value]) -> (Vec<(Turn, u64)>, Turn) {
     let mut parser = Parser::default();
     let mut sealed = Vec::new();
@@ -266,9 +251,6 @@ fn a_turn_ends_as_its_last_run_stopped() {
     assert_eq!(turns(&[json!({"event": "start"})]), (vec![], Turn::Open));
 }
 
-/// Within one process every run before the turn's end carries it on, as omp's own continuations
-/// do; the first run of a process that took up a turn an earlier one left open carries it on with
-/// the continuation prompt or no input, and other input starts a new turn.
 #[test]
 fn a_turn_goes_on_only_through_a_continuation() {
     let session = json!({"event": "session"});
@@ -313,7 +295,6 @@ fn a_turn_goes_on_only_through_a_continuation() {
             after(3),
         ),
         (vec![&start, &session, &start, &notice, &end], after(2)),
-        // A process that ended before omp could go on as it said.
         (
             vec![&start, &retry, &session, &start, &prompt, &end],
             after(3),

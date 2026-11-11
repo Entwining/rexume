@@ -4,10 +4,6 @@ use rusqlite::params;
 use super::{block_gone, end_left_to_server};
 use crate::task::tests::{PROMPT, record, round, task_world};
 
-/// A pane the server restored itself runs a shell, so a round the earlier instance left open there
-/// ends, with a notice to its owner. A round started since the daemon observed the instance, one of
-/// a task registered on the instance before that, and one in a pane the server did not restore, go
-/// on.
 #[test]
 fn a_round_an_earlier_instance_left_open_in_a_pane_the_server_restored_ends() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -58,8 +54,6 @@ fn a_round_an_earlier_instance_left_open_in_a_pane_the_server_restored_ends() ->
     Ok(())
 }
 
-/// A worker's conversation someone reopened in its own pane on the new instance, before the daemon
-/// planned the pane, takes its round up from its record there.
 #[test]
 fn a_round_whose_conversation_reopened_in_its_pane_goes_on() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -81,10 +75,6 @@ fn a_round_whose_conversation_reopened_in_its_pane_goes_on() -> Result<()> {
     Ok(())
 }
 
-/// A closed worker pane ends the rounds no record will finish: a run's, also one bound to a
-/// conversation whose record shows turns, and an interactive worker's whose conversation has no
-/// record. A Claude Code or omp worker's round is left to the record Rexume keeps for it, which
-/// the next pass reads, also for an omp session without a session file.
 #[test]
 fn a_closed_worker_pane_ends_only_the_rounds_no_record_finishes() -> Result<()> {
     for (runtime, run, ended) in [

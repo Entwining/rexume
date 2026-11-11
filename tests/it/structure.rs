@@ -1,5 +1,3 @@
-//! Every Rust file stays within the length AGENTS.md sets; blank and `//` lines do not count.
-
 use std::fs;
 use std::path::{Path, PathBuf};
 

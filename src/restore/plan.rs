@@ -1,7 +1,3 @@
-//! Deciding whether a pane the server restored reopens its conversation, by what the pane was last
-//! used for on the earlier instance: the conversation reopened, or reopened with the one prompt to
-//! continue a turn the server's end cut off; any other pane keeps the shell the server started.
-
 use std::fmt;
 use std::str::FromStr;
 
@@ -15,11 +11,8 @@ use last_use::candidate;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Start {
-    /// The shell the server started, left as it is.
     Shell,
-    /// The conversation reopened.
     Agent,
-    /// The conversation reopened with the one continuation prompt.
     Continue,
 }
 
@@ -56,42 +49,27 @@ impl fmt::Display for Start {
     }
 }
 
-/// What the gate needs to start a pane's conversation, stored whole in `restore.plan`.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct Plan {
-    /// The reopen command, without the continuation prompt.
     pub argv: Vec<String>,
-    /// Variables the reopen command runs with, by name and value.
     #[serde(default)]
     pub env: Vec<(String, String)>,
-    /// The continuation prompt, added to `argv` only when the gate still finds the turn open.
     pub prompt: Option<String>,
-    /// The conversation's transcript, by which the gate finds its record (`Runtime::record`) to
-    /// read again before it continues a turn.
     pub transcript: Option<String>,
-    /// The record's length when the plan read it to continue a turn: the gate continues only when
-    /// no turn ended after it.
     #[serde(default)]
     pub record_length: Option<u64>,
-    /// Whether the conversation ran with `REX_SESSION`. Workers start without it, so Rex does not
-    /// ask them to label the session, and reopen without it too.
+    /// Workers run without `REX_SESSION` so that Rex does not ask them to label the session.
     pub keeps_session_env: bool,
-    /// Why the pane starts the way it does, logged with the plan.
     pub reason: String,
 }
 
-/// Plans the restore of a pane the server restored, as recorded on an earlier instance, and returns
-/// it, or `None` when the pane keeps its shell or has a plan on this instance already. A pane that
-/// keeps its shell ends the rounds the earlier instance left open there, since nothing takes them
-/// up again, unless another pane reopens its conversation, whose record finishes them there. The
-/// conversation's record is read before the transaction, which only decides and writes.
 pub fn plan(
     store: &mut Store,
     instance: &str,
     block: &str,
     session_label: Option<&str>,
 ) -> Result<Option<String>> {
-    // Taken before the record is read: a report that arrives meanwhile is later than the plan.
+    // Before the record is read, so a report that arrives meanwhile counts as after the plan.
     let planned_at = now_ms();
     let candidate = candidate(store.conn(), store.dir(), instance, block)?;
     let tx = store.write()?;
@@ -107,8 +85,8 @@ pub fn plan(
     let mut id = None;
     if let Some((runtime, native_id)) = &candidate.conversation {
         let new = new_id();
-        // A pane that shows the turn the server's end cut off takes over the plan of one planned
-        // first without it, so that the turn continues wherever it ran.
+        // A `continue` plan replaces an `agent` plan another pane of the conversation made first,
+        // so the cut-off turn continues in the pane it ran in.
         let planned: Option<String> = tx
             .query_row(
                 "INSERT INTO restore (id, instance_id, block_lineage, session_label, start, runtime,
@@ -144,6 +122,7 @@ pub fn plan(
             None => reason = "another pane reopens this conversation".into(),
         }
     }
+    // When another pane reopens the conversation, this pane's open rounds go on from its record.
     if candidate.conversation.is_none() {
         task::end_left_to_server(&tx, instance, block)?;
     }

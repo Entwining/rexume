@@ -1,7 +1,3 @@
-//! Talks to a Rex server. The daemon holds one long-running connection, a Lua script run by
-//! `rex do` that passes calls and events through `rexume relay` (`Pipe`); short commands use one
-//! `rex api call` per request (`Cli`). Neither can start a server.
-
 mod pipe;
 pub mod relay;
 
@@ -15,30 +11,25 @@ use serde_json::{Value, json};
 
 pub use pipe::Pipe;
 
-/// The script `rex do` runs for the daemon.
 const ADAPTER: &str = include_str!("adapter.lua");
 
 #[derive(Debug, thiserror::Error)]
 pub enum CallError {
-    /// `rex` could not be started, so nothing was sent.
     #[error("failed to start `rex`: {0}")]
     Unsent(std::io::Error),
-    /// The server refused the request, so it changed nothing.
+    /// The server refused the request and changed nothing.
     #[error("the server refused it ({code}): {message}")]
     Rejected { code: String, message: String },
-    /// The call failed without a server answer; a mutating call may or may not have taken effect.
+    /// No server answer: a mutating call may or may not have taken effect.
     #[error("outcome unknown: {0}")]
     Unknown(String),
 }
 
 impl CallError {
-    /// Whether the server has no such session or block. Rex refuses a call on a session that does
-    /// not exist with `session_not_found`, and one on a block its session lacks with `not_found`.
     pub fn not_found(&self) -> bool {
         matches!(self, Self::Rejected { code, .. } if code == "not_found" || code == "session_not_found")
     }
 
-    /// What a note says about the failure: the server's own message, or why nothing was sent.
     pub fn reason(self) -> String {
         match self {
             Self::Rejected { message, .. } | Self::Unknown(message) => message,
@@ -47,9 +38,8 @@ impl CallError {
     }
 }
 
-/// Both report a server's refusal as `... (status=404 code=not_found)`, the CLI on stderr and the
-/// Lua API in its error string; anything else, such as a lost connection, leaves the outcome
-/// unknown.
+/// The `rex` CLI on stderr and the Lua API in its error string both report a refusal as
+/// `... (status=404 code=not_found)`.
 fn classify(error: &str) -> CallError {
     let message = error.trim().to_owned();
     match message.split("code=").nth(1) {
@@ -100,7 +90,6 @@ impl Rex {
         )
     }
 
-    /// The session holding a pane, or `None` when the server has no such pane.
     pub fn block_session(&mut self, block: &str) -> Result<Option<String>> {
         let reply = self.call(
             "target.resolve",
@@ -110,9 +99,8 @@ impl Rex {
     }
 }
 
-/// The session in a `target.resolve` reply for `block`. An ambiguous query, such as a label several
-/// panes share, carries no target; Rex's schema asks clients to treat a status they don't know as
-/// `not_found`.
+/// An ambiguous query, such as a label several panes share, carries no target; Rex's schema asks
+/// clients to treat a status they don't know as `not_found`.
 fn resolved_session(reply: &Value, block: &str) -> Result<Option<String>> {
     match require_str(reply, "/results/0/status")?.as_str() {
         "resolved" => require_str(reply, "/results/0/target/session_id").map(Some),
@@ -125,7 +113,6 @@ fn resolved_session(reply: &Value, block: &str) -> Result<Option<String>> {
     }
 }
 
-/// The `rex` executable and the server it talks to.
 #[derive(Clone)]
 pub struct Cli {
     pub bin: PathBuf,
@@ -133,7 +120,6 @@ pub struct Cli {
 }
 
 impl Cli {
-    /// The server a pane belongs to, as Rex sets it in the pane's environment.
     pub fn from_env() -> Result<Self> {
         let endpoint = std::env::var_os("REX_SERVER").context("REX_SERVER is not set")?;
         Ok(Self {
@@ -151,7 +137,6 @@ impl Cli {
         command
     }
 
-    /// The socket file of a `unix://` endpoint, to check for a server without connecting.
     pub fn socket_path(&self) -> Option<PathBuf> {
         let path = self.endpoint.strip_prefix("unix://")?;
         let path = percent_encoding::percent_decode_str(path).collect::<Vec<u8>>();
@@ -181,8 +166,6 @@ impl Cli {
         Err(classify(&String::from_utf8_lossy(&output.stderr)))
     }
 
-    /// Starts the script that connects the daemon: it runs `relay` with `token` appended, which
-    /// the relay sends back as its first line, and passes calls and events through it.
     pub fn adapter(&self, relay: &[String], token: &str) -> std::io::Result<Child> {
         let args = json!({ "relay": relay, "token": token });
         self.command()
@@ -197,7 +180,6 @@ pub fn str_at<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
     value.pointer(pointer).and_then(Value::as_str)
 }
 
-/// A time in a reply, which Rex writes in RFC 3339, as Unix milliseconds.
 pub fn time_at(value: &Value, pointer: &str) -> Option<i64> {
     let time = chrono::DateTime::parse_from_rfc3339(str_at(value, pointer)?).ok()?;
     Some(time.timestamp_millis())
@@ -209,8 +191,8 @@ pub fn require_str(value: &Value, pointer: &str) -> Result<String> {
         .ok_or_else(|| anyhow!("reply has no {pointer}"))
 }
 
-/// The items of a list in a reply. Lua encodes an empty list as an empty object and drops nulls,
-/// so anything that is not a list holds no items.
+/// Lua encodes an empty list as an empty object and drops nulls, so anything that is not a list
+/// holds no items.
 pub fn items<'a>(value: &'a Value, pointer: &str) -> &'a [Value] {
     value
         .pointer(pointer)
@@ -218,8 +200,7 @@ pub fn items<'a>(value: &'a Value, pointer: &str) -> &'a [Value] {
         .map_or(&[], Vec::as_slice)
 }
 
-/// The live IDs of the blocks a `session.list_blocks` reply lists, detached ones included, which
-/// `session.view` leaves out.
+/// `session.list_blocks` lists detached blocks too, which `session.view` leaves out.
 pub fn listed_blocks(list: &Value) -> Vec<String> {
     items(list, "/blocks")
         .iter()
@@ -227,12 +208,10 @@ pub fn listed_blocks(list: &Value) -> Vec<String> {
         .collect()
 }
 
-/// The record a `program_status` reply holds for the pane's program itself, which has no ID.
 pub fn root_status(status: &Value) -> Option<&Value> {
     items(status, "/records").iter().find(|r| is_root(r))
 }
 
-/// Whether a program status record, or an event about one, is the pane's program itself.
 pub fn is_root(record: &Value) -> bool {
     str_at(record, "/id").is_none_or(str::is_empty)
 }
@@ -270,7 +249,6 @@ mod tests {
 
     #[test]
     fn an_ambiguous_pane_is_refused_with_its_reason_and_an_unknown_status_is_not_found() {
-        // What Rex answers for a blank query while it has several sessions.
         let ambiguous = json!({ "results": [{
             "query": " ", "status": "ambiguous", "reason": "multiple sessions are available",
             "candidates": [{ "kind": "session", "session_id": "session:s" }],

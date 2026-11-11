@@ -40,7 +40,6 @@ fn fires_for_appends_replacement_and_exit() -> Result<()> {
     Ok(())
 }
 
-/// The daemon's own executable stays mapped while an upgrade renames a new one over its path.
 #[test]
 fn a_file_replaced_while_open_is_gone() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -71,8 +70,6 @@ fn a_replaced_link_fires_its_entry_watch() -> Result<()> {
     Ok(())
 }
 
-/// The daemon waits for the server's socket through its directory, and follows several records
-/// not written yet through the same directory.
 #[test]
 fn watches_of_one_directory_fire_apart() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -90,7 +87,6 @@ fn watches_of_one_directory_fire_apart() -> Result<()> {
     Ok(())
 }
 
-/// A record followed through its directory shares it with other records being written.
 #[test]
 fn a_directory_watch_ignores_writes_to_its_files() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -109,7 +105,6 @@ fn a_directory_watch_ignores_writes_to_its_files() -> Result<()> {
     Ok(())
 }
 
-/// Re-watching a path removes its old watch, whose last event names nothing the queue follows.
 #[test]
 fn wait_returns_nothing_only_once_its_timeout_passes() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -123,7 +118,6 @@ fn wait_returns_nothing_only_once_its_timeout_passes() -> Result<()> {
     Ok(())
 }
 
-/// The kernel drops events once its queue is full, so every watch may have missed a change.
 #[cfg(target_os = "linux")]
 #[test]
 fn an_overflow_fires_every_watch() -> Result<()> {
@@ -139,7 +133,7 @@ fn an_overflow_fires_every_watch() -> Result<()> {
         .parse()?;
     let open = |path| std::fs::OpenOptions::new().append(true).open(path);
     let (mut a, mut b) = (open(&a)?, open(&b)?);
-    // Alternating between two files, so that the kernel cannot merge an event into the last one.
+    // inotify merges an event identical to the last one queued, so the writes alternate files.
     for _ in 0..=limit / 2 {
         a.write_all(b"x")?;
         b.write_all(b"x")?;
@@ -154,8 +148,6 @@ fn an_overflow_fires_every_watch() -> Result<()> {
     }
 }
 
-/// A group leader that exits before the rest of its group leaves its ID naming the group, which
-/// older kernels report to `pidfd_open` as invalid rather than missing.
 #[cfg(target_os = "linux")]
 #[test]
 fn a_reaped_group_leader_has_exited() -> Result<()> {

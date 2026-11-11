@@ -1,6 +1,3 @@
-//! The daemon's side of the adapter connection: one JSON message per line each way. A call waits
-//! for the reply with its ID; events that arrive meanwhile are kept for the event loop.
-
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
 use std::os::fd::{AsFd, BorrowedFd};
@@ -12,11 +9,10 @@ use serde_json::{Value, json};
 
 use super::{CallError, classify};
 
-/// A call the server leaves unanswered this long is treated as lost.
 const CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// A call that takes this long alone uses up the second that restoring 20 sessions should take,
-/// while the bench's calls take tens of milliseconds.
+/// Alone uses up the second that restoring 20 sessions should take; the bench's calls take tens
+/// of milliseconds.
 const SLOW_CALL: Duration = Duration::from_secs(1);
 
 pub struct Pipe {
@@ -93,8 +89,6 @@ impl Pipe {
         }
     }
 
-    /// Events received so far, reading what the connection holds without waiting, and whether the
-    /// connection has ended.
     pub fn events(&mut self) -> (Vec<Value>, bool) {
         self.read_available();
         self.take_reply(0);
@@ -106,7 +100,6 @@ impl Pipe {
         !self.events.is_empty() || self.unread.contains(&b'\n')
     }
 
-    /// Waits for an event matching `wanted` until `until`, keeping the others for the event loop.
     pub fn wait_event(&mut self, until: Instant, wanted: impl Fn(&Value) -> bool) -> Option<Value> {
         loop {
             self.take_reply(0);
@@ -139,8 +132,6 @@ impl Pipe {
         }
     }
 
-    /// Splits the complete lines read so far into events and replies, and returns the reply to
-    /// `id`. A reply to an earlier call that gave up waiting is dropped.
     fn take_reply(&mut self, id: u64) -> Option<Value> {
         let mut reply = None;
         while let Some(newline) = self.unread.iter().position(|b| *b == b'\n') {
@@ -175,7 +166,6 @@ impl Pipe {
     }
 }
 
-/// Waits until the stream is ready for `flags` or has hung up, or `until` passes.
 fn wait(stream: &UnixStream, flags: PollFlags, until: Instant) -> bool {
     loop {
         let left = until.saturating_duration_since(Instant::now());
@@ -210,8 +200,6 @@ mod tests {
             let mut line = String::new();
             lines.read_line(&mut line)?;
             requests.push(serde_json::from_str::<Value>(&line)?);
-            // An event, a stale reply, then the reply, as Lua writes them: nulls dropped, an
-            // empty list as an object.
             writeln!(
                 out,
                 r#"{{"event":"session_view_changed","session_id":"s1"}}"#

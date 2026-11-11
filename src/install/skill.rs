@@ -1,8 +1,3 @@
-//! The stub of Rexume's skill (`skill::STUB`), which install writes where Claude Code reads skills,
-//! `~/.claude/skills`, and where Codex and Pi read them, `~/.agents/skills`. The stub tells the
-//! agent to run `rexume skill show`, so the guide it follows always comes from the installed
-//! binary, and a file install wrote is recognized by its `WRITTEN_BY` line in every version.
-
 use std::io::ErrorKind;
 use std::path::Path;
 
@@ -14,8 +9,6 @@ use crate::skill::STUB;
 
 const WRITTEN_BY: &str = "<!-- Written by `rexume install`";
 
-/// One skills directory under home, and the runtimes whose directories decide whether install
-/// writes there.
 struct Target {
     key: &'static str,
     skills: &'static str,
@@ -39,16 +32,12 @@ fn is_ours(text: &str) -> bool {
     text.lines().any(|line| line.starts_with(WRITTEN_BY))
 }
 
-/// Runs `apply` once per stub file with the targets that name it: when `~/.claude/skills` links to
-/// `~/.agents/skills`, both keys report what was done to their one file.
 fn each<T: Clone>(
     home: &Path,
     mut apply: impl FnMut(&[&Target], &Path) -> Result<T>,
 ) -> Result<[(&'static str, T); 2]> {
     let [agents, claude] = &TARGETS;
     let agents_path = home.join(agents.skills).join("rexume/SKILL.md");
-    // Resolved only to compare: `apply` gets the path the runtime reads, so a write follows its
-    // links and a removal takes the entry there, never what a link points to.
     if physical(&home.join(claude.skills))? == physical(&home.join(agents.skills))? {
         let result = apply(&[agents, claude], &agents_path)?;
         return Ok([(agents.key, result.clone()), (claude.key, result)]);
@@ -60,8 +49,6 @@ fn each<T: Clone>(
     ])
 }
 
-/// Writes the stub into each skills directory one of whose runtimes is set up, leaving a
-/// `rexume` skill install did not write as it is.
 pub(super) fn install(home: &Path) -> Result<[(&'static str, Outcome); 2]> {
     each(home, |targets, path| {
         let runtimes = targets.iter().flat_map(|t| t.runtimes);
@@ -83,7 +70,6 @@ pub(super) fn install(home: &Path) -> Result<[(&'static str, Outcome); 2]> {
     })
 }
 
-/// Removes each stub install wrote, with the `rexume` directory it leaves empty.
 pub(super) fn uninstall(home: &Path) -> Result<[(&'static str, Outcome); 2]> {
     each(home, |_, path| {
         let outcome = remove_file(path, is_ours)?;
@@ -92,7 +78,8 @@ pub(super) fn uninstall(home: &Path) -> Result<[(&'static str, Outcome); 2]> {
         {
             match std::fs::remove_dir(dir) {
                 Ok(()) => {}
-                // A `rexume` that links to a directory is the user's arrangement and stays.
+                // A `rexume` that links to a directory fails with `NotADirectory`; the link is the
+                // user's and stays.
                 Err(e)
                     if matches!(
                         e.kind(),
@@ -107,8 +94,6 @@ pub(super) fn uninstall(home: &Path) -> Result<[(&'static str, Outcome); 2]> {
     })
 }
 
-/// Rewrites each stub install wrote when it differs from this version's, returning each key with
-/// what `refresh_file` returned.
 pub fn refresh_skills(home: &Path) -> Result<[(&'static str, &'static str); 2]> {
     each(home, |_, path| refresh_file(path, STUB.as_bytes(), is_ours))
 }
@@ -123,9 +108,6 @@ mod tests {
         home.join(skills).join("rexume/SKILL.md")
     }
 
-    /// Where `~/.claude/skills` links to `~/.agents/skills`, even before that exists, the one file
-    /// is written for Claude Code alone, both keys report what was done to it, and uninstall leaves
-    /// no `rexume` directory behind.
     #[test]
     fn linked_skills_directories_report_one_file_twice() -> Result<()> {
         let home = tempfile::tempdir()?;
@@ -155,9 +137,6 @@ mod tests {
         Ok(())
     }
 
-    /// A stub that links to a file elsewhere is written through the link, as every file install
-    /// writes is, even when that file does not exist yet, and uninstall removes the link and its
-    /// `rexume` directory, leaving the file it pointed to.
     #[test]
     fn a_linked_stub_is_written_through_and_its_link_removed() -> Result<()> {
         let home = tempfile::tempdir()?;
@@ -196,8 +175,6 @@ mod tests {
         Ok(())
     }
 
-    /// A `rexume` directory that links elsewhere is the user's arrangement: install writes the stub
-    /// into its target, and uninstall removes that file and leaves the link and its target.
     #[test]
     fn a_linked_rexume_directory_stays() -> Result<()> {
         let home = tempfile::tempdir()?;
@@ -218,9 +195,6 @@ mod tests {
         Ok(())
     }
 
-    /// A `rexume` skill install did not write is kept by install, refresh, and uninstall alike,
-    /// while the other directory's stub is written, refreshed, and removed; a directory none of
-    /// whose runtimes is set up gets nothing.
     #[test]
     fn a_skill_install_did_not_write_stays() -> Result<()> {
         let home = tempfile::tempdir()?;

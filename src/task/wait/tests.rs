@@ -4,7 +4,6 @@ use std::thread;
 use super::*;
 use crate::task::tests::{PROMPT, record, task_world};
 
-/// Task `t`'s round 1 with `change` applied, and whether a waiter in `waiter`'s place returns.
 fn returns_after(store: &mut Store, change: &str, waiter: &Waiter) -> Result<Option<Returned>> {
     store.conn().execute_batch(change)?;
     let tx = store.write()?;
@@ -29,7 +28,6 @@ fn taken(kind: &str) -> (String, String, Option<String>) {
     )
 }
 
-/// Round 1 begins blocked episode `e{id}` at `at`, with its notice `id` pending.
 fn episode(at: i64, id: &str) -> String {
     format!(
         "UPDATE task_round SET state = 'blocked';
@@ -39,7 +37,6 @@ fn episode(at: i64, id: &str) -> String {
     )
 }
 
-/// The open episode `e{id}` that `episode` began.
 fn seen(id: &str) -> Option<String> {
     Some(format!("e{id}"))
 }
@@ -73,9 +70,7 @@ fn the_registered_waiter_returns_on_each_notice_it_takes() -> Result<()> {
         taken_at.is_some(),
         "the wait did not record when it took the notice"
     );
-    // The owner has been told of this episode, so a later wait waits for what comes next.
     assert_eq!(returns_after(&mut store, "", waiter)?, None);
-    // An episode whose notice the daemon sent does not end a wait either.
     let sent = format!(
         "{RESUMED}; {} UPDATE notice SET state = 'sent' WHERE id = 'b2'",
         episode(7, "b2")
@@ -96,8 +91,6 @@ fn the_registered_waiter_returns_on_each_notice_it_takes() -> Result<()> {
     Ok(())
 }
 
-/// A waiter behind another live one takes no notice, and returns on an episode that began after it
-/// came to stand behind it.
 #[test]
 fn a_waiter_behind_another_returns_on_a_later_episode() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -133,9 +126,6 @@ fn a_waiter_behind_another_returns_on_a_later_episode() -> Result<()> {
     Ok(())
 }
 
-/// A wait stands behind the holder its transaction reads unless that is the one it found gone
-/// before the transaction, and keeps the episode it saw when it came to stand behind one, also
-/// once another holder took the round meanwhile.
 #[test]
 fn a_wait_replaces_only_the_holder_it_found_gone() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -161,7 +151,6 @@ fn a_wait_replaces_only_the_holder_it_found_gone() -> Result<()> {
     assert_eq!(first, behind(111));
     let later = format!("{RESUMED}; {}", episode(7, "b2"));
     assert_eq!(stand_after(&mut store, &later, None, Some(&first))?, first);
-    // Another wait replaced the holder this one found gone before its transaction.
     let replaced = "UPDATE task_round SET waiter_pid = 333";
     assert_eq!(
         stand_after(&mut store, replaced, Some(111), Some(&first))?,
@@ -179,9 +168,6 @@ fn a_wait_replaces_only_the_holder_it_found_gone() -> Result<()> {
     Ok(())
 }
 
-/// A `task wait` on round 1 of the store in `dir` while its episode's notice is pending and a live
-/// `sleep` holds the round, which `then` changes once the wait stands behind it: the wait takes the
-/// notice and returns on it before its deadline.
 fn takes_over(dir: &Path, then: impl FnOnce(&Store, &mut Child) -> Result<()>) -> Result<()> {
     let transcript = record(&[PROMPT])?;
     let store = task_world(dir, transcript.path(), None)?;
@@ -212,7 +198,6 @@ fn takes_over(dir: &Path, then: impl FnOnce(&Store, &mut Child) -> Result<()>) -
     Ok(())
 }
 
-/// The waiter ahead returned on its timeout without the notice, which is now this one's to take.
 #[test]
 fn a_wait_behind_one_that_timed_out_takes_the_round_and_its_notice() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -224,8 +209,6 @@ fn a_wait_behind_one_that_timed_out_takes_the_round_and_its_notice() -> Result<(
     })
 }
 
-/// A waiter that dies writes nothing to the store; the one behind it learns of the death from the
-/// exit itself.
 #[test]
 fn a_wait_behind_one_that_died_takes_the_notice_it_left() -> Result<()> {
     let dir = tempfile::tempdir()?;

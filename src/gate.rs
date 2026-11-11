@@ -1,8 +1,3 @@
-//! The line the daemon types into the shell of a pane the server restored. It claims the pane's
-//! restore, then becomes the reopened conversation, which runs as a child of the pane's shell and
-//! leaves that shell at its prompt when it exits. A restore claimed already, or one whose
-//! conversation runs elsewhere, starts nothing, and the shell's prompt comes back.
-
 use std::os::unix::process::CommandExt;
 use std::path::Path;
 use std::process::Command;
@@ -16,15 +11,11 @@ use crate::restore::{self, Plan, Start};
 use crate::runtime::{self, Runtime, Turn};
 use crate::store::{Store, bind_live, now_ms};
 
-/// The shell started when `SHELL` is unset; Linux systems often have no zsh.
 #[cfg(target_os = "macos")]
 const FALLBACK_SHELL: &str = "/bin/zsh";
 #[cfg(target_os = "linux")]
 const FALLBACK_SHELL: &str = "/bin/sh";
 
-/// Claims the restore and starts its conversation. Returns, as the gate's exit status, only when
-/// it started nothing: 0 when the conversation runs in another pane, 1 when the claim failed or
-/// the conversation could not start.
 pub fn run(state_dir: &Path, id: &str) -> u8 {
     let (started, plan) = match claim_here(state_dir, id) {
         Ok(claimed) => claimed,
@@ -49,11 +40,6 @@ pub fn run(state_dir: &Path, id: &str) -> u8 {
     1
 }
 
-/// Runs the conversation from an interactive shell, as when the user starts it, so that a shell
-/// alias or function of the program's name applies; `exec` would skip both. The shell replaces
-/// this process, and the shell runs a lone command as itself rather than as a child, so the
-/// conversation runs as the process the claim recorded; a function that wraps it runs it as that
-/// process's child, which the daemon records once the pane shows it in the foreground.
 fn agent(shell: &str, plan: &Plan, started: Start) -> std::io::Error {
     let prompt = plan
         .prompt
@@ -71,9 +57,8 @@ fn agent(shell: &str, plan: &Plan, started: Start) -> std::io::Error {
     process.exec()
 }
 
-/// The reopen command as the shell reads it. The plan's variables are assignments before it,
-/// which set them for that command alone: `env` would skip the user's alias or shell function of
-/// the same name.
+/// Assignments before the command rather than `env`, which would skip the user's alias or
+/// function of the program's name.
 fn command_line(plan: &Plan, prompt: Option<&str>) -> Result<String, shlex::QuoteError> {
     let mut line = String::new();
     for (name, value) in &plan.env {
@@ -83,17 +68,12 @@ fn command_line(plan: &Plan, prompt: Option<&str>) -> Result<String, shlex::Quot
     Ok(line)
 }
 
-/// Claims the restore for the pane this process runs in.
 fn claim_here(state_dir: &Path, id: &str) -> Result<(Start, Plan)> {
     let block = std::env::var("REX_BLOCK").context("REX_BLOCK is not set")?;
     let mut store = Store::open(state_dir)?;
     claim(&mut store, id, &block, std::process::id())
 }
 
-/// Claims the restore for `block` and returns what it starts. A restore is claimed once; a
-/// conversation that reported itself from another pane since the restore was planned is already
-/// running there and is not started, and a turn its record shows ended since is not continued.
-/// The claim makes a conversation it starts the pane's occupant, as process `pid`.
 fn claim(store: &mut Store, id: &str, block: &str, pid: u32) -> Result<(Start, Plan)> {
     type Row = (String, String, String, String, String, String);
     let (start, runtime, plan, instance, lineage, native_id): Row = store
@@ -120,7 +100,6 @@ fn claim(store: &mut Store, id: &str, block: &str, pid: u32) -> Result<(Start, P
     let start: Start = start.parse()?;
     let plan: Plan = serde_json::from_str(&plan)?;
     let mut started = start;
-    // Read before the transaction: no record is read while holding the write lock.
     let record = runtime.record(store.dir(), &native_id, plan.transcript.as_deref());
     if start == Start::Continue && !turn_still_open(runtime, record.as_deref(), &plan) {
         started = Start::Agent;
@@ -157,13 +136,8 @@ fn claim(store: &mut Store, id: &str, block: &str, pid: u32) -> Result<(Start, P
     Ok((started, plan))
 }
 
-/// Records the conversation the claim starts as the pane's occupant: `agent` replaces this process
-/// with the shell and the shell with the conversation, which therefore runs as this process, or as
-/// a child of it when a shell function wraps it, which the daemon then records instead. Its own report
-/// may come much later, since Codex runs a resumed conversation's session-start hook only when its
-/// first turn starts, and until then requests and notices would wait for input nobody gives. The
-/// name of the process is not known before it runs; its own report adds it and keeps the start
-/// measured here.
+/// Recorded at the claim: Codex runs a resumed conversation's session-start hook only when its
+/// first turn starts, and until then requests and notices would wait for input nobody gives.
 fn occupy(
     tx: &Transaction,
     lineage: &str,
@@ -193,7 +167,6 @@ fn occupy(
     report::record(tx, lineage, runtime, &report, &process)
 }
 
-/// Whether the conversation's record ends no turn after what the plan read to continue it.
 fn turn_still_open(runtime: Runtime, record: Option<&Path>, plan: &Plan) -> bool {
     record.is_some_and(|record| {
         matches!(

@@ -20,7 +20,6 @@ use orchestration::Orchestration;
 
 const WAIT: Duration = Duration::from_secs(20);
 
-/// `rexume task ...` as the orchestrator in `block` would run it.
 fn task_command(server: &Server, state: &Path, block: &str, args: &[&str]) -> Command {
     let rex_dir = rex_bin().parent().unwrap().to_owned();
     let mut command = Command::new(REXUME);
@@ -50,7 +49,6 @@ fn task(server: &Server, state: &Path, block: &str, args: &[&str]) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-/// A command's exit status and stderr.
 fn failure(output: &Output) -> (Option<i32>, String) {
     (
         output.status.code(),
@@ -58,7 +56,6 @@ fn failure(output: &Output) -> (Option<i32>, String) {
     )
 }
 
-/// The content of the next message a listening messaging socket receives.
 fn message(listener: &UnixListener, what: &str) -> String {
     let stream = wait_until(what, WAIT, || {
         listener.accept().ok().map(|(stream, _)| stream)
@@ -70,8 +67,6 @@ fn message(listener: &UnixListener, what: &str) -> String {
     message["message"]["content"].as_str().unwrap().to_owned()
 }
 
-/// The acknowledged worker takes a new request: Rexume delivers it to the worker's socket, and the
-/// round's result is the turn that took it in.
 fn next_request_round(
     server: &Server,
     state: &Path,
@@ -117,8 +112,6 @@ fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
         ..
     } = &world;
 
-    // Before the worker answers: a wait times out with the task, an ack is refused, and another
-    // conversation cannot read the task.
     let waited = run_task(server, state, owner, &["wait", id, "--timeout", "1"]);
     assert_eq!(failure(&waited), (Some(124), String::new()));
     let waited: Value = serde_json::from_slice(&waited.stdout).unwrap();
@@ -146,7 +139,6 @@ fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
         Some("Looks good."),
     );
 
-    // The notice reaches the owner's message socket once, after the grace a waiting owner gets.
     let notice = message(listener, "the notice");
     let text = notice.as_str();
     assert!(text.contains(id.as_str()), "{text}");
@@ -165,8 +157,6 @@ fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
     let acked = task(server, state, owner, &["ack", id]);
     assert!(acked["acked_at"].is_i64());
     next_request_round(server, state, owner, id, worker_listener);
-    // A turn the user had the worker finish is unread, so the worker is not released before
-    // `task next` takes it.
     claude::turn(state, "worker", "p3", "And the docs?", Some("Docs too."));
     let (code, stderr) = failure(&run_task(server, state, owner, &["release", id]));
     assert_eq!(code, Some(1));
@@ -176,7 +166,6 @@ fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
     assert_eq!(waited["result"].as_str(), Some("Docs too."));
     let released = task(server, state, owner, &["release", id]);
     assert!(released["released_at"].is_i64());
-    // The daemon, the only closer, closes the unused disposable worker once it is released.
     wait_until("the daemon to close the worker's pane", WAIT, || {
         query::<String>(
             state,
@@ -194,8 +183,6 @@ fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
     );
 }
 
-/// Rex reports a pane again when its foreground process changes directory, which is no use of the
-/// pane: a released worker whose process did is still closed.
 #[test]
 #[ignore = "needs a Rex server"]
 fn a_released_worker_whose_process_changed_directory_closes() {

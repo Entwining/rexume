@@ -1,8 +1,3 @@
-//! The runner of a snapshot's Git commands. Each command, with whatever it starts, is a process
-//! group of its own, which ends when the command exits, at the snapshot's deadline, or when a
-//! signal stops the command that takes the snapshot, so that nothing a snapshot started outlives it
-//! while Rexume runs.
-
 use std::fs::File;
 use std::io::{PipeReader, Read, Seek};
 use std::os::fd::AsFd;
@@ -16,32 +11,22 @@ use nix::unistd::Pid;
 
 use crate::event::{Queue, Token};
 
-/// The signals that stop a command, which a snapshot takes through its queue while they are
-/// blocked, so that it ends its Git commands and deletes what it wrote before the command stops.
 const STOPS: [Signal; 3] = [Signal::SIGINT, Signal::SIGTERM, Signal::SIGHUP];
 const OUTPUT: Token = 1;
-/// Plus the signal's number.
 const STOP: Token = 100;
-/// Plus the process's place in its group: the queue reports a token once however many of its
-/// events one wait takes, so processes that exit together under one token would count as one.
 const EXIT: Token = 1000;
-/// How much of a command's standard error a note quotes.
 const STDERR_LIMIT: u64 = 4 << 10;
-/// The longest record of a command's output Rexume reads: no path or listed entry comes near.
+/// No path or listed entry comes near it.
 const RECORD_LIMIT: usize = 64 << 10;
 
-/// What each NUL-ended record a command prints is passed to.
 type EachRecord<'a> = dyn FnMut(&[u8]) -> Result<()> + 'a;
 
-/// The signal that stopped a snapshot, which stops the command once it has deleted what the
-/// snapshot wrote.
 #[derive(Debug, thiserror::Error)]
 #[error("the snapshot was stopped by {0}")]
 pub struct Stopped(pub Signal);
 
-/// Blocks the signals that stop a command while it lives, so that the queue of a snapshot running
-/// meanwhile takes them. Git and its filters inherit the block, since `Command` keeps the signal
-/// mask, and only the group's `SIGKILL` reaches them.
+/// Git and its filters inherit the block, since `Command` keeps the signal mask: the group's
+/// `SIGKILL` is what ends them.
 pub struct Blocked(SigSet);
 
 impl Blocked {
@@ -57,7 +42,6 @@ impl Drop for Blocked {
     }
 }
 
-/// The Git commands of one snapshot, which share its deadline and the queue that waits for each.
 pub(super) struct Git {
     queue: Queue,
     budget: Duration,
@@ -81,7 +65,6 @@ impl Git {
         })
     }
 
-    /// The time left before the deadline, failing once there is none.
     pub fn left(&self) -> Result<Duration> {
         let left = self.until.saturating_duration_since(Instant::now());
         if left.is_zero() {
@@ -91,10 +74,9 @@ impl Git {
         Ok(left)
     }
 
-    /// Runs `command` with `args` and `stdin` to its exit. Its standard output goes to a file,
-    /// since a pipe nobody reads until it exits would stop a command that prints more than the pipe
-    /// holds; its standard error goes to a file whose beginning the result keeps, or, when a filter
-    /// may write a file's content to it, nowhere.
+    /// Standard output goes to a file, since a pipe nobody reads until the command exits would stop
+    /// one that prints more than the pipe holds. With `filtered`, standard error goes nowhere, as a
+    /// filter may write a file's content to it.
     pub fn run(
         &mut self,
         mut command: Command,
@@ -116,8 +98,6 @@ impl Git {
         Ran::new(args[0], status, Some(stdout), stderr)
     }
 
-    /// Runs `command` with `args`, passing each NUL-ended record of its standard output to `each`
-    /// as it arrives; the command ends as soon as `each` fails.
     pub fn stream(
         &mut self,
         mut command: Command,
@@ -136,8 +116,6 @@ impl Git {
         Ran::new(args[0], status, None, Some(stderr))
     }
 
-    /// Runs `first` with `first_args` and `stdin`, and `second` with `second_args` reading its
-    /// output, as one group, and fails unless both succeed.
     pub fn pipe(
         &mut self,
         (mut first, first_args): (Command, &[&str]),
@@ -164,8 +142,8 @@ impl Git {
         Ok(())
     }
 
-    /// Starts `commands` in one new process group, the first leading it. Each command is dropped
-    /// once started, so that the ends of pipes it holds close in this process.
+    /// Each command is dropped once started, so that this process's ends of the pipes it holds
+    /// close.
     fn spawn(&mut self, commands: Vec<Command>) -> Result<Group> {
         self.left()?;
         let mut group = Group {
@@ -187,9 +165,6 @@ impl Git {
         Ok(group)
     }
 
-    /// Waits until every process of `group` has exited, reading `output` meanwhile, and returns
-    /// their statuses. The group is ended whatever happens, its processes reaped only after, so
-    /// that no other group can take its ID meanwhile.
     fn wait(
         &mut self,
         group: &mut Group,
@@ -197,6 +172,8 @@ impl Git {
     ) -> Result<Vec<ExitStatus>> {
         let mut running = 0;
         for (at, child) in group.children.iter().enumerate() {
+            // Linux's queue merges equal tokens within one wait, so a shared exit token would
+            // undercount exited children.
             running += usize::from(self.queue.exit(i64::from(child.id()), EXIT + at as Token)?);
         }
         if running == 0 {
@@ -237,7 +214,6 @@ impl Git {
     }
 }
 
-/// Reads what `reader` holds, passing each record it completes to `each`; `false` at its end.
 fn read(reader: &mut PipeReader, pending: &mut Vec<u8>, each: &mut EachRecord<'_>) -> Result<bool> {
     let mut chunk = [0; 64 << 10];
     let n = reader.read(&mut chunk)?;
@@ -254,7 +230,6 @@ fn read(reader: &mut PipeReader, pending: &mut Vec<u8>, each: &mut EachRecord<'_
     Ok(n > 0)
 }
 
-/// The processes of one Git command.
 struct Group {
     id: Option<Pid>,
     children: Vec<Child>,
@@ -267,8 +242,8 @@ impl Group {
         }
     }
 
-    /// Kills the group and reaps its processes, after which its ID is no longer signalled: once
-    /// they are reaped, another group can take it.
+    /// Kills before reaping and forgets the ID: once the processes are reaped, another group can
+    /// take it.
     fn end(&mut self) -> Result<Vec<ExitStatus>> {
         self.kill();
         self.id = None;
@@ -285,13 +260,10 @@ impl Drop for Group {
     }
 }
 
-/// A Git command that ran to its exit.
 pub(super) struct Ran {
     command: String,
     pub status: ExitStatus,
     stdout: Option<File>,
-    /// The beginning of its standard error, up to `STDERR_LIMIT`, unless a filter could write to
-    /// it.
     pub stderr: Option<String>,
 }
 
@@ -318,10 +290,9 @@ impl Ran {
         })
     }
 
-    /// Fails unless the command succeeded. Git expanding a sparse index goes on without the
-    /// entries of a directory whose tree it cannot read, says so, and exits 0, so that message
-    /// fails the command too. The other errors an isolated command reports while it expands one,
-    /// about the blobs Rexume did not copy, cost Git only the cache of its trees.
+    /// Git expanding a sparse index goes on without the entries of a directory whose tree it cannot
+    /// read, says so, and exits 0, so that message fails the command too. Its other errors while
+    /// expanding one, about blobs Rexume did not copy, cost Git only its cache of trees.
     pub fn check(&self) -> Result<()> {
         let stderr = self.stderr.as_deref().unwrap_or_default().trim();
         let unread = stderr.lines().any(|line| {
@@ -334,7 +305,6 @@ impl Ran {
         Ok(())
     }
 
-    /// The standard output read whole, or the error the command reported.
     pub fn output(self) -> Result<Vec<u8>> {
         self.check()?;
         let mut output = Vec::new();

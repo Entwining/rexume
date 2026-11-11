@@ -1,6 +1,3 @@
-//! The Linux queue: one epoll over the descriptors it is given, an inotify instance for watched
-//! paths, a pidfd for each watched process, and a signalfd for the signals.
-
 use std::collections::HashMap;
 use std::fs::Metadata;
 use std::os::fd::{BorrowedFd, OwnedFd};
@@ -18,15 +15,13 @@ use rustix::process::{Pid, PidfdFlags, pidfd_open};
 
 use super::{Fired, Token};
 
-/// The epoll data of the queue's own descriptors. A pidfd's is `EXIT` plus its process ID; a
-/// descriptor passed to `read` has its token, which stays below `EXIT`.
 const INOTIFY: u64 = u64::MAX;
 const SIGNALS: u64 = u64::MAX - 1;
+/// A pidfd's epoll data is `EXIT` plus its process ID, so a token passed to `read` stays below it.
 const EXIT: u64 = 1 << 62;
 
-/// Entries added to or removed from a directory, and the changes after which the path may name
-/// another inode. Each kind of inode has one mask, because inotify keeps one watch per inode and a
-/// second watch on it replaces the mask of the first.
+/// One mask per kind of inode: inotify keeps one watch per inode, and a second `add_watch` on it
+/// replaces the first's mask.
 const DIR_MASK: AddWatchFlags = AddWatchFlags::IN_CREATE
     .union(AddWatchFlags::IN_DELETE)
     .union(AddWatchFlags::IN_MOVED_FROM)
@@ -34,35 +29,29 @@ const DIR_MASK: AddWatchFlags = AddWatchFlags::IN_CREATE
     .union(AddWatchFlags::IN_DELETE_SELF)
     .union(AddWatchFlags::IN_MOVE_SELF);
 
-/// Writes to a file, and its unlinking. On a directory these two would also report every write to
-/// the files in it.
+/// `IN_ATTRIB` reports a file's unlinking, as its link count changes; on a directory it and
+/// `IN_MODIFY` would also report changes to every file in it.
 const FILE_MASK: AddWatchFlags = DIR_MASK
     .union(AddWatchFlags::IN_MODIFY)
     .union(AddWatchFlags::IN_ATTRIB);
 
-/// Events after which the watched inode may no longer be the one its path names.
 const MAYBE_GONE: AddWatchFlags = AddWatchFlags::IN_ATTRIB
     .union(AddWatchFlags::IN_MOVE_SELF)
     .union(AddWatchFlags::IN_DELETE_SELF)
     .union(AddWatchFlags::IN_IGNORED);
 
-/// Events that only an inode which is gone receives.
 const GONE: AddWatchFlags = AddWatchFlags::IN_DELETE_SELF.union(AddWatchFlags::IN_IGNORED);
 
 struct Watch {
     wd: WatchDescriptor,
     path: PathBuf,
-    /// A symbolic link at the path is watched itself.
     link: bool,
-    /// The device and inode the path named before the watch was added.
     inode: (u64, u64),
 }
 
 impl Watch {
-    /// Whether the path names another inode now, or none that can be read. A file that is
-    /// replaced or removed while a process still has it open or mapped, as the daemon has its own
-    /// executable, gets its `IN_DELETE_SELF` only once that process lets go, so the path is what
-    /// tells.
+    /// A file replaced or removed while still open or mapped, as the daemon's own executable is,
+    /// gets its `IN_DELETE_SELF` only once the last holder lets go, so the path is what tells.
     fn replaced(&self) -> bool {
         metadata(&self.path, self.link)
             .ok()
@@ -114,8 +103,7 @@ impl Queue {
             .add(fd, EpollEvent::new(EpollFlags::EPOLLIN, token))?)
     }
 
-    /// Fires when `signal` is sent to this process. The caller blocks the signal, as a signalfd
-    /// receives only blocked signals; the daemon blocks them to take them without a handler.
+    /// A signalfd receives only signals the caller blocks.
     pub fn signal(&mut self, signal: Signal, token: Token) -> Result<()> {
         self.signal_tokens.insert(signal, token);
         let mask: SigSet = self.signal_tokens.keys().copied().collect();
@@ -132,7 +120,6 @@ impl Queue {
         Ok(())
     }
 
-    /// Watches for a process's exit; `false` when it has already exited.
     pub fn exit(&mut self, pid: i64, token: Token) -> Result<bool> {
         self.forget_exit(pid);
         let Some(id) = i32::try_from(pid)
@@ -144,7 +131,8 @@ impl Queue {
         };
         let fd = match pidfd_open(id, PidfdFlags::empty()) {
             Ok(fd) => fd,
-            // A process that was reaped while its ID still names its group or session.
+            // Older kernels give `EINVAL` for a group leader reaped while its ID still names its
+            // group or session.
             Err(rustix::io::Errno::SRCH | rustix::io::Errno::INVAL) => return Ok(false),
             // A kernel without pidfds cannot report another process's exit without polling.
             Err(rustix::io::Errno::NOSYS) => {
@@ -152,7 +140,6 @@ impl Queue {
             }
             Err(e) => return Err(e.into()),
         };
-        // A pidfd is readable once its process has exited, also before it is reaped.
         let data = EXIT + u64::from(id.as_raw_pid().unsigned_abs());
         self.epoll
             .add(&fd, EpollEvent::new(EpollFlags::EPOLLIN, data))?;
@@ -166,14 +153,10 @@ impl Queue {
         }
     }
 
-    /// Watches a file for writes, or a directory for entries added or removed, replacing an
-    /// earlier watch under the same token; `false` when nothing exists at the path.
     pub fn file(&mut self, path: &Path, token: Token) -> Result<bool> {
         self.watch(path, token, false)
     }
 
-    /// Like `file`, but a symbolic link at the path is watched itself, so replacing the link
-    /// fires even though the file it pointed to is unchanged.
     pub fn entry(&mut self, path: &Path, token: Token) -> Result<bool> {
         self.watch(path, token, true)
     }
@@ -217,7 +200,6 @@ impl Queue {
         }
     }
 
-    /// Waits for at least one registered event, or until `timeout` passes when one is given.
     pub fn wait(&mut self, timeout: Option<Duration>) -> Result<Vec<Fired>> {
         let deadline = timeout.map(|t| Instant::now() + t);
         loop {
@@ -264,7 +246,6 @@ impl Queue {
         };
         for event in events {
             if event.mask.contains(AddWatchFlags::IN_Q_OVERFLOW) {
-                // The kernel dropped events, so any watch may have missed a change or its inode.
                 for (&token, watch) in &self.watches {
                     fire(fired, token, watch.replaced());
                 }
@@ -298,7 +279,6 @@ impl Queue {
     }
 }
 
-/// Adds a token once, as one inotify read can hold many events for the same watch.
 fn fire(fired: &mut Vec<Fired>, token: Token, gone: bool) {
     match fired.iter_mut().find(|f| f.token == token) {
         Some(f) => f.gone |= gone,

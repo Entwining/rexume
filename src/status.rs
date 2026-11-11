@@ -1,5 +1,3 @@
-//! `rexume status`: what a person checks after a restart, read without changing anything.
-
 use std::path::Path;
 
 use anyhow::Result;
@@ -43,7 +41,6 @@ pub fn run(state_dir: &Path, home: &Path) -> Result<Value> {
             },
         )
         .optional()?;
-    // Unreadable Claude Code settings must not hide restore and notice diagnostics.
     let claude_hooks_missing = install::missing_claude_hooks(home)
         .inspect_err(|e| log::warn!("{e:#}"))
         .ok();

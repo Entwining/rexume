@@ -53,7 +53,9 @@ The daemon [records each restore step before its side effect](design.md#restore)
 
 An agent with Rexume's skill reads the guide `rexume skill show` prints. The guide also covers starting agents in Rex panes and reading their answers.
 
-Run task commands from the orchestrator's own Rex pane. They find the orchestrator through `REX_BLOCK`. Start the worker without `REX_SESSION` and with `REX_BLOCK`, as Rex sets it. That makes it report from its own pane. Register it right after starting it, with its pane's block ID:
+The skill starts a worker nobody needs to watch in a detached pane of the orchestrator's session. No tab shows it, the Rex app included. Ask the agent to put a worker in a tab when you want to watch it or step in. Before it finishes, the agent releases or closes its detached workers and reports any it leaves running.
+
+Run task commands from the orchestrator's own Rex pane. They find the orchestrator through `REX_BLOCK`. Register the worker right after starting it, with its pane's block ID:
 
 ```sh
 rexume task add --worker "$WORKER_BLOCK" --title 'review the parser'
@@ -88,6 +90,10 @@ When the orchestrator no longer waits for a round, run `rexume task abandon ID`.
 
 Register a non-interactive run that writes its result to a file with `--result-file PATH` instead. The file becomes its result once the run exits 0. It [must hold nonempty UTF-8 text of at most 1 MiB](cli.md#task).
 
+### Past tasks
+
+`rexume export` prints every task and restore Rexume has recorded as [JSON Lines](cli.md#export). That includes the tasks the daemon has [archived](cli.md#task), which the task commands no longer find.
+
 ## Known limits
 
 ### Shell input
@@ -110,15 +116,19 @@ Rex has no conditional close. A person can start typing between Rexume's check t
 
 Rex has no per-pane notification audience. A worker's Done or Blocked indicator notifies you like any other pane.
 
+A detached worker whose task is never released stays open. Rex restores it and Rexume reopens its conversation at every restart, until you or an agent close it. `rex block ls -s SESSION --json` lists a session's panes with their `placement`, and `rex block close` closes one.
+
+`rexume task add` refuses a worker whose pane runs on another machine than the Rex server. Rexume follows a worker through this machine's files and processes.
+
 Rex saves its sessions about a second after a change. A pane opened or closed within about a second before a crash comes back as it was before that change.
 
 ### Claude Code messages
 
 The Claude Code plugin submits every message on a conversation's messaging socket that starts with a Rexume token as your own prompt. It does not check that Rexume wrote it. Another session's model can forge such a message and bypass the approval your inbound-message rules would require. A session that can run commands could reach the conversation through `rexume task send` anyway.
 
-Without that submission, Claude Code applies [its inbound-message rules](https://code.claude.com/docs/en/cross-session-messaging#control-inbound-messages) to Rexume's notices and requests. They carry no permission class. The rules apply when the plugin is disabled or the session started before it was installed. They also apply while Claude Code refuses plugins' prompts after you stop a turn, until you type again. `refuse` drops messages before the plugin sees them.
+Without that submission, Claude Code applies [its inbound-message rules](https://code.claude.com/docs/en/cross-session-messaging#control-inbound-messages) to Rexume's notices and requests. They carry no permission class. The rules apply when the plugin is disabled or the session started before it was installed. They also apply while Claude Code refuses plugins' prompts after you stop a turn, until you type again.
 
-With `crossSessionInbound` unset, a session that prompts for permissions receives the messages. One that bypasses permission prompts holds each for your approval. It drops the message when you deny it or leave approval unanswered for [`dialogExpiry`](https://code.claude.com/docs/en/settings-reference#dialogexpiry), five minutes by default. `hold` holds messages until an `accept` applies. `refuse` drops them.
+With `crossSessionInbound` unset, a session that prompts for permissions receives the messages. One that bypasses permission prompts holds each for your approval. It drops the message when you deny it or leave approval unanswered for [`dialogExpiry`](https://code.claude.com/docs/en/settings-reference#dialogexpiry), five minutes by default. `hold` holds messages until an `accept` applies. `refuse` drops them before the plugin sees them.
 
 A held request that is dropped is never delivered. Its round stays unfinished until the orchestrator abandons it or the worker's pane closes. Rexume never sends it again.
 

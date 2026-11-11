@@ -4,9 +4,6 @@ use rusqlite::Connection;
 use super::{definitions, fresh};
 use crate::store::Store;
 
-/// Version 10 adds `epoch.host_id`, unknown for an earlier epoch, and the database's `source_id`;
-/// an epoch keeps its ID and a new one follows the highest, and a task keeps its rounds, requests,
-/// and notices.
 #[test]
 fn open_upgrades_a_version_9_database_and_keeps_its_epochs_and_tasks() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -50,7 +47,6 @@ fn open_upgrades_a_version_9_database_and_keeps_its_epochs_and_tasks() -> Result
     Ok(())
 }
 
-/// `conn` holding a version 9 database in `dir`, with task `t` of owner `owner` on worker pane `b`.
 fn version_9(dir: &std::path::Path) -> Result<Connection> {
     let conn = Connection::open(dir.join("state.db"))?;
     conn.execute_batch(include_str!("../../../../tests/fixtures/schema-v9.sql"))?;
@@ -63,9 +59,6 @@ fn version_9(dir: &std::path::Path) -> Result<Connection> {
     Ok(conn)
 }
 
-/// A round blocked before version 10 keeps its episode open from when it began, and the episode
-/// keeps the notice that told of it, so nothing is sent again; an earlier episode's notice, which
-/// version 9 no longer needed, belongs to no episode, and the owner is owed what it was before.
 #[test]
 fn open_upgrades_a_version_9_blocked_round_into_its_open_episode() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -109,9 +102,6 @@ fn open_upgrades_a_version_9_blocked_round_into_its_open_episode() -> Result<()>
     Ok(())
 }
 
-/// Version 10's new columns start empty for what version 9 recorded: no meta, no attempt counted,
-/// no delivery time, and a run without a conversation; a notice keeps when it was sent, and a
-/// closed pane its state.
 #[test]
 fn open_upgrades_a_version_9_database_leaving_its_records_as_they_were() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -157,10 +147,6 @@ fn open_upgrades_a_version_9_database_leaving_its_records_as_they_were() -> Resu
     Ok(())
 }
 
-/// A round finished before version 10 recorded Rex's generation of its pane's reports, which also
-/// moves on reports about the same process. One whose pane's recorded generation has not moved
-/// since saw no report, so it takes the count the upgraded pane starts at; whether a program ran in
-/// any other's pane is unknown, so it takes none.
 #[test]
 fn open_upgrades_a_version_9_round_to_a_count_only_where_its_pane_was_not_reported_since()
 -> Result<()> {

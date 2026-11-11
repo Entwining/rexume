@@ -1,5 +1,3 @@
-//! The daemon's records in the `block` table: each pane's last reported state on this instance.
-
 use anyhow::Result;
 use rusqlite::{Connection, Transaction, params};
 use serde_json::Value;
@@ -8,7 +6,6 @@ use crate::rex::{str_at, time_at};
 use crate::store::ensure_lineage;
 use crate::task::{self, EndReason};
 
-/// Whether the pane has a record on this instance.
 pub(super) fn recorded(conn: &Connection, instance: &str, block: &str) -> Result<bool> {
     let rows: i64 = conn.query_row(
         "SELECT COUNT(*) FROM live JOIN block ON block.lineage = live.lineage
@@ -19,10 +16,6 @@ pub(super) fn recorded(conn: &Connection, instance: &str, block: &str) -> Result
     Ok(rows > 0)
 }
 
-/// Makes sure a block has a row on this instance and returns its lineage. A lineage on a new
-/// instance is a new pane: its processes, their statuses and exit, the generation that orders
-/// their reports, and the count of foreground changes start again, and a dialog its worker waited
-/// on went with the earlier instance.
 pub(super) fn touch_block(tx: &Transaction, instance: &str, block: &str) -> Result<String> {
     let lineage = ensure_lineage(tx, instance, block)?;
     let written = tx.execute(
@@ -40,8 +33,6 @@ pub(super) fn touch_block(tx: &Transaction, instance: &str, block: &str) -> Resu
     Ok(lineage)
 }
 
-/// Records the foreground process, whose parent was `parent` when read, and counts a change of
-/// process, ignoring a report older than one already recorded.
 pub(super) fn set_foreground(
     tx: &Transaction,
     lineage: &str,
@@ -60,20 +51,14 @@ pub(super) fn set_foreground(
         }
     }
     let pid = foreground_pid(foreground);
-    // Every expression reads the row as it was, so the count compares with the recorded process.
     tx.execute(
         "UPDATE block SET fg_changes = fg_changes + (fg_pid IS NOT ?1), fg_pid = ?1,
            fg_generation = COALESCE(?2, fg_generation)
          WHERE lineage = ?3",
         params![pid, generation, lineage],
     )?;
-    // The gate records the conversation it starts as its own process, which the shell it becomes
-    // replaces with the conversation unless a shell function wraps the command: the conversation
-    // is then that shell's child, maybe after other children the function or the shell's startup
-    // files run first, so each foreground child of the gate's process on the pane's instance, and
-    // that process itself once it shows again, becomes the occupant. Codex
-    // reports itself only when its first turn starts, and until then requests and notices would
-    // wait for the process the gate recorded.
+    // Requests and notices wait for the occupant's PID to be the foreground, and Codex reports
+    // itself only once its first turn starts.
     if let (Some(pid), Some(parent)) = (pid, parent) {
         tx.execute(
             "UPDATE occupant SET pid = ?1
@@ -88,7 +73,6 @@ pub(super) fn set_foreground(
     Ok(())
 }
 
-/// The foreground's process ID, as a report gives it.
 pub(super) fn foreground_pid(foreground: Option<&Value>) -> Option<i64> {
     foreground
         .and_then(|f| f.get("pid"))

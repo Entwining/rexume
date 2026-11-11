@@ -1,12 +1,7 @@
-//! A fake of the service manager install drives. It records its calls in `calls.log` and keeps
-//! the job in files under one directory instead of reaching the real manager: `job` is the
-//! program it starts, which writes its pid to `loaded` and removes it on exit, and `fail-stop`
-//! makes the next stop fail.
-
 use std::path::Path;
 
-/// launchd: `bootstrap` starts the job's process, `bootout` only sends it `SIGTERM`, the job stays
-/// loaded until that process exits, and `bootstrap` fails while it is loaded.
+/// launchd's `bootout` only sends the job `SIGTERM`; the job stays loaded until its process exits,
+/// and `bootstrap` fails while it is loaded.
 #[cfg(target_os = "macos")]
 mod platform {
     use std::path::{Path, PathBuf};
@@ -47,10 +42,8 @@ esac
     }
 }
 
-/// The systemd user manager: `read` is its copy of the unit, which `daemon-reload` refreshes,
-/// `enabled` marks the unit enabled, `stop` returns once the job has exited, `restarting` shows the
-/// service waiting to restart, `start-limit` keeps it failed and refusing starts until
-/// `reset-failed`, and `no-manager` makes every call fail as on a host without a user manager.
+/// systemd's `stop` returns once the job has exited, a service waiting to restart shows as
+/// `activating`, and one at its start limit stays failed and refuses starts until `reset-failed`.
 #[cfg(target_os = "linux")]
 mod platform {
     use std::path::{Path, PathBuf};
@@ -122,7 +115,6 @@ esac
 
 pub use platform::{KEY, NAME, NAME_KEY, STARTS, STOPS, TOOL, definition, quoted, script};
 
-/// The calls whose first word is one of `verbs`.
 pub fn calls(dir: &Path, verbs: &[&str]) -> usize {
     std::fs::read_to_string(dir.join("calls.log"))
         .unwrap_or_default()

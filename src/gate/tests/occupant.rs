@@ -32,8 +32,6 @@ fn occupant(store: &Store) -> Result<Option<Occupant>> {
         .optional()?)
 }
 
-/// The conversation the gate starts runs as the gate's process, under the user's shell rather
-/// than as the terminal's own program, and its record counts from where it stood at the claim.
 #[test]
 fn a_claim_records_the_conversation_it_starts_as_the_gates_process() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -46,7 +44,6 @@ fn a_claim_records_the_conversation_it_starts_as_the_gates_process() -> Result<(
         occupant(&store)?,
         Some(("c".into(), Some("i2".into()), 42, None, Some(false), length))
     );
-    // The conversation's own reports come from the same process, under the name Rex gives it.
     let process = |start_position| Process {
         transport: Map::new(),
         keeps_session_env: false,
@@ -103,8 +100,6 @@ fn a_request_reaches_a_restored_worker_that_has_not_reported() -> Result<()> {
         transcript: Some(transcript.path().to_string_lossy().into_owned()),
         ..Plan::default()
     };
-    // Pi worker `w` reported from pane `b` on instance `i1`; the server restarted as `i2`, which
-    // the daemon observes, and restored the pane, into which the daemon typed the gate.
     store.conn().execute(
         "INSERT INTO conversation (runtime, native_id, transcript, resumable, reported_at)
          VALUES ('pi', 'w', ?1, 1, 50)",

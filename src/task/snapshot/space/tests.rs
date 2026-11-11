@@ -9,7 +9,6 @@ use crate::task::snapshot::tests::{finished, killed, names, running};
 
 const MIB: u64 = 1 << 20;
 
-/// Each row of `snapshot_space`, as (task, capture, state, bytes).
 fn rows(store: &Store) -> Result<Vec<(String, String, String, i64)>> {
     Ok(store
         .conn()
@@ -25,8 +24,6 @@ fn row(task: &str, capture: &str, state: &str, bytes: u64) -> (String, String, S
     (task.to_owned(), capture.to_owned(), state.to_owned(), bytes)
 }
 
-/// Two captures reserving at once, from their own connections, cannot both take the space left
-/// for one.
 #[test]
 fn a_capture_is_refused_the_space_another_reserved() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -44,9 +41,6 @@ fn a_capture_is_refused_the_space_another_reserved() -> Result<()> {
     Ok(())
 }
 
-/// A capture settles on the size of what it wrote, or forgets its row when it wrote nothing; one
-/// that wrote more than the space left, or whose reservation is gone, is refused and keeps what
-/// it reserved until it releases it, once it has deleted what it wrote.
 #[test]
 fn a_capture_settles_on_what_it_wrote() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -75,10 +69,6 @@ fn a_capture_settles_on_what_it_wrote() -> Result<()> {
     Ok(())
 }
 
-/// What killed captures left is finished by their rows once their locks can be taken: one that
-/// had reserved space, its lock file gone or not, or had not yet, leaves nothing and counts no
-/// more, and the objects of one that kept them move to the task's and keep counting. A capture
-/// still running keeps its reservation, and another task's reservation is finished too.
 #[test]
 fn recovery_finishes_what_killed_captures_left() -> Result<()> {
     let (dir, temp) = (tempfile::tempdir()?, tempfile::tempdir()?);
@@ -123,9 +113,6 @@ fn recovery_finishes_what_killed_captures_left() -> Result<()> {
     Ok(())
 }
 
-/// A killed capture whose files cannot be deleted, nor read to measure them, keeps its reservation
-/// counting all the space snapshots may take, so that no capture is given space until they are
-/// deleted.
 #[test]
 fn files_a_capture_left_that_cannot_be_read_take_all_the_space() -> Result<()> {
     let (dir, temp) = (tempfile::tempdir()?, tempfile::tempdir()?);

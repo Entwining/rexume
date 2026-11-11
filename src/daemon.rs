@@ -1,8 +1,3 @@
-//! The daemon: one long-running process that observes a Rex server, keeps the panes' states,
-//! reopens conversations in the panes a new server instance restored, and moves tasks along. It
-//! waits on one event queue and wakes only for an event, a deadline, a signal, a process exit, or
-//! a file it follows.
-
 mod block;
 mod connection;
 mod epoch;
@@ -32,10 +27,7 @@ use crate::task;
 pub struct Options {
     pub state_dir: PathBuf,
     pub cli: Cli,
-    /// This executable, which restored panes run as their gate and the adapter runs as its relay.
     pub exe: PathBuf,
-    /// The home directory whose Claude Code plugin, Pi and omp extensions, and Claude Code turn
-    /// hooks the daemon refreshes when it starts.
     pub home: PathBuf,
 }
 
@@ -47,29 +39,26 @@ const SERVER_DIR: Token = 5;
 const WAITER_EXIT: Token = 6;
 const EXE: Token = 7;
 const STOP: Token = 8;
-/// Files the task module follows get tokens from here up.
 const FIRST_FILE: Token = 1000;
 
 const STOP_SIGNALS: [Signal; 2] = [Signal::SIGTERM, Signal::SIGINT];
 
 pub fn run(options: &Options) -> Result<()> {
-    // Blocked, as a signalfd reads only blocked signals and kqueue reports them too. Every child
-    // inherits the blocked set, so the daemon ends `rex do` with SIGKILL instead of passing them on.
+    // A signalfd reads only blocked signals, and kqueue reports blocked ones too. Children inherit
+    // the blocked set.
     let mut stop = SigSet::empty();
     for signal in STOP_SIGNALS {
         stop.add(signal);
     }
     stop.thread_block()?;
-    // With the directory of the turn records this tool keeps, a record not written yet is
-    // followed through it until it appears.
+    // `register` can follow a record not written yet only through an existing directory.
     for runtime in Runtime::value_variants() {
         if let Some(records) = runtime.records(&options.state_dir) {
             store::create_private_dir(&records)?;
         }
     }
-    // A daemon starts after every upgrade, so this closes a state directory an earlier version
-    // created open to other users. The daemon works the same either way, so a failure is no reason
-    // to stop restoring.
+    // Earlier versions created the state directory open to other users; restoring works either
+    // way, so a failure only warns.
     match std::fs::metadata(&options.state_dir) {
         Ok(meta) if meta.permissions().mode() & 0o077 == 0 => {}
         _ => match std::fs::set_permissions(&options.state_dir, Permissions::from_mode(0o700)) {
@@ -97,9 +86,6 @@ pub fn run(options: &Options) -> Result<()> {
     }
     refresh_integrations(&options.home);
     let mut store = Store::open(&options.state_dir)?;
-    // Holding the lock, an epoch still open belongs to a daemon that died. Whether its server
-    // stopped afterwards is unknown, so nothing it saw counts as the server's final state. A pane
-    // it held for a close goes back to `open`; the next pass checks it again.
     {
         let tx = store.write()?;
         tx.execute(
@@ -112,7 +98,6 @@ pub fn run(options: &Options) -> Result<()> {
     for (kind, id) in task::orphaned_sends(&mut store)? {
         log::warn!("{kind} {id}: left mid-send by the previous daemon, now unknown");
     }
-    // Holding the lock, this process owns the socket path.
     let socket = options.state_dir.join("daemon.sock");
     let _ = std::fs::remove_file(&socket);
     let listener = UnixListener::bind(&socket)
@@ -152,10 +137,9 @@ pub fn run(options: &Options) -> Result<()> {
     }
 }
 
-/// A daemon starts after every upgrade, so this is where a new version of what install writes
-/// reaches each runtime. What each one lacks without it is no reason to stop restoring.
+/// A daemon starts after every upgrade, so this is where an upgrade's integration files reach
+/// each runtime. A runtime missing one is no reason to stop restoring the others.
 fn refresh_integrations(home: &Path) {
-    // Without its extension, Pi or omp reports no session and takes no notice.
     for (runtime, refreshed) in install::refresh_extensions(home) {
         match refreshed {
             Ok("updated") => log::info!("updated the {runtime} extension"),
@@ -163,14 +147,11 @@ fn refresh_integrations(home: &Path) {
             Err(e) => log::warn!("failed to refresh the {runtime} extension: {e:#}"),
         }
     }
-    // Without the plugin, notices and requests still reach Claude Code, framed as another
-    // session's messages.
     match install::refresh_claude_plugin(home) {
         Ok("updated") => log::info!("updated the Claude Code plugin"),
         Ok(_) => {}
         Err(e) => log::warn!("failed to refresh the Claude Code plugin: {e:#}"),
     }
-    // An older stub keeps an older description, which decides when agents load the skill.
     match install::refresh_skills(home) {
         Ok(refreshed) => {
             for (key, outcome) in refreshed {
@@ -181,7 +162,6 @@ fn refresh_integrations(home: &Path) {
         }
         Err(e) => log::warn!("failed to refresh the skill stubs: {e:#}"),
     }
-    // Claude Code rounds finish only from the turn record its turn hooks write.
     match install::refresh_claude_hooks(home) {
         Ok("created") => log::info!("added the Claude Code turn hooks"),
         Ok(_) => {}
@@ -189,12 +169,10 @@ fn refresh_integrations(home: &Path) {
     }
 }
 
-/// Why the daemon stops serving without an error. The child it runs is ended on the way out.
 #[derive(Debug, thiserror::Error)]
 enum Exit {
-    /// The executable at the path this daemon was started from was replaced or removed, as an
-    /// upgrade does. The job names that path, so it starts the new executable once this one
-    /// exits; every restore and notice is safe to pick up from its saved state.
+    /// The job names the path this daemon was started from, so it starts the new executable once
+    /// this one exits.
     #[error("the rexume executable was replaced")]
     Replaced,
     #[error("stopped by a signal")]
@@ -208,7 +186,6 @@ struct Daemon<'a> {
     listener: UnixListener,
     socket: PathBuf,
     files: HashMap<PathBuf, Token>,
-    /// Tokens of files followed through their directory because they did not exist yet.
     via_dir: HashSet<Token>,
     next_file: Token,
     pids: HashSet<i64>,

@@ -1,10 +1,3 @@
-//! Closing a released disposable worker's pane, only while nothing has happened in it since its
-//! latest result. The daemon is the only closer: it claims the pane (`closing`) in a short
-//! transaction before it calls Rex, so `add` cannot hand the pane new work meanwhile, and a
-//! released task starts no more rounds.
-//! Rex has no conditional close, so a change in the moment between the last check and the close
-//! is not excluded.
-
 mod untouched;
 
 use std::path::Path;
@@ -20,10 +13,6 @@ use crate::runtime::Runtime;
 use crate::store::{Store, live_of};
 use untouched::{Untouched, idle_since, taken, untouched};
 
-/// Released disposable workers whose panes, as last recorded, still show the worker as its latest
-/// result left it, with the task to close each by. Run before a later instance's records replace
-/// the earlier one's; any other pane, including one the user took over after the result or one
-/// whose worker's record cannot be read, stays.
 pub fn retired_workers(conn: &Connection, state_dir: &Path) -> Result<Vec<(String, String)>> {
     let mut retired: Vec<(String, String)> = Vec::new();
     for id in due(conn)? {
@@ -38,9 +27,6 @@ pub fn retired_workers(conn: &Connection, state_dir: &Path) -> Result<Vec<(Strin
     Ok(retired)
 }
 
-/// Holds a retired worker's pane, which the server restored, for the restore to close: `add`
-/// hands it no new work and the close pass leaves it alone. Returns whether it was held; a pane
-/// working again is not.
 pub fn hold(store: &mut Store, id: &str) -> Result<bool> {
     let tx = store.write()?;
     let held = tx.execute(&CLAIM, params![id])? == 1;
@@ -48,8 +34,6 @@ pub fn hold(store: &mut Store, id: &str) -> Result<bool> {
     Ok(held)
 }
 
-/// Lets go of every held pane, which the next pass checks again: a restore holds a pane for one
-/// epoch, and a close attempt for one pass.
 pub fn release_held(tx: &Transaction) -> Result<()> {
     tx.execute(
         "UPDATE task SET pane_state = 'open' WHERE pane_state = 'closing'",
@@ -58,8 +42,6 @@ pub fn release_held(tx: &Transaction) -> Result<()> {
     Ok(())
 }
 
-/// The tasks whose worker's pane is held, with the pane. Only a restore holds a pane across
-/// passes, and the daemon lets go of every one when it starts and when an epoch starts.
 pub fn held(conn: &Connection) -> Result<Vec<(String, String)>> {
     Ok(conn
         .prepare("SELECT id, worker_lineage FROM task WHERE pane_state = 'closing'")?
@@ -67,7 +49,6 @@ pub fn held(conn: &Connection) -> Result<Vec<(String, String)>> {
         .collect::<rusqlite::Result<_>>()?)
 }
 
-/// Gives up a held pane for good: someone uses it.
 pub fn keep(tx: &Transaction, id: &str, reason: &str) -> Result<()> {
     tx.execute(
         "UPDATE task SET pane_state = 'kept', pane_note = ?1 WHERE id = ?2 AND pane_state = 'closing'",
@@ -76,8 +57,6 @@ pub fn keep(tx: &Transaction, id: &str, reason: &str) -> Result<()> {
     Ok(())
 }
 
-/// Released disposable workers whose panes Rexume may still close: no round of any task on the
-/// same pane is unfinished.
 pub(super) static DUE: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT t.id FROM task t
@@ -94,8 +73,6 @@ pub(super) fn due(conn: &Connection) -> Result<Vec<String>> {
         .collect::<rusqlite::Result<_>>()?)
 }
 
-/// Claims one due task's pane for a close attempt, unless a round of any task on the same pane
-/// has not finished: that pane is working again.
 pub(super) static CLAIM: LazyLock<String> = LazyLock::new(|| {
     format!(
         "UPDATE task SET pane_state = 'closing'
@@ -105,20 +82,12 @@ pub(super) static CLAIM: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// How a close attempt ended.
 enum Check {
-    /// The pane is no longer on the server, closed by this attempt or before it.
     Gone(String),
-    /// Someone used the worker after its result; it is theirs now.
     Keep(String),
-    /// Try again once the server's view changes.
     Later(String),
 }
 
-/// Closes a released disposable worker's pane only while it still shows the worker as the
-/// result left it, as recorded and, for an interactive worker, as the server reports it now, and
-/// is not the pane the user is looking at. A pane found in use is kept for good; a close put off
-/// goes back to `open` with the reason in `pane_note`. Returns what happened, for the log.
 pub(super) fn close(rex: &mut Rex, store: &mut Store, instance: &str, id: &str) -> Result<String> {
     let worker: String = store.conn().query_row(
         "SELECT worker_lineage FROM task WHERE id = ?1",
@@ -210,8 +179,6 @@ fn attempt(
     })
 }
 
-/// Closes a worker's pane unless it is its session's focused pane, which the user may be looking
-/// at. Returns `None` once the pane is gone, or why it is still there.
 pub fn close_unfocused(rex: &mut Rex, session: &str, block: &str) -> Result<Option<String>> {
     let view = rex.call("session.view", &json!({ "session_id": session }))?;
     let active = str_at(&view, "/active_window_id");
@@ -222,6 +189,7 @@ pub fn close_unfocused(rex: &mut Rex, session: &str, block: &str) -> Result<Opti
     if focused == Some(block) {
         return Ok(Some("the worker's pane has focus".into()));
     }
+    // Rex has no conditional close, so the pane can change between the last check and this close.
     Ok(
         match rex.call(
             "block.close",

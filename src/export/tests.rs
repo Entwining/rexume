@@ -4,8 +4,6 @@ use serde_json::{Value, json};
 use super::*;
 use crate::store::archive;
 
-/// A database with an epoch and two tasks in use, `old` finished long ago and `kept` with an
-/// unfinished round, after a sweep that archived `old`, and when it did.
 fn store() -> Result<(tempfile::TempDir, Store, i64)> {
     let dir = tempfile::tempdir()?;
     let mut store = Store::open(dir.path())?;
@@ -28,7 +26,6 @@ fn store() -> Result<(tempfile::TempDir, Store, i64)> {
     Ok((dir, store, archived_at))
 }
 
-/// Finishes `kept`'s round long ago, so that the next sweep archives it.
 fn finish_kept(store: &Store) -> Result<()> {
     store.conn().execute_batch(
         "UPDATE task_round SET state = 'cancelled', finished_at = 1, acked_at = 1
@@ -61,8 +58,6 @@ fn archived_data(store: &Store, id: &str) -> Result<Value> {
     Ok(serde_json::from_str(&data)?)
 }
 
-/// The export starts with its header and ends with the count of entities between; an archived
-/// entity carries its archived document, and one in use the document the sweep then archives.
 #[test]
 fn export_prints_entities_in_use_and_archived_between_header_and_end() -> Result<()> {
     let (_dir, mut store, archived_at) = store()?;
@@ -100,7 +95,6 @@ fn export_prints_entities_in_use_and_archived_between_header_and_end() -> Result
     assert_eq!(epoch[0]["data"]["epoch"]["daemon_version"], "0.1.0");
     let kept = entity(&lines, "kept");
     assert_eq!(kept[0]["archived_at"], Value::Null);
-    // A JSON column prints as the text it holds.
     assert_eq!(kept[0]["data"]["task"]["meta"], r#"{"eval": "e1"}"#);
     assert_eq!(kept[0]["data"]["blocked_episode"][0]["message"], "Edit?");
     archive::sweep(&mut store, "i2", now_ms())?;
@@ -108,7 +102,6 @@ fn export_prints_entities_in_use_and_archived_between_header_and_end() -> Result
     Ok(())
 }
 
-/// An entity archived between the snapshot and its printing appears once, as it was in use.
 #[test]
 fn an_entity_archived_after_the_snapshot_appears_once() -> Result<()> {
     let (_dir, mut store, _) = store()?;
@@ -125,7 +118,6 @@ fn an_entity_archived_after_the_snapshot_appears_once() -> Result<()> {
     Ok(())
 }
 
-/// An archived document gone by the time it is printed fails the export before its last line.
 #[test]
 fn a_missing_archived_document_leaves_the_export_without_its_end() -> Result<()> {
     let (_dir, store, _) = store()?;

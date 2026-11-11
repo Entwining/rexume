@@ -7,8 +7,6 @@ fn verify_cli() {
     Args::command().debug_assert();
 }
 
-/// Every command has a summary, and every argument a help line without a final period, a
-/// kebab-case long flag, and a value name when it takes a value.
 #[test]
 fn every_argument_is_documented() {
     fn walk(cmd: &clap::Command, path: &str, out: &mut Vec<String>) {
@@ -87,7 +85,6 @@ fn help_fits_in_100_columns() {
     assert!(problems.is_empty(), "{}", problems.join("\n"));
 }
 
-/// A job an earlier install wrote passes the theme colors; the daemon it starts still runs.
 #[test]
 fn the_theme_colors_an_earlier_job_passes_are_accepted() {
     for command in ["install", "daemon"] {
@@ -103,7 +100,6 @@ fn the_theme_colors_an_earlier_job_passes_are_accepted() {
     }
 }
 
-/// A shell variable that came out empty is refused before anything reaches the server.
 #[test]
 fn an_empty_worker_is_a_usage_error() {
     let parsed = Args::command()

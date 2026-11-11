@@ -1,8 +1,3 @@
-//! The one event queue the daemon waits on: a readable socket, a process's exit, a change to a
-//! file or directory, and a signal each fire the token they were registered with. macOS has a
-//! kqueue; Linux has an epoll over an inotify instance, pidfds, and a signalfd, which keep the
-//! same meaning.
-
 #[cfg(target_os = "linux")]
 mod epoll;
 #[cfg(target_os = "macos")]
@@ -19,6 +14,7 @@ pub type Token = u64;
 
 pub struct Fired {
     pub token: Token,
-    /// A watched file was deleted or renamed: what its path names now needs watching again.
+    /// The watched inode was deleted, renamed, or replaced at its path, so later changes there
+    /// need a new watch.
     pub gone: bool,
 }

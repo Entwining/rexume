@@ -19,9 +19,6 @@ fn bound(store: &Store) -> Result<Option<String>> {
     )?)
 }
 
-/// A turn the user interrupted records no end, so its round waits, the worker idle meanwhile,
-/// until the worker takes other input: the round then ends as cancelled, and the turn that input
-/// starts is unread once it finishes.
 #[test]
 fn a_round_whose_turn_was_interrupted_ends_cancelled_at_the_next_prompt() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -73,7 +70,6 @@ fn a_bound_task_keeps_its_conversation_when_another_takes_over_the_pane() -> Res
     )?;
     follow.pass(&mut store, None)?;
     assert_eq!(round(&store)?.0, "running");
-    // The worker's own answer still counts, though its process no longer runs in the pane.
     writeln!(transcript, "{ANSWER}")?;
     transcript.flush()?;
     follow.pass(&mut store, None)?;
@@ -89,8 +85,6 @@ fn the_daemon_binds_a_task_registered_before_its_worker_reported_once() -> Resul
     let dir = tempfile::tempdir()?;
     let transcript = record(&[PROMPT])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
-    // An earlier conversation is the occupant at registration: its process had the foreground's
-    // PID, but on an earlier server instance.
     store.conn().execute_batch(
         "UPDATE task SET worker_runtime = NULL, worker_native_id = NULL, created_at = 100;
          INSERT INTO conversation (runtime, native_id, resumable, reported_at) VALUES ('claude', 'old', 1, 40);
@@ -115,9 +109,6 @@ fn the_daemon_binds_a_task_registered_before_its_worker_reported_once() -> Resul
     Ok(())
 }
 
-/// A worker that resumed a conversation reports where its record ended, and its task's first
-/// round takes no turn from before that, also when the task was registered first and the daemon
-/// restarts after binding it.
 #[test]
 fn a_resumed_workers_first_round_starts_where_its_report_found_the_record() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -150,7 +141,6 @@ fn a_pass_with_nothing_to_settle_takes_no_write_lock() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = record(&[PROMPT])?;
     let mut store = task_world(dir.path(), transcript.path(), None)?;
-    // A round whose worker has not reported yet has nothing to bind or read.
     store.conn().execute_batch(
         "UPDATE task SET worker_runtime = NULL, worker_native_id = NULL, created_at = 100;
          INSERT INTO conversation (runtime, native_id, resumable, reported_at) VALUES ('claude', 'old', 1, 40);
@@ -205,8 +195,6 @@ fn a_non_interactive_round_ends_by_its_exit_and_result_file() -> Result<()> {
     Ok(())
 }
 
-/// A run's conversation is bound by the pass that finds it reported, also the pass that ends the
-/// run, and no round takes a turn from it, so a finished turn in its record is not unread.
 #[test]
 fn a_run_is_bound_to_its_conversation_without_unread_turns() -> Result<()> {
     for ends in [false, true] {
@@ -234,9 +222,6 @@ fn a_run_is_bound_to_its_conversation_without_unread_turns() -> Result<()> {
     Ok(())
 }
 
-/// A new server instance first finishes a run by what the earlier instance recorded, then ends
-/// the runs that instance left open. A run's own instance is the only one whose record shows it,
-/// and a run from before instances were recorded is left to its record.
 #[test]
 fn a_new_instance_ends_the_runs_the_earlier_one_left_open() -> Result<()> {
     let cases = [
@@ -275,9 +260,6 @@ fn a_new_instance_ends_the_runs_the_earlier_one_left_open() -> Result<()> {
     Ok(())
 }
 
-/// A new server instance also finishes the interactive rounds the earlier one's records show
-/// ending, so a released worker whose turn ended just before the server stopped is retired, not
-/// restored. A worker's record that cannot be read, here a directory, fails only its own round.
 #[test]
 fn a_new_instance_settles_each_interactive_round_on_its_own_record() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -288,7 +270,6 @@ fn a_new_instance_settles_each_interactive_round_on_its_own_record() -> Result<(
          VALUES ('claude', 'lost', ?1, 1, 0)",
         params![dir.path().to_string_lossy()],
     )?;
-    // A record that cannot be read: a directory.
     turn_record(dir.path(), "lost", dir.path())?;
     store.conn().execute_batch(
         "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,

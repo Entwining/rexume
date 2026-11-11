@@ -1,5 +1,3 @@
-//! Rexume reopens conversations in the panes the server restored itself.
-
 use std::path::Path;
 use std::time::Duration;
 
@@ -15,8 +13,6 @@ pub const WAIT: Duration = Duration::from_secs(20);
 /// as they were before it.
 const REX_SAVES: Duration = Duration::from_secs(3);
 
-/// A session `agents` of two panes, `writer` and `viewer`, each recorded with its shell as the
-/// foreground; returns the session and the panes.
 pub fn agents(server: &Server, state: &Path, cwd: &Path) -> (String, Vec<String>, Vec<i64>) {
     let created = server.call(
         "session.create",
@@ -34,9 +30,6 @@ pub fn agents(server: &Server, state: &Path, cwd: &Path) -> (String, Vec<String>
     (session, blocks, fg)
 }
 
-/// What the hooks would have reported: the writer pane runs the conversation mid-turn, started
-/// with a launch flag and a provider; the viewer pane shows the same conversation, as after
-/// resuming it in a second pane.
 pub fn report(state: &Path, transcript: &Path, blocks: &[String], fg: &[i64]) {
     let conn = db(state);
     conn.execute(
@@ -63,8 +56,6 @@ pub fn report(state: &Path, transcript: &Path, blocks: &[String], fg: &[i64]) {
     .unwrap();
 }
 
-/// The restores the daemon planned on the server's current instance, by pane, with what each
-/// started.
 pub fn restores(server: &Server, state: &Path) -> Vec<(String, String, Option<String>)> {
     db(state)
         .prepare("SELECT block_lineage, state, started FROM restore WHERE instance_id = ?1")
@@ -105,18 +96,12 @@ pub fn restart(server: &mut Server, state: &Path, bin: &Path, ended: i64, crash:
     *server = Server::start(&dir, Some(bin));
 }
 
-/// A turn a crash cut off continues once, in the pane it ran in, which the server restored under
-/// the same ID; the other pane that showed the conversation keeps its shell, and a daemon that
-/// starts again types nothing more. After a stop, the conversation reopens there again without
-/// the prompt.
 #[test]
 #[ignore = "needs a Rex server"]
 fn a_turn_the_crash_cut_off_continues_once_in_its_own_pane() {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     let transcript = dir.path().join("story.jsonl");
-    // A stand-in for Claude Code that records how it was started, and the provider it was given,
-    // reports itself as its session-start hook would, and keeps running.
     let hook = json!({ "session_id": "story", "transcript_path": transcript });
     let (bin, runs) = claude::stand_in(
         dir.path(),
@@ -126,10 +111,8 @@ fn a_turn_the_crash_cut_off_continues_once_in_its_own_pane() {
                 state.display()
             )),
     );
-    // Claude Code has saved the conversation and taken a prompt it has not finished.
     std::fs::write(&transcript, "").unwrap();
     claude::turn(&state, "story", "p1", "Write a story", None);
-    // The user's shell wraps `claude` in a function, which the reopened conversation goes through.
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(
@@ -172,13 +155,11 @@ fn a_turn_the_crash_cut_off_continues_once_in_its_own_pane() {
         "1"
     );
 
-    // A daemon that starts again on the same instance types nothing more, here or in the viewer.
     daemon.stop();
     daemon = Daemon::start(&server, &state);
     wait_until("the second daemon's epoch", WAIT, || {
         query::<i64>(&state, "SELECT COUNT(*) FROM epoch").filter(|n| *n == 3)
     });
-    // Each epoch records the host the server reports, which its restart kept.
     let host = server.call("server.status", &json!({}))["host_id"].clone();
     let same_host: i64 = db(&state)
         .query_row(
@@ -212,8 +193,6 @@ fn a_turn_the_crash_cut_off_continues_once_in_its_own_pane() {
     drop(daemon);
 }
 
-/// Text typed in a restored pane before the daemon reads it is the user's: no line is typed over
-/// it while the pane waits.
 #[test]
 #[ignore = "needs a Rex server"]
 fn text_typed_in_a_restored_pane_is_left_alone() {
@@ -266,9 +245,6 @@ fn text_typed_in_a_restored_pane_is_left_alone() {
     drop(daemon);
 }
 
-/// An epoch the daemon ends on an error shows in `status` until the daemon observes the server
-/// again without one. A trigger refuses every new binding, which the restore after the restart
-/// needs.
 #[test]
 #[ignore = "needs a Rex server"]
 fn status_shows_the_error_that_ended_the_latest_epoch() {
@@ -295,6 +271,7 @@ fn status_shows_the_error_that_ended_the_latest_epoch() {
         });
     };
     recorded(&server);
+    // Refuses every new binding in `live`, which the restore after the restart needs.
     db(&state)
         .execute_batch(
             "CREATE TRIGGER refuse BEFORE INSERT ON live BEGIN SELECT RAISE(ABORT, 'refused'); END;",

@@ -1,7 +1,3 @@
-//! What this tool knows about each coding-agent runtime: how to reopen a conversation, how to read
-//! its turns from its record, how to pass it a notice, and which record shows it took the notice
-//! in. A new runtime is a variant here and a file beside this one.
-
 pub mod claude;
 mod codex;
 pub mod inbox;
@@ -47,9 +43,6 @@ impl Runtime {
         }
     }
 
-    /// The record this tool reads the conversation's turns from, and the notices and requests it
-    /// took in: the runtime's own record, except where that cannot serve and this tool keeps one
-    /// in the state directory (`records`).
     pub fn record(
         self,
         state_dir: &Path,
@@ -63,9 +56,6 @@ impl Runtime {
         }
     }
 
-    /// The directory of the records this tool keeps for a runtime whose own record cannot serve:
-    /// Claude Code's names no turn, so its turn hooks write one, and omp replaces its own when it
-    /// rewrites it, so its extension writes one.
     pub fn records(self, state_dir: &Path) -> Option<PathBuf> {
         match self {
             Self::Claude => Some(claude::records(state_dir)),
@@ -74,9 +64,6 @@ impl Runtime {
         }
     }
 
-    /// The inbox the runtime's extension takes the conversation's notices and requests from, for
-    /// a runtime reached through one. Each runtime has its own, since omp opens a Pi session file,
-    /// and Pi an omp one, under the ID the file records.
     pub fn inbox(self, state_dir: &Path, native_id: &str) -> Option<PathBuf> {
         match self {
             Self::Pi => Some(pi::inbox(state_dir, native_id)),
@@ -85,8 +72,7 @@ impl Runtime {
         }
     }
 
-    /// Hands `text`, a notice or a request with the ID `id`, to the conversation. An error means
-    /// nothing was sent and it can be sent later.
+    /// An error means nothing was sent, so it can be sent again.
     pub fn send(self, target: &Target, state_dir: &Path, id: &str, text: &str) -> Result<Sent> {
         match self {
             Self::Claude => claude::send(target, text),
@@ -96,10 +82,8 @@ impl Runtime {
         }
     }
 
-    /// Whether a record is the conversation receiving a notice or request as input, not merely
-    /// text that mentions one; the token in the record tells which it was. Claude Code's hooks
-    /// see input before another hook can reject it, so its record shows input received only with
-    /// the turn that took it in (`Sealed::received`).
+    /// Claude Code's hooks see input before another hook can reject it, so its record shows input
+    /// received only with the turn that took it in (`Sealed::received`).
     fn received(self, record: &Value) -> bool {
         match self {
             Self::Claude => false,
@@ -154,13 +138,10 @@ impl fmt::Display for Runtime {
     }
 }
 
-/// A conversation and the settings that reopen it.
 #[derive(Clone, Debug, Default)]
 pub struct Conversation {
     pub native_id: String,
     pub transcript: Option<String>,
-    /// The runtime module's settings (`conversation.settings`): model, effort, and whatever else
-    /// its resume command takes.
     pub settings: Map<String, Value>,
 }
 
@@ -179,26 +160,19 @@ impl Conversation {
     }
 }
 
-/// Where a notice or request goes.
 pub struct Target<'a> {
     pub native_id: &'a str,
-    /// The occupant's `transport` object.
     pub transport: &'a Map<String, Value>,
 }
 
 #[derive(Debug)]
 pub enum Sent {
-    /// Handed over; nothing confirms the conversation has it yet.
     Handed,
-    /// The runtime confirmed it holds the message for the conversation, with what it said.
     Accepted(String),
-    /// The send may or may not have happened; it must not be repeated.
     Unknown(String),
 }
 
 impl Sent {
-    /// The outbox state and note a send leaves. An error means nothing left, so the message goes
-    /// back to `pending` to be sent again.
     pub fn recorded(sent: Result<Self>) -> (&'static str, Option<String>) {
         match sent {
             Ok(Self::Handed) => ("sent", None),
@@ -209,14 +183,10 @@ impl Sent {
     }
 }
 
-/// The text that identifies a notice or request in the receiving conversation's record.
 pub fn token(id: &str) -> String {
     format!("[rexume {id}]")
 }
 
-/// The one prompt this tool sends to a conversation whose turn the server's end cut off in pane
-/// `block` of server instance `instance`. Its token, which names the two, lets the conversation's
-/// own record show that this prompt, and no other, was sent.
 pub fn continuation_prompt(instance: &str, block: &str, tasks: &[String]) -> String {
     let mut prompt = format!(
         "[rexume {instance}/{block}] The Rex terminal server stopped while your previous turn was still \
@@ -233,28 +203,21 @@ pub fn continuation_prompt(instance: &str, block: &str, tasks: &[String]) -> Str
     prompt
 }
 
-/// Whether a prompt's token is a continuation prompt's: its `/` is in no notice's or request's ID.
+/// A continuation prompt's token holds a `/`, which no notice or request ID, a UUID, does.
 fn is_continuation(token: &str) -> bool {
     token.contains('/')
 }
 
-/// How the last turn in a conversation's record stands.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Turn {
-    /// No turn after the offset read from.
     None,
-    /// A prompt was accepted and nothing ended its turn: cut off, or still running.
     Open,
-    /// The turn ended with an answer.
     Completed { reference: String, text: String },
-    /// The user stopped the turn.
     Cancelled,
-    /// The runtime ended the turn with an error.
     Failed { text: String },
 }
 
 impl Turn {
-    /// How a turn that is not open stands, for a person reading why it was not continued.
     pub fn describe(&self) -> &'static str {
         match self {
             Self::None => "the record shows no turn",
@@ -273,9 +236,6 @@ enum Parser {
     Omp(omp::Parser),
 }
 
-/// Each runtime's parser keeps how the last turn stands and yields each turn as it finishes. A
-/// turn that a new one starts before anything ended it was cut off, and is never yielded, except
-/// in Claude Code's record, whose turns end with no record when the user interrupts them.
 impl Parser {
     fn feed(&mut self, record: &Value, span: Span, sealed: &mut Vec<Sealed>) {
         match self {
@@ -305,7 +265,6 @@ fn mentions(record: &Value, needle: &str) -> bool {
     }
 }
 
-/// The texts of a message's content, whether a plain string or a list of typed parts.
 fn content_texts(content: Option<&Value>) -> Vec<String> {
     match content {
         Some(Value::String(text)) => vec![text.clone()],

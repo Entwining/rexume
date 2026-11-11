@@ -1,7 +1,5 @@
 use super::*;
 
-/// `notice_world` with notice `e` of task `u`'s finished first round, due to the same owner before
-/// `d` though written after it.
 fn two_notices(dir: &Path, transcript: &Path) -> Result<(Store, UnixListener)> {
     let (store, listener) = notice_world(dir, transcript, "pending")?;
     store.conn().execute_batch(
@@ -24,10 +22,6 @@ fn state_of(store: &Store, id: &str) -> Result<String> {
     )?)
 }
 
-/// An idle owner gets its notices one at a time in due order: the next waits while the owner's
-/// pane has reported nothing since the last was sent, and goes once it reports a status after the
-/// send, whether or not the last one arrived, as one the runtime dropped never does. A pane whose
-/// status was cleared, or never reported, holds nothing.
 #[test]
 fn an_owners_next_notice_waits_for_a_status_after_the_last_send() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -50,8 +44,7 @@ fn an_owners_next_notice_waits_for_a_status_after_the_last_send() -> Result<()> 
     );
     listener.accept()?;
     assert!(listener.accept().is_err(), "both notices were sent at once");
-    // The owner went through a turn and is idle again, and its record never showed the notice.
-    // Both lie in the past, so that the next send comes after the status.
+    // Both in the past, so that the next send's time is after this status.
     store.conn().execute_batch(
         "UPDATE notice SET sent_at = sent_at - 10 WHERE id = 'e';
          UPDATE block SET status_at = (SELECT sent_at + 1 FROM notice WHERE id = 'e')
@@ -63,7 +56,6 @@ fn an_owners_next_notice_waits_for_a_status_after_the_last_send() -> Result<()> 
         ("sent".into(), "pending".into())
     );
     listener.accept()?;
-    // The pane's status was cleared, as when its program's status record is removed.
     store.conn().execute_batch(
         "UPDATE block SET status = NULL, status_pid = NULL, status_at = NULL WHERE lineage = 'a'",
     )?;

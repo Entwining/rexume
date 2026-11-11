@@ -4,8 +4,6 @@ use super::*;
 use crate::task::register::{Kind, Started, start_round};
 use crate::task::tests::{PROMPT, record, task_world};
 
-/// Abandoning a blocked request round ends it acknowledged, drops what was not sent yet, and leaves
-/// the task taking rounds; a finished round cannot be abandoned.
 #[test]
 fn abandoning_a_round_ends_and_acknowledges_it_and_drops_what_was_not_sent() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -21,7 +19,6 @@ fn abandoning_a_round_ends_and_acknowledges_it_and_drops_what_was_not_sent() -> 
     let tx = store.write()?;
     assert_eq!(abandon_round(&tx, "t", None)?, 1);
     tx.commit()?;
-    // The episode ends with the round, at the round's end.
     let round: (String, Option<String>, bool, bool, Option<String>) = store.conn().query_row(
         "SELECT r.state, r.note, r.finished_at IS NOT NULL, r.acked_at IS NOT NULL, e.end_reason
          FROM task_round r JOIN blocked_episode e ON e.task_id = r.task_id AND e.round = r.round
@@ -81,9 +78,6 @@ fn abandoning_a_round_ends_and_acknowledges_it_and_drops_what_was_not_sent() -> 
     Ok(())
 }
 
-/// Abandoning a queued round drops it, its request never sent, and leaves the open round as it
-/// is; abandoning the open round starts the next queued one. A dropped round never ran, so with no
-/// round open the commands take the latest round that ran, and the next round comes after it.
 #[test]
 fn an_abandoned_queued_round_is_dropped_and_never_taken_for_the_latest() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -94,7 +88,6 @@ fn an_abandoned_queued_round_is_dropped_and_never_taken_for_the_latest() -> Resu
     start_round(&tx, "t", &Kind::Request("second"), None)?;
     assert_eq!(abandon_round(&tx, "t", Some(3))?, 3);
     tx.commit()?;
-    // Each round's state and whether it is acknowledged, with its request's state and note.
     type Row = (String, bool, Option<String>, Option<String>);
     let rounds = |store: &Store| -> Result<Vec<Row>> {
         Ok(store

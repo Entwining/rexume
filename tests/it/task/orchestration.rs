@@ -1,5 +1,3 @@
-//! The orchestrator and worker most task scenarios start from.
-
 use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 
@@ -9,11 +7,6 @@ use serde_json::json;
 use super::{WAIT, task};
 use crate::common::{Daemon, Server, claude, db, query, shell_block, shell_pids, wait_until};
 
-/// Two shells standing in for Claude Code, as their session-start hooks would have reported them:
-/// the owner in pane `owner` with an empty turn record, and the worker in pane `worker`, which
-/// resumed a conversation whose turn record already holds a turn, each with a messaging socket; a
-/// daemon following them, and the worker registered as task `id`, titled "review". Fields drop in
-/// order, so the daemon goes before its server.
 pub(super) struct Orchestration {
     pub(super) _daemon: Daemon,
     pub(super) server: Server,

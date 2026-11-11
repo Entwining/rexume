@@ -31,9 +31,6 @@ fn another_path_to_rexume_is_the_same_hook() -> Result<()> {
     Ok(())
 }
 
-/// An earlier install or a configuration manager left only the session-start hook. The missing
-/// turn hooks are reported, then added once with the same command. Without the session-start hook,
-/// no hooks are reported missing or added.
 #[test]
 fn the_daemon_adds_the_turn_hooks_an_earlier_install_left_out() -> Result<()> {
     let home = tempfile::tempdir()?;
@@ -95,8 +92,6 @@ fn the_plist_round_trips_through_its_parsed_form() -> Result<()> {
     Ok(())
 }
 
-/// Every word reaches the daemon as written: systemd would otherwise split it at a space, expand
-/// `%` and `$`, and read a backslash as an escape.
 #[cfg(target_os = "linux")]
 #[test]
 fn the_unit_quotes_what_systemd_would_expand() {
@@ -119,8 +114,6 @@ fn the_unit_quotes_what_systemd_would_expand() {
     assert_eq!(line("Environment="), r#""PATH=/opt/100%%/bin:$PATH""#);
 }
 
-/// A home with `~/.claude` and a `PATH` whose `claude` records each call's arguments in `calls`
-/// and exits with `status`.
 struct FakeClaude {
     home: tempfile::TempDir,
     path: String,
@@ -153,7 +146,6 @@ impl FakeClaude {
         )?)
     }
 
-    /// The calls since the last time this was read.
     fn calls(&self) -> Result<Vec<String>> {
         let calls = match std::fs::read_to_string(&self.calls) {
             Ok(text) => text.lines().map(str::to_owned).collect(),
@@ -169,8 +161,6 @@ impl FakeClaude {
     }
 }
 
-/// Install registers what Claude Code's settings lack and nothing they name, so that a plugin the
-/// user disabled stays disabled; uninstall removes what they name, then the files.
 #[test]
 fn install_registers_the_plugin_once_and_uninstall_removes_it() -> Result<()> {
     let claude = FakeClaude::new(0)?;

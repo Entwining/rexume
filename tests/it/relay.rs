@@ -1,5 +1,3 @@
-//! `rexume relay` carries each line as it arrives, both ways, while the connection stays open.
-
 use std::io::{BufRead, BufReader, Write as _};
 use std::os::unix::net::UnixListener;
 use std::process::{Command, Stdio};

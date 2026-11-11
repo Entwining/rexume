@@ -4,7 +4,6 @@
     reason = "a scenario harness panics where a step fails; the panic is the report"
 )]
 
-// The bench reads memory as macOS accounts it.
 #[cfg(target_os = "macos")]
 mod bench;
 mod cli;

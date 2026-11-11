@@ -1,6 +1,3 @@
-//! Rounds whose worker's terminal is gone before its record showed how they ended: the pane
-//! closed, or the server instance that ran it stopped.
-
 use std::sync::LazyLock;
 
 use anyhow::Result;
@@ -11,10 +8,6 @@ use super::outcome::finish;
 use super::queue::Queued;
 use crate::store::{self, now_ms};
 
-/// The rounds a closed worker pane leaves unfinished that no record can finish: a run's, whose
-/// conversation's record holds no result of it, and an interactive worker's whose conversation is
-/// unbound or has no record (`Runtime::record`, which always has one for Claude Code and omp). The
-/// others take a turn the record already shows, on the daemon's next pass.
 pub(super) static WORKER_ROUNDS: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT t.id, r.round FROM task t JOIN task_round r ON r.task_id = t.id
@@ -26,8 +19,6 @@ pub(super) static WORKER_ROUNDS: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// The runs an earlier server instance left open: its terminals ended with it, and its records
-/// did not show how.
 static CUT_OFF_ROUNDS: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT t.id, r.round FROM task t JOIN task_round r ON r.task_id = t.id
@@ -45,12 +36,6 @@ pub(super) fn end_cut_off(tx: &Transaction, instance: &str) -> Result<()> {
     )
 }
 
-/// The rounds an earlier server instance left open on a worker pane that `instance` restored
-/// itself. Rex starts a shell in each pane it restores and Rexume does not reopen the conversation
-/// there, so nothing takes these rounds up again. A task registered on `instance`, or a round
-/// started after the daemon began to observe it, is the new instance's: a worker can be started
-/// and registered there before the daemon connects. So is one whose conversation someone reopened
-/// in the pane on `instance`, whose record takes the round up.
 static LEFT_TO_SERVER_ROUNDS: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT t.id, r.round FROM task t JOIN task_round r ON r.task_id = t.id
@@ -62,8 +47,6 @@ static LEFT_TO_SERVER_ROUNDS: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// Ends the rounds `instance` cannot finish in worker pane `block`, which it restored with a shell
-/// and whose conversation does not reopen there.
 pub fn end_left_to_server(tx: &Transaction, instance: &str, block: &str) -> Result<()> {
     finish_each(
         tx,
@@ -83,7 +66,6 @@ fn on_worker_closed(tx: &Transaction, lineage: &str) -> Result<()> {
         "worker_closed",
         "the worker's pane closed before it finished",
     )?;
-    // Whatever Rexume meant to do with the pane, it is gone now; a kept pane keeps why it was kept.
     tx.execute(
         "UPDATE task SET pane_state = 'closed', pane_closed_at = ?1,
            pane_note = CASE WHEN pane_state = 'kept' THEN pane_note END
@@ -110,8 +92,6 @@ fn finish_each(
     Ok(())
 }
 
-/// Records that a pane is closed for good: its worker tasks end, and what was recorded about it
-/// goes. The close event and the daemon's own close both record it, whichever comes first.
 pub fn block_gone(tx: &Transaction, lineage: &str) -> Result<()> {
     on_worker_closed(tx, lineage)?;
     store::forget_block(tx, lineage)

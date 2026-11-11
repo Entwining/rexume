@@ -1,13 +1,3 @@
-//! The copy of the repository's index a capture works on, and what it copies from the repository
-//! for Git to read. Isolated, Git cannot read the repository's objects, and some of what `git add
-//! -A` reads is there: the blobs of skip-worktree `.gitattributes`, `.gitignore`, and
-//! `.gitmodules` files, which hold rules, the trees of a sparse index's directories, which Git
-//! reads to expand it, and the blobs the index names for changed files, from which Git tells
-//! whether a file it converts from CRLF had CRLF already. Without them Git goes on without the
-//! rules or the entries, or converts what it would keep, and records another tree. A submodule's
-//! gitlink is masked during `git add`, which otherwise runs `git status` in a populated submodule
-//! whose commit the gitlink names, with that submodule's own index, objects, and filters.
-
 use std::collections::{BTreeMap, HashSet};
 use std::fs::File;
 use std::io::Write;
@@ -20,9 +10,6 @@ use super::command::Isolation;
 use super::run::Git;
 use super::{CONTENT_LIMIT, text};
 
-/// Copies the repository's index to `copy` with its modification time, which Git compares with
-/// each entry's to tell an entry written in the same instant as its file, so that the copy finds
-/// the same files changed. A repository without an index has none to copy.
 pub(super) fn copy(index: &Path, copy: &Path) -> Result<()> {
     let mut source = match File::open(index) {
         Ok(source) => source,
@@ -32,11 +19,12 @@ pub(super) fn copy(index: &Path, copy: &Path) -> Result<()> {
     let modified = source.metadata()?.modified()?;
     let mut target = File::create(copy)?;
     std::io::copy(&mut source, &mut target)?;
+    // Git compares the index's modification time with each entry's to tell an entry written in
+    // the same instant as its file.
     target.set_modified(modified)?;
     Ok(())
 }
 
-/// One entry of `git ls-files -s -v`: its tag, mode, object, stage, and path.
 struct Entry<'a> {
     tag: &'a [u8],
     mode: &'a [u8],
@@ -66,8 +54,6 @@ fn entry(record: &[u8]) -> Result<Entry<'_>> {
     })
 }
 
-/// Lists the index entries, with a sparse index's directories as entries of their own, passing each
-/// to `each`.
 fn entries(
     git: &mut Git,
     worktree: &Path,
@@ -85,26 +71,20 @@ fn entries(
     .check()
 }
 
-/// What the index holds that a capture prepares for.
 #[derive(Default)]
 pub(super) struct Prepared {
-    /// Each gitlink at stage 0 that `git add -A` reads: its path and the commit it names. One
-    /// marked assume-unchanged or skip-worktree, which `-v` tags in lowercase or `S`, Git leaves as
-    /// it is, and so does the capture, since rewriting the entry would drop the mark.
     pub gitlinks: BTreeMap<Vec<u8>, String>,
-    /// The trees of the sparse directories.
+    /// Git reads these trees to expand the sparse index.
     sparse: Vec<String>,
-    /// The blobs of the `.gitattributes` and `.gitmodules` files and of skip-worktree `.gitignore`
-    /// files, which Git reads from the index when the working tree lacks the file.
+    /// Git reads these blobs from the index when the working tree lacks the file, and without one
+    /// goes on without its rules.
     rules: Vec<String>,
 }
 
-/// Reads what the index holds that `git add -A` would need from the repository, without
-/// expanding a sparse index, which would need the trees not copied yet: the index stays sparse
-/// where the repository's settings allow one, and a sparse index they do not allow fails the
-/// read, as Git cannot read its trees.
 pub(super) fn prepared(git: &mut Git, worktree: &Path, isolation: &Isolation) -> Result<Prepared> {
     let mut prepared = Prepared::default();
+    // Keeps the index sparse where the repository's settings allow it, since expanding it needs
+    // the trees not copied yet; Git expands one they do not allow, and fails to read its trees.
     let config = [
         "index.sparse=true",
         "sparse.expectFilesOutsideOfPatterns=true",
@@ -112,6 +92,8 @@ pub(super) fn prepared(git: &mut Git, worktree: &Path, isolation: &Isolation) ->
     entries(git, worktree, isolation, &config, &mut |entry| {
         let name = entry.path.rsplit(|&b| b == b'/').next().unwrap_or_default();
         match (entry.tag, entry.mode) {
+            // `git add -A` leaves an assume-unchanged or skip-worktree gitlink as it is, and
+            // rewriting the entry would drop the mark.
             (b"H", b"160000") if entry.stage == b"0" => {
                 prepared
                     .gitlinks
@@ -132,8 +114,6 @@ pub(super) fn prepared(git: &mut Git, worktree: &Path, isolation: &Isolation) ->
 }
 
 impl Prepared {
-    /// Copies the rules and the sparse directories' trees, with every tree under them, from the
-    /// repository to the capture's seed, before anything else.
     pub fn seed(&self, git: &mut Git, worktree: &Path, seed: &Path) -> Result<()> {
         let mut objects = self.rules.clone();
         objects.extend(head_gitmodules(git, worktree)?);
@@ -154,9 +134,8 @@ impl Prepared {
     }
 }
 
-/// The objects through which Git reads `HEAD:.gitmodules`, where it looks once neither the working
-/// tree nor the index has a `.gitmodules`, as after `git add -A` staged its deletion: the commit
-/// `HEAD` names, its tree, and the file. None when `HEAD` has no `.gitmodules` or no commit.
+/// Git reads `HEAD:.gitmodules` once neither the working tree nor the index has a `.gitmodules`,
+/// as after `git add -A` staged its deletion.
 fn head_gitmodules(git: &mut Git, worktree: &Path) -> Result<Vec<String>> {
     let names = ["HEAD", "HEAD^{tree}", "HEAD:.gitmodules"].map(str::to_owned);
     let command = Git::git(worktree, &[], None);
@@ -172,8 +151,8 @@ fn head_gitmodules(git: &mut Git, worktree: &Path) -> Result<Vec<String>> {
     Ok(objects)
 }
 
-/// Copies the blobs the index names for `files`, the changed files `git add` reads, from the
-/// repository to the capture's seed, taking at most `limit` bytes.
+/// Git reads a changed file's staged blob to tell whether a file it converts from CRLF had CRLF
+/// already, and without the blob converts what it would keep.
 pub(super) fn seed_blobs(
     git: &mut Git,
     worktree: &Path,
@@ -191,9 +170,6 @@ pub(super) fn seed_blobs(
     copy_objects(git, worktree, &objects, seed, limit)
 }
 
-/// Packs `objects` from the repository and unpacks them into `seed`, as a pack of at most `limit`
-/// bytes, of which the seeds of a capture take `CONTENT_LIMIT` together. `pack-objects` writes to
-/// its standard output, since with a name it would build the pack in the repository.
 fn copy_objects(
     git: &mut Git,
     worktree: &Path,
@@ -204,6 +180,7 @@ fn copy_objects(
     if objects.is_empty() {
         return Ok(());
     }
+    // With a name instead of `--stdout`, `pack-objects` would build the pack in the repository.
     let pack = Git::git(worktree, &[], None);
     let mut unpack = Git::git(worktree, &[], None);
     unpack.env("GIT_OBJECT_DIRECTORY", seed);
@@ -224,7 +201,6 @@ fn copy_objects(
     })
 }
 
-/// A file listing `objects` one per line, for a Git command to read.
 fn list(objects: &[String]) -> Result<File> {
     let mut list = tempfile::tempfile()?;
     for object in objects {
@@ -234,12 +210,10 @@ fn list(objects: &[String]) -> Result<File> {
     Ok(list)
 }
 
-/// The object a gitlink is masked with: none a commit can have, of the length of `object`'s.
 fn mask(object: &str) -> String {
     format!("{}1", "0".repeat(object.len().saturating_sub(1)))
 }
 
-/// Points each of `gitlinks` at its mask, or back at its commit.
 fn set(
     git: &mut Git,
     worktree: &Path,
@@ -263,8 +237,9 @@ fn set(
     git.run(command, &args, Stdio::from(info), false)?.check()
 }
 
-/// Masks every gitlink, so that `git add -A` takes each populated submodule for one whose commit
-/// differs and records its commit without asking whether its working tree is changed.
+/// `git add -A` runs `git status`, with the submodule's own index, objects, and filters, in a
+/// populated submodule whose commit the gitlink names, and records any other by its checked-out
+/// commit.
 pub(super) fn mask_gitlinks(
     git: &mut Git,
     worktree: &Path,
@@ -274,8 +249,7 @@ pub(super) fn mask_gitlinks(
     set(git, worktree, isolation, gitlinks, true)
 }
 
-/// Points each gitlink `git add -A` left masked, a submodule it could not read such as an empty
-/// directory, back at its commit.
+/// `git add -A` leaves the mask on a submodule it could not read, such as an empty directory.
 pub(super) fn unmask_gitlinks(
     git: &mut Git,
     worktree: &Path,

@@ -1,5 +1,3 @@
-//! How one pane starts, by what it was last used for as recorded.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -10,7 +8,6 @@ use super::{Plan, Start};
 use crate::runtime::{self, Conversation, Runtime, Turn};
 use crate::{report, task};
 
-/// How one pane starts, as planned before its insert: a conversation exactly when it reopens one.
 pub(super) struct Candidate {
     pub start: Start,
     pub conversation: Option<(Runtime, String)>,
@@ -38,7 +35,6 @@ struct Occupant {
     pid_name: Option<String>,
     own_program: Option<bool>,
     reported_at: i64,
-    /// The record its turns are read from (`Runtime::record`).
     record: Option<PathBuf>,
 }
 
@@ -91,10 +87,6 @@ struct LastSeen {
     status_name: Option<String>,
 }
 
-/// Plans a pane by its last use as recorded on an earlier instance: a conversation that was the
-/// terminal's own program, or may have been, reopens after it exited; a conversation still the
-/// foreground program reopens; anything else keeps the shell. The occupant counts only from the
-/// instance the pane's record describes, where its PID names a process.
 pub(super) fn candidate(
     conn: &Connection,
     state_dir: &Path,
@@ -129,8 +121,7 @@ pub(super) fn candidate(
             .as_deref()
             .is_none_or(|i| i == seen.instance_id)
     });
-    // Rex starts nothing in a terminal after its own program exits. A conversation reported
-    // before version 3 may have been that program.
+    // Rex starts nothing in a terminal after its own program exits.
     if seen.last_exit.is_some() {
         return match occupant.filter(|o| o.own_program != Some(false)) {
             Some(mut o) if !ran_elsewhere(conn, block, &o)? => {
@@ -145,7 +136,6 @@ pub(super) fn candidate(
     if seen.fg_pid != Some(occupant.pid) {
         return Ok(shell("the conversation had already left the pane"));
     }
-    // Only a server whose end was observed left its last records as its final state.
     let ended: Option<String> = conn
         .query_row(
             "SELECT end_reason FROM epoch WHERE instance_id = ?1 ORDER BY id DESC LIMIT 1",
@@ -164,8 +154,6 @@ pub(super) fn candidate(
     )
 }
 
-/// Whether the conversation, after it exited from `block`, ran in another pane: it reported from
-/// there later, or it was still that pane's foreground program. That pane reopens it.
 fn ran_elsewhere(conn: &Connection, block: &str, occupant: &Occupant) -> Result<bool> {
     Ok(conn.query_row(
         "SELECT EXISTS (SELECT 1 FROM occupant o LEFT JOIN block b ON b.lineage = o.block_lineage
@@ -182,8 +170,6 @@ fn ran_elsewhere(conn: &Connection, block: &str, occupant: &Occupant) -> Result<
     )?)
 }
 
-/// Reopens the occupant's conversation, continuing it only when `running`, the pane's last record
-/// with whether the server's end was observed, shows a turn the end cut off.
 fn reopen(
     conn: &Connection,
     instance: &str,
@@ -202,8 +188,8 @@ fn reopen(
             "the conversation's launcher declared no command Rexume can run: {error}"
         )));
     }
-    // A record that cannot be read leaves the settings the conversation reported, as one that
-    // shows none does; its runtime reports the error if it cannot reopen it either.
+    // With an unreadable record the conversation reopens with its reported settings; its runtime
+    // reports the error if it cannot reopen it either.
     let mut read = occupant.conversation.clone();
     match occupant.runtime.settings(&mut read) {
         Ok(()) => occupant.conversation = read,
@@ -241,15 +227,8 @@ fn reopen(
     })
 }
 
-/// A turn continues only when the server's end is what stopped it: the server was watched until
-/// it went away, the pane's program was still this conversation's process and was working, and
-/// the conversation's record shows a prompt that nothing ended. An end the record shows wins over
-/// a status event the server never delivered, except for a runtime that can work on after the end
-/// its record shows (`Runtime::works_after_end`): there the working status wins, and a server that
-/// stopped between that end and the status after it gets one prompt too many. A non-interactive
-/// run does not continue: its task already ended with the server, and a prompt would not bring
-/// back its result file. A continuation comes with the record's length as read, from which the
-/// gate checks that no turn ended since.
+/// With `works_after_end`, a server stop between completion and its status update can cause an
+/// extra continuation prompt.
 fn continuation(
     conn: &Connection,
     block: &str,

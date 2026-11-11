@@ -14,9 +14,6 @@ use crate::store::Store;
 
 mod view;
 
-/// A pane restored on a new server counts its foreground changes and its reports from its own
-/// start there. Only another process counts: a later report or a read without a generation about
-/// the recorded process does not, and a report older than the one recorded is ignored.
 #[test]
 fn a_restored_pane_counts_new_foreground_processes_and_ignores_older_reports() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -55,11 +52,6 @@ fn a_restored_pane_counts_new_foreground_processes_and_ignores_older_reports() -
     Ok(())
 }
 
-/// A conversation the gate started through a shell function runs as a child of the process the
-/// gate claimed its restore with, maybe after another command the function runs first, and the
-/// pane's occupant becomes each such child in turn; one the shell runs in place, after a command
-/// its startup files ran, is that process again. An occupant that reported itself, or one
-/// recorded on an earlier instance, stays as it is.
 #[test]
 fn a_gate_recorded_occupant_becomes_the_foreground_its_process_started() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -109,7 +101,6 @@ fn a_gate_recorded_occupant_becomes_the_foreground_its_process_started() -> Resu
         Some(2),
         Some(1),
     )?;
-    // A foreground some other process started leaves the occupant alone.
     set_foreground(&tx, "gate", Some(&json!({ "pid": 500 })), Some(3), Some(1))?;
     let pids: Vec<(String, i64)> = tx
         .prepare("SELECT block_lineage, pid FROM occupant ORDER BY block_lineage")?
@@ -148,7 +139,6 @@ fn an_event_the_daemon_does_not_record_writes_nothing() -> Result<()> {
     Ok(())
 }
 
-/// The daemon also waits between epochs, while it backs off or waits for the server.
 #[test]
 fn any_wait_drops_the_watch_of_a_replaced_file() -> Result<()> {
     let dir = tempfile::tempdir()?;

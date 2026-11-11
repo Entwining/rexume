@@ -1,6 +1,3 @@
-//! How an unfinished round stands, judged from its evidence, and the transitions that finish a
-//! round.
-
 use std::sync::LazyLock;
 
 use anyhow::{Result, bail};
@@ -14,7 +11,6 @@ use super::{OPEN, request};
 use crate::runtime::Turn;
 use crate::store::now_ms;
 
-/// One round, if it is still open, with what `evaluate` needs to judge it.
 pub(super) static ROUND: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT t.worker_lineage, t.worker_pid, t.result_file, t.worker_runtime, t.worker_native_id,
@@ -24,8 +20,6 @@ pub(super) static ROUND: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// Re-reads one round that has not finished and finishes it when the evidence shows how it
-/// ended. Returns when to read it again, in Unix milliseconds, when only time can settle it.
 pub(super) fn evaluate(
     tx: &Transaction,
     id: &str,
@@ -112,7 +106,6 @@ pub(super) fn evaluate(
                     }
                 }
             };
-            // A run takes no request, so nothing is queued behind its round.
             if let Some((state, done, note)) = ended {
                 finish(tx, id, round, state, done, note.as_deref(), Queued::End)?;
             }
@@ -121,17 +114,12 @@ pub(super) fn evaluate(
     }
 }
 
-/// An interactive worker as recorded: whether its pane closed, the pane, and the pid of the task's
-/// conversation while it is the pane's occupant on the pane's instance.
 struct Worker {
     closed: bool,
     pane: Pane,
     process: Option<i64>,
 }
 
-/// An interactive round's result is the turn its tracker chose from the worker's record, not the
-/// worker's status: a worker that went idle may have been cancelled or be waiting on a question.
-/// `blocked` is whether the round is in a blocked episode.
 fn interactive_outcome(
     tx: &Transaction,
     id: &str,
@@ -173,8 +161,6 @@ fn interactive_outcome(
     blocked::follow(tx, id, round, blocked, &worker.pane, worker.process)
 }
 
-/// Finishes a round with the turn it takes, records the turn as taken, and moves the task's
-/// position, all in the transaction that writes the round's notice.
 fn take_turn(tx: &Transaction, id: &str, round: i64, take: Take) -> Result<()> {
     match take.turn {
         Turn::Completed { reference, text } => finish(
@@ -212,14 +198,11 @@ fn take_turn(tx: &Transaction, id: &str, round: i64, take: Take) -> Result<()> {
     Ok(())
 }
 
-/// A finished round's result, as the worker's record or result file gave it.
 pub(super) struct Finished {
     result: String,
     reference: String,
 }
 
-/// Ends a round, and any blocked episode it was in, and writes its finished notice in the same
-/// transaction, which also moves the rounds queued behind it.
 pub(super) fn finish(
     tx: &Transaction,
     id: &str,
@@ -233,8 +216,6 @@ pub(super) fn finish(
     queue::advance(tx, id, round, state, queued)
 }
 
-/// Ends one round as `finish` describes, leaving the queue as it is. The worker pane's status time
-/// and count of foreground changes are kept to tell later activity in the pane apart.
 pub(super) fn end(
     tx: &Transaction,
     id: &str,

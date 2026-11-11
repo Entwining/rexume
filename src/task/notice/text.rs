@@ -1,9 +1,9 @@
-//! What a notice says. The text starts with the token the owner's record is searched for.
+//! Each text starts with its token, the only part of a prompt that Claude Code's turn hook and the
+//! omp extension record.
 
 use super::Due;
 use crate::runtime;
 
-/// A finished notice's text; `unread` is how many turns of the worker no round took.
 pub(super) fn finished(due: &Due, unread: Option<usize>) -> String {
     let Due {
         notice,
@@ -38,10 +38,8 @@ pub(super) fn finished(due: &Due, unread: Option<usize>) -> String {
     }
 }
 
-/// A blocked notice's text. The round has not finished, so there is nothing to acknowledge, and
-/// the owner may read this after someone answered the worker. It names what the worker waits on
-/// only by the kind its program reported: the program's own message is the worker's text, which
-/// would reach the owner as part of a prompt.
+/// Names what the worker waits on only by its kind: the program's own message is the worker's
+/// text, which would reach the owner as part of a prompt.
 pub(super) fn blocked(due: &Due) -> String {
     let Due {
         notice,

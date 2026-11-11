@@ -1,28 +1,19 @@
-//! Whether a pane the server restored still shows the login shell it started there, read from the
-//! server before anything is typed into it, and the line typed.
-
 use serde_json::{Value, json};
 use unicode_width::UnicodeWidthChar;
 
 use crate::rex::{CallError, Rex, items, str_at};
 
-/// What the pane shows.
 #[derive(Debug, PartialEq, Eq)]
 pub enum Pane {
-    /// The login shell is the pane's foreground and takes a line now: it still reads its startup
-    /// files, and a line typed now waits in the terminal for its first prompt, or its prompt shows
-    /// with the cursor after a blank and nothing on the rows below. `typed_after` is whether text
-    /// other than a right-hand prompt follows the cursor on its row, which the line clears but a
-    /// close would lose.
+    /// `typed_after`: text other than a right-hand prompt follows the cursor on its row, which a
+    /// close would lose; the gate's line clears it except in a vi keymap.
     Shell {
         typed_after: bool,
     },
-    /// Something else shows in the pane, as the reason says.
     Busy(String),
     Gone,
 }
 
-/// Reads the pane from the server. A refusal other than a missing pane is the caller's to report.
 pub fn read(rex: &mut Rex, session: &str, block: &str) -> Result<Pane, CallError> {
     let mut call =
         |method: &str, args: Value| match rex.block_method_with(session, block, method, &args) {
@@ -35,8 +26,8 @@ pub fn read(rex: &mut Rex, session: &str, block: &str) -> Result<Pane, CallError
     if let Some(busy) = foreground(&process) {
         return Ok(Pane::Busy(busy));
     }
-    // A line editor reads keys with the terminal's canonical mode off; with it on, the shell still
-    // runs its startup files.
+    // A line editor reads keys with canonical mode off; with it on, the shell still runs its
+    // startup files, and the terminal holds a typed line for its first prompt.
     let Some(input) = call("input_mode", json!({}))? else {
         return Ok(Pane::Gone);
     };
@@ -73,9 +64,8 @@ pub fn read(rex: &mut Rex, session: &str, block: &str) -> Result<Pane, CallError
     )
 }
 
-/// Why the foreground is not the login shell the server started in the pane, or `None` when it
-/// is: a process named as a login shell is (`-zsh`), whose parent, if any, is the terminal's own
-/// program (`login` on macOS).
+/// The login shell Rex starts has at most one ancestor, the terminal's own program (`login` on
+/// macOS).
 fn foreground(process: &Value) -> Option<String> {
     if !process.get("last_exit").is_none_or(Value::is_null) {
         return Some("the pane's shell has exited".into());
@@ -92,12 +82,8 @@ fn foreground(process: &Value) -> Option<String> {
     None
 }
 
-/// The cursor's row and what follows the cursor on it, when the cell before the cursor is blank
-/// and nothing shows on the rows below; `Some(None)` otherwise: text typed at the prompt, a line
-/// of several the cursor was moved back to, which the line's Ctrl-U would not clear with the
-/// others, or a prompt that does not end in a space. Each character takes its own width, as the
-/// terminal lays them out. `text` is the screen's rows; `None` when `vt`, the screen as escape
-/// sequences with the cursor's position last, does not give that position.
+/// In zsh, Ctrl-E and Ctrl-U clear only the current buffer line, so lines below would run with
+/// the gate.
 fn at_prompt<'a>(text: &'a str, vt: &str) -> Option<Option<(&'a str, &'a str)>> {
     let (row, column) = cursor(vt)?;
     let mut rows = text.lines().skip(row);
@@ -118,11 +104,8 @@ fn at_prompt<'a>(text: &'a str, vt: &str) -> Option<Option<(&'a str, &'a str)>> 
     Some((blank && rows.all(|r| r.trim().is_empty())).then(|| (line, &line[at..])))
 }
 
-/// Whether `after`, what follows the cursor on its row `line`, is typed text rather than a
-/// right-hand prompt, which a blank separates from the cursor and which ends in the row's last two
-/// columns (zsh leaves the last one blank by default); without the pane's width `columns`, it is
-/// typed. A shell that measures a character otherwise than the terminal places its right-hand
-/// prompt short of the row's end, which counts as typed.
+/// A right-hand prompt is set off from the cursor by a blank and ends in the row's last two
+/// columns: zsh leaves the last one blank by default.
 fn typed_after(line: &str, after: &str, columns: Option<usize>) -> bool {
     let rest = after.trim_start();
     let width: usize = line
@@ -134,8 +117,6 @@ fn typed_after(line: &str, after: &str, columns: Option<usize>) -> bool {
         && !(rest.len() < after.len() && columns.is_some_and(|columns| width + 1 >= columns))
 }
 
-/// The cursor's row and column, counted from 0, from the position report that ends `vt` (`ESC [
-/// row ; column H`).
 fn cursor(vt: &str) -> Option<(usize, usize)> {
     let report = vt.strip_suffix('H')?;
     let start = report.rfind("\u{1b}[")?;
@@ -146,13 +127,9 @@ fn cursor(vt: &str) -> Option<(usize, usize)> {
     ))
 }
 
-/// The line typed into the pane: a move to the end of the line (Ctrl-E) and a kill of the line
-/// (Ctrl-U), so that what the check does not read, after the cursor, or typed since, is cleared
-/// rather than run with the gate, a leading space that keeps the line out of a history that
-/// ignores such lines, the gate's command, and Return. Ctrl-U in bash kills only what stands
-/// before the cursor, and both shells' emacs keymaps keep the whole kill for Ctrl-Y; their vi
-/// insert modes, and the terminal before the first prompt, take Ctrl-E as a character, which
-/// Ctrl-U kills with the rest.
+/// In zsh and bash emacs keymaps, Ctrl-E then Ctrl-U clears the current line and saves it for
+/// Ctrl-Y; vi insert mode leaves text after the cursor to run with the gate.
+/// Before the first prompt, the terminal's Ctrl-U clears pending input, including Ctrl-E.
 pub fn line(gate: &[String]) -> Result<String, shlex::QuoteError> {
     let command = shlex::try_join(gate.iter().map(String::as_str))?;
     Ok(format!("\u{5}\u{15} {command}\r"))

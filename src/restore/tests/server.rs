@@ -1,5 +1,3 @@
-//! A fake server that answers the calls a restore makes from what a test sets.
-
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
@@ -10,25 +8,16 @@ use serde_json::{Value, json};
 
 use crate::rex::{Pipe, Rex};
 
-/// What the fake server's panes show, which a test changes between passes, and what was done to
-/// them.
 #[derive(Default)]
 pub(super) struct Server {
-    /// The `process` reply, by pane.
     pub(super) process: HashMap<String, Value>,
-    /// The screen as text and as escape sequences, if not `IDLE`.
     pub(super) screen: Option<(&'static str, &'static str)>,
-    /// Whether the shell still reads its startup files, with the terminal in canonical mode.
     pub(super) startup: bool,
-    /// The error a write gets, if any.
     pub(super) refuse_write: Option<&'static str>,
     pub(super) written: Vec<(String, String)>,
     pub(super) closed: Vec<String>,
-    /// The session's focused pane, if any.
     pub(super) focused: Option<&'static str>,
-    /// Panes in no window, which the session's view leaves out.
     pub(super) detached: Vec<&'static str>,
-    /// A pane method the server refuses, if any.
     pub(super) refuse: Option<&'static str>,
 }
 
@@ -38,7 +27,6 @@ pub(super) const STARTUP: &str =
     r#"{"foreground":{"pid":3,"argv0":"sleep","name":"sleep"},"ancestors":["zsh","login"]}"#;
 const IDLE: (&str, &str) = ("p% ", "p% \u{1b}[1;4H");
 pub(super) const TYPED: (&str, &str) = ("p% ls", "p% ls\u{1b}[1;6H");
-/// What `TYPED` shows once the cursor is moved back to the start of the text.
 pub(super) const MOVED_BACK: (&str, &str) = ("p% ls", "p% ls\u{1b}[1;4H");
 
 fn answer(server: &Mutex<Server>, method: &str, params: &Value) -> Result<Value, String> {
@@ -114,7 +102,6 @@ fn answer(server: &Mutex<Server>, method: &str, params: &Value) -> Result<Value,
     })
 }
 
-/// A connection to a fake server that answers from `server` until the connection ends.
 pub(super) fn connect(server: &Arc<Mutex<Server>>) -> Result<Rex> {
     let (ours, theirs) = UnixStream::pair()?;
     let server = Arc::clone(server);

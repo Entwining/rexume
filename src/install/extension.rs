@@ -1,6 +1,3 @@
-//! The Pi and omp extensions, each written into its runtime's agent directory under home and
-//! recognized by the first line every version of either starts with.
-
 use std::path::{Path, PathBuf};
 
 use anyhow::Result;
@@ -8,13 +5,10 @@ use anyhow::Result;
 use super::{Outcome, refresh_file, remove_file, write};
 use crate::runtime::{omp, pi};
 
-/// How every version of either extension starts, so that a file install wrote is recognized after
-/// the rest of its first line changes.
+/// Every version of either extension starts with this, whatever follows it on the first line.
 const WRITTEN_BY: &str = "// Written by `rexume install`";
 
-/// A runtime's extension, which install writes into the runtime's agent directory under home.
 pub(super) struct Extension {
-    /// The runtime's name, for the daemon's log.
     name: &'static str,
     agent: &'static str,
     text: &'static str,
@@ -36,7 +30,6 @@ impl Extension {
         home.join(self.agent).join("extensions/rexume.ts")
     }
 
-    /// Writes the extension when the runtime's agent directory exists.
     pub(super) fn install(&self, home: &Path) -> Result<Outcome> {
         if !home.join(self.agent).is_dir() {
             return Ok((
@@ -47,13 +40,10 @@ impl Extension {
         Ok((write(&self.path(home), self.text.as_bytes())?, None))
     }
 
-    /// Removes the extension when install wrote it, in this version or an earlier one.
     pub(super) fn uninstall(&self, home: &Path) -> Result<Outcome> {
         remove_file(&self.path(home), |text| text.starts_with(WRITTEN_BY))
     }
 
-    /// Rewrites the extension install wrote when it differs from this version's, so that an
-    /// upgrade reaches the runtime without another install.
     fn refresh(&self, home: &Path) -> Result<&'static str> {
         refresh_file(&self.path(home), self.text.as_bytes(), |text| {
             text.starts_with(WRITTEN_BY)
@@ -61,8 +51,6 @@ impl Extension {
     }
 }
 
-/// Refreshes the Pi and omp extensions, each on its own, and returns each runtime's name with what
-/// `Extension::refresh` returned.
 pub fn refresh_extensions(home: &Path) -> [(&'static str, Result<&'static str>); 2] {
     [PI_EXTENSION, OMP_EXTENSION].map(|extension| (extension.name, extension.refresh(home)))
 }
@@ -73,8 +61,6 @@ mod tests {
 
     use super::*;
 
-    /// Each extension is refreshed on its own: a missing or user-owned file at one target stays
-    /// as it is while the other is updated.
     #[test]
     fn the_daemon_refreshes_only_an_extension_install_wrote() -> Result<()> {
         let home = tempfile::tempdir()?;

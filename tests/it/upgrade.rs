@@ -6,8 +6,7 @@ use std::time::Duration;
 
 use crate::common::{REXUME, Running, wait_until};
 
-/// Installs a copy of rexume at `to`, as a package manager does: the new file is renamed into
-/// place, never written over the old one.
+/// A package manager renames the new file into place rather than writing over the old one.
 fn install(to: &Path) {
     std::fs::create_dir_all(to.parent().unwrap()).unwrap();
     let partial = to.with_extension("partial");
@@ -28,7 +27,6 @@ fn a_daemon_exits_when_an_upgrade_replaces_its_executable() {
         } else {
             install(&exe);
         }
-        // The extension and the skill stub an older version's install wrote.
         let extension = dir.path().join("home/.pi/agent/extensions/rexume.ts");
         std::fs::create_dir_all(extension.parent().unwrap()).unwrap();
         std::fs::write(&extension, "// Written by `rexume install`, long ago\n").unwrap();
@@ -36,7 +34,6 @@ fn a_daemon_exits_when_an_upgrade_replaces_its_executable() {
         std::fs::create_dir_all(stub.parent().unwrap()).unwrap();
         let old_stub = "---\nname: rexume\n---\n<!-- Written by `rexume install`, long ago -->\n";
         std::fs::write(&stub, old_stub).unwrap();
-        // The state directory an earlier version created, open to other users.
         let state = dir.path().join("state");
         std::fs::create_dir(&state).unwrap();
         std::fs::set_permissions(&state, Permissions::from_mode(0o755)).unwrap();

@@ -1,25 +1,18 @@
-//! Pi, through the extension `rexume install` writes and the daemon keeps current.
-
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
 
 use super::{Conversation, Sealed, Span, Turn, content_texts, inbox, text_at};
 
-/// The extension `rexume install` writes into Pi's extensions directory.
 pub const EXTENSION: &str = include_str!("pi/extension.ts");
 
-/// The `customType` of the notices and requests the extension passes to Pi.
 const NOTICE: &str = "rexume";
 
-/// The conversation's inbox. Every released extension watches it here, and a running Pi keeps the
-/// extension it loaded, so it cannot move.
+/// Every released extension watches this path, and a running Pi keeps the extension it loaded.
 pub fn inbox(state_dir: &Path, native_id: &str) -> PathBuf {
     inbox::dir(&state_dir.join("inbox"), native_id)
 }
 
-/// Pi reopens a session from its file; before its first message it has written none, and then the
-/// reported settings are all there is.
 pub fn resume_argv(c: &Conversation) -> Vec<String> {
     let mut argv = vec![
         "pi".to_owned(),
@@ -40,9 +33,8 @@ pub fn resume_argv(c: &Conversation) -> Vec<String> {
     argv
 }
 
-/// Pi restores the model and thinking level of the session's current branch by itself once the
-/// session has messages, and writes its file only then; a setting given on the command line would
-/// override that, so the reported ones serve only a session that has no file yet.
+/// Pi restores the current branch's model and thinking level itself once the session has messages,
+/// which is when it writes its file, and a setting given on the command line would override them.
 pub fn settings(transcript: &Path, conversation: &mut Conversation) {
     if transcript.exists() {
         for key in ["provider", "model", "effort"] {
@@ -51,19 +43,14 @@ pub fn settings(transcript: &Path, conversation: &mut Conversation) {
     }
 }
 
-/// Pi records a notice or request the extension passes it as a `custom_message`.
 pub fn received(record: &Value) -> bool {
     record.get("type").and_then(Value::as_str) == Some("custom_message")
         && record.get("customType").and_then(Value::as_str) == Some(NOTICE)
 }
 
-/// Pi ends an answered turn with an assistant message whose `stopReason` is `stop`, a cancelled
-/// one with `aborted`, and a failed one with `error`; a user message that nothing answered is a
-/// turn cut off.
 #[derive(Default)]
 pub struct Parser {
     turn: Option<Turn>,
-    /// Where the turn not yet yielded starts.
     open: Option<u64>,
 }
 
@@ -71,7 +58,6 @@ impl Parser {
     pub fn feed(&mut self, record: &Value, span: Span, sealed: &mut Vec<Sealed>) {
         let message = match record.get("type").and_then(Value::as_str) {
             Some("message") => record.get("message"),
-            // A notice or request the extension passes to Pi starts a turn of its own.
             Some("custom_message") if received(record) => return self.start(span),
             _ => return,
         };
@@ -173,7 +159,6 @@ mod tests {
             Ok(c)
         };
         let argv = || -> Result<Vec<String>> { Ok(Runtime::Pi.resume_argv(&reopened()?)) };
-        // Before its first message Pi has written no session to restore settings from.
         assert_eq!(
             argv()?,
             [
@@ -188,11 +173,8 @@ mod tests {
                 "low"
             ]
         );
-        // Once the file exists Pi applies its current branch's settings itself; any setting
-        // passed here would override them.
         std::fs::write(&session, "")?;
         assert_eq!(argv()?, ["pi", "--session", &path]);
-        // The task meta is Rexume's, not Pi's, so the tasks the session registers still get it.
         assert_eq!(
             Runtime::Pi.resume_env(&reopened()?),
             [("REXUME_TASK_META".to_owned(), meta.to_owned())]
@@ -200,11 +182,9 @@ mod tests {
         Ok(())
     }
 
-    /// Loads the extension in Node, as Pi does, and starts a session with a fake Pi whose session
-    /// file is `session`, if given. The fake's `getSessionFile`, which the extension calls
-    /// after starting the report and before writing its input, waits until `ready` exists, so a
-    /// report that closes its input first makes the write fail every time rather than only when it
-    /// wins the race.
+    /// The fake `getSessionFile`, which the extension calls between starting the report and writing
+    /// its input, waits for `ready`, so a report that closes its input before creating `ready`
+    /// makes the write fail every time.
     const HARNESS: &str = r#"
         import { existsSync } from "node:fs";
         const [extension, ready, session] = process.argv.slice(1);
@@ -226,8 +206,6 @@ mod tests {
         });
     "#;
 
-    /// Nothing the report does may end Pi: its exit status alone decides whether Pi warns, also
-    /// when it exits without reading its input, as it did outside a Rex pane, or cannot start.
     #[test]
     fn the_extension_survives_any_report_outcome() -> Result<()> {
         let node = node()?;
@@ -275,8 +253,6 @@ mod tests {
         Ok(())
     }
 
-    /// The report gets the session file's length as the extension found it, and none when the
-    /// extension could not measure it, which must not end Pi either.
     #[test]
     fn the_extension_sends_the_session_files_length_when_it_can_measure_it() -> Result<()> {
         let node = node()?;

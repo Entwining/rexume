@@ -1,5 +1,3 @@
-//! The isolated Rex server a scenario test starts.
-
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Stdio};
 use std::time::Duration;
@@ -8,13 +6,11 @@ use serde_json::{Value, json};
 
 use super::wait_until;
 
-/// The shell the test server's panes run, in `/bin`.
 #[cfg(target_os = "macos")]
 pub const SHELL: &str = "zsh";
 #[cfg(target_os = "linux")]
 pub const SHELL: &str = "bash";
 
-/// The Rex CLI: `REXUME_TEST_REX`, or where the Rex app installs it.
 #[cfg(target_os = "macos")]
 pub fn rex_bin() -> PathBuf {
     std::env::var_os("REXUME_TEST_REX").map_or_else(
@@ -26,7 +22,6 @@ pub fn rex_bin() -> PathBuf {
     )
 }
 
-/// The Rex CLI: `REXUME_TEST_REX`, or the first `rex` on PATH.
 #[cfg(target_os = "linux")]
 pub fn rex_bin() -> PathBuf {
     std::env::var_os("REXUME_TEST_REX").map_or_else(
@@ -40,7 +35,6 @@ pub struct Server {
     child: Option<Child>,
 }
 
-/// Whether the Rex CLI's server restores its own sessions, which an older one does not.
 fn restores_itself() -> bool {
     static RESTORES: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *RESTORES.get_or_init(|| {
@@ -53,9 +47,6 @@ fn restores_itself() -> bool {
 }
 
 impl Server {
-    /// Starts a server whose panes run with `path` first on PATH, and which brings back the
-    /// sessions it saved, with their IDs, as Rex's own restore does. Fails on a Rex CLI too old to
-    /// have it.
     pub fn start(dir: &Path, path: Option<&Path>) -> Self {
         assert!(
             restores_itself(),
@@ -153,7 +144,6 @@ impl Server {
             .to_owned()
     }
 
-    /// Ends the server as a crash would.
     pub fn kill(&mut self) {
         if let Some(mut child) = self.child.take() {
             child.kill().unwrap();

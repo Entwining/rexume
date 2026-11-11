@@ -41,6 +41,6 @@ Claude Code's plugin [treats Rexume-tagged messages as your prompts](docs/usage.
 
 ## Contributing
 
-Changes must pass [the repository's required checks](AGENTS.md#develop-and-validate). One daemon [records pane state and coordinates recovery](docs/design.md). Task commands [return JSON with versioned fields](docs/cli.md#task).
+[AGENTS.md](AGENTS.md#develop-and-validate) lists the checks CI runs. One daemon [records pane state and coordinates recovery](docs/design.md). Task commands [return JSON with versioned fields](docs/cli.md#task).
 
 Rexume is released under the [MIT License](LICENSE).

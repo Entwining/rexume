@@ -1,7 +1,5 @@
 use super::*;
 
-/// An epoch that ended with an error shows until a later epoch replaces it, so a daemon that keeps
-/// failing to observe the server is seen in `status`, and one that recovered is not.
 #[test]
 fn status_shows_the_error_of_the_newest_epoch_only() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -26,8 +24,6 @@ fn status_shows_the_error_of_the_newest_epoch_only() -> Result<()> {
     Ok(())
 }
 
-/// Claude Code turn hooks missing beside Rexume's session-start hook are listed; settings that
-/// cannot be parsed leave the field `null` and the rest of the status as it is.
 #[test]
 fn status_lists_missing_claude_hooks_unless_the_settings_cannot_be_read() -> Result<()> {
     let dir = tempfile::tempdir()?;

@@ -1,5 +1,3 @@
-//! Settling sent notices from their owners' own records.
-
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 
@@ -10,21 +8,17 @@ use crate::runtime::{Receipt, Runtime, inbox};
 use crate::store::{Store, now_ms};
 use crate::task::Interest;
 
-/// Sent notices with the owner record each is looked for in.
 pub(in crate::task) const SENT: &str = "SELECT n.id, n.state, c.runtime, c.native_id, c.transcript
   FROM notice n JOIN task t ON t.id = n.task_id
   JOIN conversation c ON c.runtime = t.owner_runtime AND c.native_id = t.owner_native_id
   WHERE n.state IN ('sent', 'accepted', 'unknown')";
 
-/// The notices sent to one owner record.
 struct OwnerRecord {
     runtime: Runtime,
     native_id: String,
     notices: Vec<(String, String)>,
 }
 
-/// Marks notices the owner's conversation has taken in, from its own record. An extension renaming
-/// a notice to `.accepted` in its inbox shows only that the runtime holds it.
 pub(in crate::task) fn settle(
     store: &mut Store,
     receipts: &mut HashMap<PathBuf, Receipt>,
@@ -71,9 +65,9 @@ pub(in crate::task) fn settle(
                 delivered.extend(found);
                 interest.files.insert(path);
             }
-            // The records read before the error may hold receipts, so the next check reads the
-            // record from its start; the other owners' records are checked meanwhile. A path that
-            // cannot be read may not be watchable either, and a failed watch ends the epoch.
+            // What was read before the error may hold receipts, so the record is read again from
+            // its start. It is not watched: a path that cannot be read may not be watchable, and a
+            // failed watch ends the epoch.
             Err(e) => {
                 log::warn!("failed to read `{}` for receipts: {e:#}", path.display());
                 receipts.remove(&path);

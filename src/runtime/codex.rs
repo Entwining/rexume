@@ -1,5 +1,3 @@
-//! Codex.
-
 use std::path::Path;
 use std::process::{Command, Stdio};
 
@@ -24,9 +22,8 @@ pub fn resume_argv(c: &Conversation) -> Vec<String> {
     argv
 }
 
-/// The model and reasoning effort a Codex conversation last applied, from its own record. Codex
-/// records them whenever a session starts, resumes, or changes them; the session-start hook
-/// carries no effort.
+/// Codex records the model and effort in `thread_settings_applied` whenever a session starts,
+/// resumes, or changes them; the session-start hook carries no effort.
 pub fn settings(path: &Path, conversation: &mut Conversation) -> Result<()> {
     for record in Lines::new(path, 0).read()? {
         let record = record?;
@@ -44,7 +41,6 @@ pub fn settings(path: &Path, conversation: &mut Conversation) -> Result<()> {
     Ok(())
 }
 
-/// `codex queue` stores the message for the thread, and an idle session runs it.
 pub fn send(target: &Target, text: &str) -> Result<Sent> {
     let child = Command::new("codex")
         .args(["queue", "--thread", target.native_id, "--message", text])
@@ -77,19 +73,16 @@ pub fn send(target: &Target, text: &str) -> Result<Sent> {
     })
 }
 
-/// A queued message reaches the thread as a user response item.
 pub fn received(record: &Value) -> bool {
     record.get("type").and_then(Value::as_str) == Some("response_item")
         && record.pointer("/payload/role").and_then(Value::as_str) == Some("user")
 }
 
-/// Codex opens a turn with `task_started` and ends it with `task_complete`, or with
-/// `turn_aborted` when the user interrupts; a turn cut off by the terminal's end, including a
-/// graceful server stop, leaves neither.
+/// A turn the terminal's end cut off, a graceful server stop included, records neither
+/// `task_complete` nor `turn_aborted`.
 #[derive(Default)]
 pub struct Parser {
     turn: Option<Turn>,
-    /// Where the turn not yet yielded starts.
     open: Option<u64>,
 }
 
@@ -174,7 +167,6 @@ mod tests {
     #[test]
     fn the_last_applied_settings_win_over_the_reported_ones() -> Result<()> {
         let mut rollout = transcript(&[&applied("low")]);
-        // The session-start hook reports the model but no effort.
         let reported = Conversation {
             native_id: "thread".into(),
             transcript: Some(rollout.path().to_string_lossy().into_owned()),

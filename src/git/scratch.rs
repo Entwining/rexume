@@ -1,12 +1,3 @@
-//! A capture's files. In the task's snapshot directory, `snapshots/TASK_ID` in the state directory:
-//! `ID.lock`, on which every process of the capture holds a `flock` and which names the capture's
-//! temporary directory, and `ID`, the objects the capture writes, created only once space is
-//! reserved for them. In the system's temporary directory, `.rexume-ID`: the copy of the index,
-//! the objects copied from the repository for Git to read, and Git LFS's storage, which hold no
-//! object the snapshot keeps and so take none of the space snapshots may take. The lock file is
-//! created first and deleted last, so a lock that can be taken shows every file a capture left
-//! whose processes all ended.
-
 use std::ffi::OsString;
 use std::fs::{DirBuilder, File, TryLockError};
 use std::io::{ErrorKind, Read, Seek, Write};
@@ -20,31 +11,21 @@ use nix::fcntl::{FcntlArg, FdFlag, fcntl};
 use super::command::Isolation;
 use crate::store::new_id;
 
-/// What a capture's lock file is named after its ID.
 const LOCK: &str = ".lock";
-/// What the name of a capture's temporary directory is, before its ID.
 const TEMP_PREFIX: &str = ".rexume-";
-/// The task's objects, in its snapshot directory, which each capture adds to.
 const KEPT: &str = "objects";
 
 pub(super) struct Scratch {
     pub id: String,
-    /// The capture's objects directory, `ID` in the task's snapshot directory.
     dir: PathBuf,
-    /// The task's snapshot directory, whose objects the capture's go to once it keeps them.
     task_dir: PathBuf,
     temp: PathBuf,
-    /// Held while the capture runs, and inherited by every process it starts.
     lock: File,
     lock_path: PathBuf,
-    /// Set once `keep` or `into_left` takes over the capture's files: what either leaves is for
-    /// whoever finishes the capture by its row.
     ended: bool,
 }
 
 impl Scratch {
-    /// Creates a capture's lock file in `task_dir`, a task's snapshot directory, and its temporary
-    /// directory.
     pub fn create(task_dir: &Path) -> Result<Self> {
         std::fs::create_dir_all(object_directory(task_dir))?;
         // Absolute, as Git runs in the working tree and the lock file records it for whoever next
@@ -75,6 +56,8 @@ impl Scratch {
                 lock_path,
                 ended: false,
             };
+            // Inherited by every process the capture starts, so that the lock stays held while any
+            // of them runs.
             let flags = FdFlag::from_bits_retain(fcntl(scratch.lock.as_fd(), FcntlArg::F_GETFD)?);
             fcntl(
                 scratch.lock.as_fd(),
@@ -97,13 +80,11 @@ impl Scratch {
         self.temp.join("seed")
     }
 
-    /// The size of the objects copied from the repository so far.
     pub fn seeded(&self) -> Result<u64> {
         size(&self.seed())
     }
 
-    /// Where Git finds objects while the changed files are listed: in the seed, where any object
-    /// it wrote would go, with the task's kept objects as alternates.
+    /// Objects Git writes before space is reserved go to the seed, outside the state directory.
     pub fn reading(&self) -> Isolation {
         Isolation {
             index: self.index(),
@@ -112,9 +93,6 @@ impl Scratch {
         }
     }
 
-    /// Creates the capture's objects directory, once space is reserved for what it writes: Git
-    /// writes the capture's objects there, reading the task's kept objects and the seed as
-    /// alternates.
     pub fn staging(&self) -> Result<Isolation> {
         std::fs::create_dir(&self.dir)?;
         Ok(Isolation {
@@ -124,7 +102,6 @@ impl Scratch {
         })
     }
 
-    /// The setting that gives Git LFS a directory for its storage in the temporary directory.
     pub fn lfs(&self) -> Result<OsString> {
         let dir = self.temp.join("lfs");
         std::fs::create_dir(&dir)?;
@@ -133,14 +110,12 @@ impl Scratch {
         Ok(setting)
     }
 
-    /// The size of the objects the capture wrote.
     pub fn staged(&self) -> Result<u64> {
         size(&self.dir)
     }
 
-    /// Moves the capture's objects to the task's, then deletes its files. Called once their space
-    /// is recorded as kept: should a move fail, the objects stay in the capture's directory for
-    /// whoever next takes its lock to move.
+    /// Called once the objects' space is recorded as kept, so a failed move leaves them for
+    /// whoever next takes the lock to move.
     pub fn keep(mut self) -> Result<()> {
         self.ended = true;
         move_objects(&self.dir, &object_directory(&self.task_dir))?;
@@ -149,8 +124,6 @@ impl Scratch {
         delete_file(&self.lock_path)
     }
 
-    /// The capture as one left, holding its lock, for a capture that failed once it reserved space
-    /// to be finished by its row as a killed one is.
     pub fn into_left(mut self) -> Result<Left> {
         self.ended = true;
         Ok(Left {
@@ -168,7 +141,6 @@ impl Scratch {
 }
 
 impl Drop for Scratch {
-    /// Deletes the files of a capture that ended before it reserved space, or by a panic.
     fn drop(&mut self) {
         if !self.ended
             && let Err(e) = self.delete_files()
@@ -178,15 +150,14 @@ impl Drop for Scratch {
     }
 }
 
-/// A capture none of whose processes runs, whose lock this holds: its lock file found gone is the
-/// end of one that a capture or a reclaimer killed while deleting it left.
 pub struct Left {
     id: String,
     task_dir: PathBuf,
+    /// `None` for a lock file found gone: it is deleted last, so the capture's other files are gone
+    /// too.
     lock: Option<File>,
 }
 
-/// Capture `id` of `task_dir`, a task's snapshot directory, unless one of its processes runs.
 pub fn claim(task_dir: &Path, id: &str) -> Result<Option<Left>> {
     let mut left = Left {
         id: id.to_owned(),
@@ -205,7 +176,6 @@ pub fn claim(task_dir: &Path, id: &str) -> Result<Option<Left>> {
     Ok(Some(left))
 }
 
-/// The captures in `task_dir`, a task's snapshot directory, none of whose processes runs.
 pub fn left(task_dir: &Path) -> Result<Vec<Left>> {
     let mut left = Vec::new();
     for id in captures(task_dir)? {
@@ -214,12 +184,10 @@ pub fn left(task_dir: &Path) -> Result<Vec<Left>> {
     Ok(left)
 }
 
-/// Whether `task_dir` holds the lock file of any capture.
 pub fn captured(task_dir: &Path) -> Result<bool> {
     Ok(!captures(task_dir)?.is_empty())
 }
 
-/// The ID of each capture whose lock file is in `task_dir`.
 fn captures(task_dir: &Path) -> Result<Vec<String>> {
     let entries = match std::fs::read_dir(task_dir) {
         Ok(entries) => entries,
@@ -241,14 +209,11 @@ impl Left {
         &self.id
     }
 
-    /// Deletes the capture's objects and its temporary directory.
     pub fn delete(&mut self) -> Result<()> {
         self.delete_temp()?;
         delete(&self.task_dir.join(&self.id))
     }
 
-    /// Moves the objects left in the capture's directory to the task's, then deletes the
-    /// directory and the temporary directory.
     pub fn keep(&mut self) -> Result<()> {
         self.delete_temp()?;
         let dir = self.task_dir.join(&self.id);
@@ -256,12 +221,10 @@ impl Left {
         delete(&dir)
     }
 
-    /// The size of the objects left in the capture's directory.
     pub fn size(&self) -> Result<u64> {
         size(&self.task_dir.join(&self.id))
     }
 
-    /// Deletes the lock file, the capture's last file.
     pub fn forget(self) -> Result<()> {
         delete_file(&self.lock_path())
     }
@@ -270,8 +233,8 @@ impl Left {
         self.task_dir.join(format!("{}{LOCK}", self.id))
     }
 
-    /// Deletes the temporary directory the lock file names, when it names the capture's: a
-    /// capture killed while recording it had created none.
+    /// A recorded path that is not the capture's own was cut short by a capture killed while
+    /// writing it, before it created the directory.
     fn delete_temp(&mut self) -> Result<()> {
         let Some(lock) = &mut self.lock else {
             return Ok(());
@@ -289,7 +252,6 @@ impl Left {
     }
 }
 
-/// Moves every object under `from`, a capture's objects directory, to the same path under `to`.
 fn move_objects(from: &Path, to: &Path) -> Result<()> {
     for file in files(from)? {
         let kept = to.join(file.strip_prefix(from)?);
@@ -301,7 +263,6 @@ fn move_objects(from: &Path, to: &Path) -> Result<()> {
     Ok(())
 }
 
-/// The total size of the regular files under `dir`.
 fn size(dir: &Path) -> Result<u64> {
     let mut total = 0;
     for file in files(dir)? {
@@ -310,7 +271,6 @@ fn size(dir: &Path) -> Result<u64> {
     Ok(total)
 }
 
-/// The regular files under `dir`, none once it is gone.
 fn files(dir: &Path) -> Result<Vec<PathBuf>> {
     let mut found = Vec::new();
     let mut pending = vec![dir.to_path_buf()];
@@ -350,7 +310,6 @@ fn delete_file(path: &Path) -> Result<()> {
     }
 }
 
-/// The directory of the objects a task's captures kept, in `task_dir`, its snapshot directory.
 pub fn object_directory(task_dir: &Path) -> PathBuf {
     task_dir.join(KEPT)
 }

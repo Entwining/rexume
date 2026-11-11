@@ -1,8 +1,5 @@
-//! A change to the schema is deliberate: it changes the fixture of its version too.
-
 type Definitions = Vec<(String, String, Option<String>)>;
 
-/// The tables, indexes, and `user_version` a schema creates.
 fn definitions(schema: &str) -> (i64, Definitions) {
     let db = rusqlite::Connection::open_in_memory().unwrap();
     db.execute_batch(schema).unwrap();

@@ -1,7 +1,3 @@
-//! A Claude Code conversation started through a wrapper that declares its launch reopens through
-//! the declared command, with the choice the wrapper made then rather than its current default,
-//! and with the `REXUME_TASK_META` it started with.
-
 use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 
@@ -10,9 +6,8 @@ use serde_json::{Value, json};
 use crate::common::{Daemon, REXUME, SHELL, Server, claude, db, query, rex_bin, wait_until};
 use crate::restore::{WAIT, agents, restart, restores};
 
-/// A Perl whose start environment another process can read, as Rexume reads Claude Code's. macOS
-/// withholds it for its own binaries, `/usr/bin/perl` among them, but not for a copy signed by
-/// anyone else, as Claude Code is.
+/// macOS withholds a process's start environment, which Rexume reads, for its own binaries such as
+/// `/usr/bin/perl`, but not for a copy signed by anyone else, as Claude Code is.
 #[cfg(target_os = "macos")]
 fn readable_perl(dir: &Path) -> PathBuf {
     let perl = dir.join("perl");
@@ -31,9 +26,6 @@ fn readable_perl(_: &Path) -> PathBuf {
     PathBuf::from("/usr/bin/perl")
 }
 
-/// A wrapper named `claude`, as `PATH` finds it: `--a` or `--b` chooses for one call, otherwise the
-/// choice in `DEFAULT` holds, and `b` sets a provider variable that `a` removes. `--tag VALUE` is
-/// passed to the agent as `WRAPPER_TAG`. It declares the resolved choice and `exec`s the agent.
 const WRAPPER: &str = r#"#!/usr/bin/perl
 use JSON::PP;
 open(my $f, '<', 'DEFAULT') or die $!;
@@ -51,9 +43,6 @@ $ENV{REXUME_LAUNCH} = encode_json(['claude', "--$choice", @tag]);
 exec('PERL', 'AGENT', @ARGV) or die $!;
 "#;
 
-/// The agent: it names its conversation by `--resume`, or by `CONVERSATION` when started anew,
-/// records what reached it in `RUN.seen`, reports itself as its session-start hook would, and
-/// keeps running.
 const AGENT: &str = r#"my $id = $ENV{CONVERSATION};
 for my $i (0 .. $#ARGV - 1) { $id = $ARGV[$i + 1] if $ARGV[$i] eq '--resume' }
 open(my $f, '>', "$run.seen") or die $!;
@@ -65,7 +54,6 @@ print $r qq({"session_id":"$id","transcript_path":"DIR/$id.jsonl"});
 close $r;
 sleep 600;"#;
 
-/// The wrapper in `dir/bin` with its default `b`, and the directory of the agent's runs.
 fn wrapped_agent(dir: &Path, state: &Path) -> (PathBuf, PathBuf) {
     let (native, runs) = claude::stand_in(
         &dir.join("native"),
@@ -91,8 +79,6 @@ fn wrapped_agent(dir: &Path, state: &Path) -> (PathBuf, PathBuf) {
     (bin, runs)
 }
 
-/// What reached the latest run of conversation `id` once it has reported itself: the provider
-/// variable, the tag, and the task meta.
 fn reached(state: &Path, runs: &Path, id: &str) -> (String, String, String) {
     wait_until("the run to report", WAIT, || {
         let (pid, seen) = std::fs::read_dir(runs)
@@ -132,11 +118,6 @@ fn launch_command(state: &Path, id: &str) -> Value {
     serde_json::from_str::<Value>(&settings).unwrap()["launch_command"].clone()
 }
 
-/// Conversation `one` starts with `--a`, a tag of shell metacharacters, and a task meta while the
-/// default is `b`; conversation `two` starts on the default `b`, which then becomes `a`, with the
-/// task meta its shell exports cleared. Each restart reopens each with its own choice, the tag as
-/// given, and its own task meta rather than the shell's, through the declared command: the plan
-/// replays no provider variable, and the command does not grow from one restore to the next.
 #[test]
 #[ignore = "needs a Rex server"]
 fn a_declared_launch_reopens_with_the_choice_made_at_launch() {
@@ -145,7 +126,7 @@ fn a_declared_launch_reopens_with_the_choice_made_at_launch() {
     let (bin, runs) = wrapped_agent(dir.path(), &state);
     let tag = r#"x y;$(touch z)|&`"q'*"#;
     let meta = r#"{"eval": "it's 1"}"#;
-    // A startup file of the interactive shell the gate reopens a conversation through.
+    // The gate reopens a conversation through an interactive shell, which reads this file.
     let home = dir.path().join("home");
     std::fs::create_dir_all(&home).unwrap();
     std::fs::write(

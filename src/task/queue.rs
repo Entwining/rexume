@@ -1,6 +1,5 @@
-//! The request rounds an owner sends while its task still has an open round. They wait behind it
-//! in the order sent, since the worker takes one request at a time, between its turns, and the
-//! turn that takes a request in is that round's result.
+//! A request round queues behind the open round, since the turn that takes its request in is its
+//! result and the worker takes one request at a time, between its turns.
 
 use std::sync::LazyLock;
 
@@ -10,15 +9,11 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use super::{OPEN, outcome};
 use crate::store::{new_id, now_ms};
 
-/// What a round's end means for the rounds queued behind it.
 pub(super) enum Queued {
-    /// The worker goes on, so the earliest one starts unless its pane is closed.
     Start,
-    /// The worker can take no further request: it is gone, or its record cannot be followed.
     End,
 }
 
-/// Whether the task has an open round, and whether its worker pane is closed.
 pub(super) static STANDING: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT EXISTS (SELECT 1 FROM task_round r WHERE r.task_id = t.id AND {OPEN}),
@@ -27,17 +22,14 @@ pub(super) static STANDING: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// Starts the task's earliest queued round.
 pub(super) const START_NEXT: &str = "UPDATE task_round SET state = 'running'
   WHERE task_id = ?1 AND round = (SELECT MIN(round) FROM task_round
                                   WHERE task_id = ?1 AND state = 'queued')
   RETURNING round";
 
-/// The task's queued rounds, in the order they start.
 pub(super) const QUEUED_ROUNDS: &str =
     "SELECT round FROM task_round WHERE task_id = ?1 AND state = 'queued' ORDER BY round";
 
-/// Queues request round `round`, numbered after the task's last round.
 pub(super) fn add(tx: &Transaction, id: &str, round: i64, message: &str) -> Result<()> {
     tx.execute(
         "INSERT INTO task_round (task_id, round, state, created_at) VALUES (?1, ?2, 'queued', ?3)",
@@ -56,10 +48,6 @@ pub(super) fn add(tx: &Transaction, id: &str, round: i64, message: &str) -> Resu
     Ok(())
 }
 
-/// Moves the queue once round `round` ended as `state`, in the transaction that ended it: when no
-/// round of the task is open, it starts the earliest queued round, whose request the daemon's pass
-/// then delivers, or drops every queued round, each with its own finished notice. The round that
-/// ended was the open one or, abandoned, a queued one.
 pub(super) fn advance(
     tx: &Transaction,
     id: &str,

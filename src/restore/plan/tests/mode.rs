@@ -20,7 +20,6 @@ fn a_claude_conversation_reopens_in_the_mode_its_record_last_shows() -> Result<(
             .map(|s| (*s).to_owned())
             .collect()
     };
-    // Claude Code's own resume would start this conversation in a new session's mode.
     assert_eq!(
         argv(&[
             r#"{"type":"permission-mode","permissionMode":"bypassPermissions","sessionId":"s"}"#,
@@ -28,7 +27,6 @@ fn a_claude_conversation_reopens_in_the_mode_its_record_last_shows() -> Result<(
         ])?,
         resume(&["--permission-mode", "bypassPermissions"])
     );
-    // Switched to Manual after the last prompt; its resume would take a settings `defaultMode`.
     assert_eq!(
         argv(&[
             r#"{"type":"user","permissionMode":"auto","message":{"role":"user","content":"Go"}}"#,
@@ -36,8 +34,6 @@ fn a_claude_conversation_reopens_in_the_mode_its_record_last_shows() -> Result<(
         ])?,
         resume(&["--permission-mode", "default"])
     );
-    // A subagent's records in the same file, as Claude Code 2.1.85 wrote them, are not the
-    // conversation's own.
     assert_eq!(
         argv(&[
             r#"{"type":"user","permissionMode":"default","message":{"role":"user","content":"Go"}}"#,
@@ -45,7 +41,6 @@ fn a_claude_conversation_reopens_in_the_mode_its_record_last_shows() -> Result<(
         ])?,
         resume(&["--permission-mode", "default"])
     );
-    // A record that shows no mode leaves it to Claude Code's resume.
     assert_eq!(
         argv(&[r#"{"type":"user","message":{"role":"user","content":"Go"}}"#])?,
         resume(&[])

@@ -1,6 +1,3 @@
-//! Reaching the server: waiting for its socket, starting `rex do`, and proving the adapter's
-//! connection and subscription before anything is read through it.
-
 use std::convert::Infallible;
 use std::io::Read;
 use std::os::unix::net::UnixStream;
@@ -18,11 +15,10 @@ use crate::store::new_id;
 
 const CONNECT_WAIT: Duration = Duration::from_secs(10);
 const MAX_BACKOFF: Duration = Duration::from_secs(30);
-/// The adapter's subscription gives no sign of when it is live, and a client that joined before
-/// then never shows up, so short attempts retry soon after it is.
+/// Rex gives no sign of when the adapter's subscription is live and never shows a client that
+/// joined before, so short attempts retry soon after it is.
 const WITNESS_WAIT: Duration = Duration::from_millis(300);
 const WITNESS_ATTEMPTS: usize = 20;
-/// The longest token line a relay may send; a token is a UUID.
 const MAX_TOKEN_LINE: usize = 128;
 
 impl Daemon<'_> {
@@ -36,7 +32,6 @@ impl Daemon<'_> {
                 Err(e) if e.is::<Exit>() => return Err(e),
                 Err(e) => log::error!("epoch ended with an error: {e:#}"),
             }
-            // A connection that held for a while is not a failing one.
             if started.elapsed() > MAX_BACKOFF {
                 backoff = Duration::from_secs(1);
             }
@@ -45,8 +40,6 @@ impl Daemon<'_> {
         }
     }
 
-    /// Waits for the next wakeup and drops each watch that no longer follows its path, so that the
-    /// next pass watches it again, also when the wakeup comes between epochs.
     pub(super) fn wait(&mut self, timeout: Option<Duration>) -> Result<Vec<Fired>> {
         let fired = self.queue.wait(timeout)?;
         if fired.iter().any(|f| f.token == STOP) {
@@ -71,8 +64,6 @@ impl Daemon<'_> {
         Ok(fired)
     }
 
-    /// Returns once the server's socket file exists, watching its directory meanwhile. Checking
-    /// for the file starts no client.
     fn wait_for_server(&mut self) -> Result<()> {
         let Some(path) = self.options.cli.socket_path() else {
             return Ok(());
@@ -83,7 +74,6 @@ impl Daemon<'_> {
                 log::info!("waiting for the server at {}", path.display());
                 waiting = true;
             }
-            // The nearest directory that exists changes when the next one down is created.
             let mut below = path.as_path();
             for dir in path.ancestors().skip(1) {
                 if self.queue.file(dir, SERVER_DIR)? {
@@ -91,8 +81,7 @@ impl Daemon<'_> {
                 }
                 below = dir;
             }
-            // An entry created below the watched directory before the watch was in place fires
-            // nothing, so it is checked once the watch is.
+            // `below` may have appeared before the watch was in place, which fires nothing for it.
             if !below.exists() {
                 self.wait(None)?;
             }
@@ -101,7 +90,6 @@ impl Daemon<'_> {
         Ok(())
     }
 
-    /// Waits without observing anything, returning early when the server's socket reappears.
     fn sleep(&mut self, duration: Duration) -> Result<()> {
         if let Some(dir) = self
             .options
@@ -126,7 +114,6 @@ impl Daemon<'_> {
         Ok(())
     }
 
-    /// Starts the adapter and takes the connection its relay makes back, proven by its token.
     pub(super) fn connect(&mut self) -> Result<(Child, Pipe)> {
         let token = new_id();
         let relay = [
@@ -180,9 +167,6 @@ impl Daemon<'_> {
         }
     }
 
-    /// Proves the adapter's subscription is live before anything is read: a client started after
-    /// it subscribed must show up on its stream. Reads before that could miss changes. Returns the
-    /// server's instance ID and, when it reports one, its host ID.
     pub(super) fn witness(&mut self, pipe: &mut Pipe) -> Result<(String, Option<String>)> {
         for _ in 0..WITNESS_ATTEMPTS {
             let reply = self.options.cli.call(
@@ -207,7 +191,7 @@ impl Daemon<'_> {
     }
 }
 
-/// The token line a relay sends first, read byte by byte so nothing after it is consumed.
+/// Byte by byte, so that what follows the token line is left for `Pipe`.
 fn first_line(stream: &UnixStream) -> Result<String> {
     stream.set_nonblocking(false)?;
     stream.set_read_timeout(Some(Duration::from_secs(2)))?;

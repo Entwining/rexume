@@ -1,15 +1,10 @@
-//! What Claude Code was started with that reopening it needs again: the command a launcher
-//! declared, launch flags, and provider variables, never the launch prompt or a variable that
-//! holds a credential.
+//! `docs/cli.md`'s `report` section specifies what this keeps of Claude Code's launch, and why.
 
 use serde_json::{Map, Value};
 
 use crate::proc;
 
-/// How many values a flag takes, as Claude Code's parser, Commander, reads them: an optional
-/// value is the next argument unless that is an option, a required one is the next argument
-/// whatever it is, and a variadic list goes on until the next option. A value attached with `=`
-/// is the only one.
+/// A flag's values as Commander, Claude Code's argument parser, reads them.
 enum Arity {
     None,
     Optional,
@@ -17,9 +12,6 @@ enum Arity {
     Many,
 }
 
-/// Flags that shape the session rather than say what it is about: each names a path, a name, a
-/// switch, or a tool rule. Prompts, the session's identity, and what the record already carries
-/// (`--model`, `--effort`, `--permission-mode`) are not here.
 const FLAGS: &[(&str, Arity)] = &[
     ("--remote-control", Arity::Optional),
     ("--rc", Arity::Optional),
@@ -38,9 +30,6 @@ const FLAGS: &[(&str, Arity)] = &[
     ("--no-chrome", Arity::None),
 ];
 
-/// Variables that choose the provider, where it runs, and which models its aliases name. An
-/// endpoint URL can carry a credential, and skipping a provider's authentication works only with
-/// the gateway's URL, so both stay in Claude Code's settings.
 const ENV: &[&str] = &[
     "CLAUDE_CODE_USE_BEDROCK",
     "CLAUDE_CODE_USE_MANTLE",
@@ -63,20 +52,11 @@ const ENV: &[&str] = &[
     "ANTHROPIC_SMALL_FAST_MODEL",
 ];
 
-/// A Vertex model's region, one variable per model.
 const ENV_FAMILY: &str = "VERTEX_REGION_CLAUDE_";
 
-/// The variables a launcher sets for the process it `exec`s (`docs/cli.md`): that process, and the
-/// command that starts the same launch again.
 const OWNER: &str = "REXUME_LAUNCH_PID";
 const COMMAND: &str = "REXUME_LAUNCH";
 
-/// The launch settings of the process `pid`, started as `launch`, as a patch over the recorded
-/// settings. It names every key, `null` when empty, so that the report replaces or removes each.
-/// The process's own environment is read rather than the hook's, which also carries the `env` of
-/// Claude Code's settings: Claude Code applies those itself on resume, and saving them would keep
-/// one the user later removed. A launcher that declared its command for the process sets the
-/// provider again when it runs, so the provider variables are saved only without one.
 pub fn patch(launch: &proc::Launch, pid: u32) -> Map<String, Value> {
     let list = |values: Vec<String>| {
         if values.is_empty() {
@@ -101,16 +81,13 @@ pub fn patch(launch: &proc::Launch, pid: u32) -> Map<String, Value> {
     .collect()
 }
 
-/// The command a launcher declared for process `pid`, or why it cannot be used; `None` when the
-/// declaration is not this process's. Children inherit their parent's, including a program Claude
-/// Code starts by its own path, so it counts only for the process `REXUME_LAUNCH_PID` names.
 fn declaration(launch: &proc::Launch, pid: u32) -> Option<Result<Vec<String>, String>> {
     if launch.var(OWNER)?.parse::<u32>().ok()? != pid {
         return None;
     }
-    // The gate claims the restore before its shell runs the command, so a command that cannot run
-    // there stops here: an empty one would reopen as `claude`, a NUL cannot be quoted for the
-    // shell, an empty first element names no program, and one with `=` is a variable assignment.
+    // The gate claims the restore before its shell runs the command, so one that cannot run there
+    // stops here: `[]` would reopen as `claude`, a NUL cannot be quoted for the shell, and a first
+    // element with `=` is a variable assignment.
     let argv = launch
         .var(COMMAND)
         .and_then(|text| serde_json::from_str::<Vec<String>>(text).ok())

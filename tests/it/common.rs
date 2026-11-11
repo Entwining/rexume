@@ -1,6 +1,3 @@
-//! An isolated Rex server and daemon for scenario tests. Each test gets its own directory with
-//! the server's socket, state, and home, so nothing reaches the user's own server.
-
 use std::io::Write as _;
 use std::path::{Path, PathBuf};
 use std::process::{Child, Command, Output, Stdio};
@@ -16,7 +13,6 @@ pub use server::{SHELL, Server, rex_bin};
 
 pub const REXUME: &str = env!("CARGO_BIN_EXE_rexume");
 
-/// Runs rexume with `args`, only the environment variables `vars`, and `stdin`.
 pub fn rexume(args: &[&str], vars: &[(&str, &str)], stdin: &str) -> Output {
     let mut child = Command::new(REXUME)
         .args(args)
@@ -36,7 +32,6 @@ pub fn rexume(args: &[&str], vars: &[(&str, &str)], stdin: &str) -> Output {
     child.wait_with_output().unwrap()
 }
 
-/// A daemon started without the harness, ended when an assertion fails before it exits.
 pub struct Running(pub Child);
 
 impl Drop for Running {
@@ -46,8 +41,6 @@ impl Drop for Running {
     }
 }
 
-/// Polls until `check` returns a value or `timeout` passes; test code may wait, the product never
-/// polls.
 pub fn poll<T>(timeout: Duration, mut check: impl FnMut() -> Option<T>) -> Option<T> {
     let until = Instant::now() + timeout;
     loop {
@@ -65,7 +58,6 @@ pub fn wait_until<T>(what: &str, timeout: Duration, check: impl FnMut() -> Optio
     poll(timeout, check).unwrap_or_else(|| panic!("timed out waiting for {what}"))
 }
 
-/// A daemon in its own process group, so ending the group ends its `rex do`, as its job would.
 pub struct Daemon {
     child: Option<Child>,
     pub log: PathBuf,
@@ -115,12 +107,10 @@ impl Daemon {
         self.child.as_ref().expect("a running daemon").id()
     }
 
-    /// The daemon's exit status once it has exited on its own.
     pub fn try_wait(&mut self) -> Option<std::process::ExitStatus> {
         self.child.as_mut()?.try_wait().unwrap()
     }
 
-    /// The `rex do` the daemon started last.
     pub fn adapter(&self) -> Option<u32> {
         self.log().lines().rev().find_map(|line| {
             line.split("started rex do as pid ")
@@ -135,7 +125,6 @@ impl Daemon {
         if let Some(mut child) = self.child.take() {
             let _ = Command::new("/bin/kill")
                 .args(["-KILL", "--", &format!("-{}", child.id())])
-                // A daemon that already exited has no group left.
                 .stderr(Stdio::null())
                 .status();
             let _ = child.wait();
@@ -160,8 +149,6 @@ pub fn alive(pid: u32) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-/// The state database, opened as the product opens it, so a test's own writes are checked by the
-/// same foreign keys.
 pub fn db(state: &Path) -> Connection {
     let conn = Connection::open(state.join("state.db")).unwrap();
     conn.busy_timeout(Duration::from_secs(5)).unwrap();
@@ -169,8 +156,6 @@ pub fn db(state: &Path) -> Connection {
     conn
 }
 
-/// One value from the state database, or `None` while the database or the row does not exist yet.
-/// Any other error is a broken query and fails the test.
 pub fn query<T: rusqlite::types::FromSql>(state: &Path, sql: &str) -> Option<T> {
     use rusqlite::OptionalExtension;
     if !state.join("state.db").exists() {
@@ -189,8 +174,6 @@ pub fn query<T: rusqlite::types::FromSql>(state: &Path, sql: &str) -> Option<T> 
         .unwrap_or_else(|e| panic!("{sql}: {e}"))
 }
 
-/// Each pane's shell pid, once the shell is its foreground program and the daemon recorded it. A
-/// login shell runs its profile's commands in the foreground first.
 pub fn shell_pids(server: &Server, state: &Path, session: &str, blocks: &[&str]) -> Vec<i64> {
     wait_until("the shells to be recorded", Duration::from_secs(20), || {
         blocks
@@ -203,6 +186,7 @@ pub fn shell_pids(server: &Server, state: &Path, session: &str, blocks: &[&str])
                     )
                     .ok()?;
                 let foreground = &process["foreground"];
+                // A login shell runs its profile's commands in the foreground first.
                 let pid = foreground["pid"]
                     .as_i64()
                     .filter(|_| foreground["name"] == SHELL)?;
@@ -218,7 +202,6 @@ pub fn shell_pids(server: &Server, state: &Path, session: &str, blocks: &[&str])
     })
 }
 
-/// A terminal block for a create request.
 pub fn shell_block(label: &str, cwd: &Path) -> Value {
     json!({ "block": { "flavor": "com.superlogical.terminal.shell", "label": label,
                        "options": { "cwd": cwd } } })

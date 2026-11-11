@@ -1,8 +1,3 @@
-//! The outbox of notices to task owners. A notice leaves `pending` through exactly one claimant:
-//! the running daemon, which marks it `sending` before it sends, or the owner's own `task wait`
-//! or acknowledgement. A send that may have happened is never repeated; only the owner's record
-//! settles it.
-
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
@@ -22,29 +17,20 @@ mod undelivered;
 
 pub use undelivered::undelivered;
 
-/// How long after the round finished, or began its blocked episode, the daemon waits before it
-/// sends the notice, so a `task wait` running in the owner's turn can take it first.
+/// Lets a `task wait` running in the owner's turn take the notice before the daemon sends it.
 const GRACE_MS: i64 = 3000;
 
-/// What a notice tells its owner.
 #[derive(Clone, Copy)]
 pub(super) enum Kind {
-    /// The round finished.
     Finished,
-    /// The round began a blocked episode.
     Blocked,
 }
 
-/// A round's finished notice as `n`: the predicate of the partial index `notice_finished`,
-/// written once so that every query relying on the index matches it.
+/// The predicate of the partial index `notice_finished`.
 const FINISHED: &str = "n.kind = 'finished'";
-/// A round's blocked notice as `n` that has not been sent: the predicate of the partial index
-/// `notice_blocked_unsent`.
+/// The predicate of the partial index `notice_blocked_unsent`.
 const UNSENT_BLOCKED: &str = "n.kind = 'blocked' AND n.state IN ('pending', 'sending')";
 
-/// Whether round `r` still needs notice `n`: a finished notice until acknowledgement, a blocked
-/// notice while the episode it names lasts. Once unneeded, a notice is neither sent nor listed,
-/// regardless of its state: the owner has the result, or the dialog is over.
 static WANTED: LazyLock<String> = LazyLock::new(|| {
     format!(
         "CASE n.kind WHEN 'finished' THEN r.acked_at IS NULL
@@ -55,7 +41,6 @@ static WANTED: LazyLock<String> = LazyLock::new(|| {
 
 const ACKED: &str = "the round was acknowledged during a send that failed";
 
-/// Drops a round's pending finished notice at `?4`, with `?3` saying why.
 pub(super) static SUPERSEDE_FINISHED: LazyLock<String> = LazyLock::new(|| {
     format!(
         "UPDATE notice AS n SET state = 'superseded', note = ?3, superseded_at = ?4
@@ -63,7 +48,6 @@ pub(super) static SUPERSEDE_FINISHED: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// Drops a round's pending blocked notice at `?4`, with `?3` saying why.
 pub(super) static SUPERSEDE_BLOCKED: LazyLock<String> = LazyLock::new(|| {
     format!(
         "UPDATE notice AS n SET state = 'superseded', note = ?3, superseded_at = ?4
@@ -71,8 +55,6 @@ pub(super) static SUPERSEDE_BLOCKED: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// Writes a round's notice at `now`, the time its transaction gives the round or the blocked
-/// `episode` the notice tells of, which the daemon sends once it is due.
 pub(super) fn write(
     tx: &Transaction,
     kind: Kind,
@@ -93,8 +75,6 @@ pub(super) fn write(
     Ok(())
 }
 
-/// Drops a round's notice at `now` while it is still pending, so that it is never sent, with
-/// `note` saying why. Returns whether there was one.
 pub(super) fn supersede(
     tx: &Transaction,
     kind: Kind,
@@ -113,10 +93,6 @@ pub(super) fn supersede(
         == 1)
 }
 
-/// Pending notices with the round each tells of, the worker pane's Rex block ID on the instance
-/// the daemon observes last, the state of the round's request, whether the task has an open round,
-/// and a blocked notice's episode kind, in the order they come due, so that an owner's notices,
-/// which go one at a time, reach it in that order.
 pub(super) static PENDING: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT n.id, n.kind = 'blocked', t.id, t.title, n.round,
@@ -142,26 +118,13 @@ struct Due {
     round_state: String,
     note: Option<String>,
     waiter: Option<i64>,
-    /// When the notice was written.
     since: i64,
     worker: Option<String>,
     request: Option<String>,
-    /// Whether the task has an open round: for a finished notice, a later one, which the worker's
-    /// unread turns wait behind.
     open: bool,
-    /// What a blocked notice's worker waits for, as its program said.
     kind: Option<String>,
 }
 
-/// Sends each due notice to its owner once the owner is running and between turns, unless a live
-/// `task wait` will take it, and returns when the next notice comes due.
-///
-/// An owner gets one notice at a time: the next waits until the owner's record shows the last one
-/// or its pane reports a status after the send, and the owner is between turns again. Codex, Pi,
-/// and omp run one queued message per turn and Claude Code holds what arrives during a turn, so
-/// sending the rest at once saves no turn; it only moves them from this outbox, where `task wait`,
-/// `task ack`, and `task release` can still drop them, into the runtime's queue, where Codex
-/// replays them on resume and Pi and omp lose them on exit.
 pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Option<Instant>> {
     let pending: Vec<Due> = store
         .conn()
@@ -203,7 +166,7 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
         let text = if due.blocked {
             text::blocked(&due)
         } else if due.open {
-            // `task next` refuses while that round is open; its own notice names the unread turns.
+            // A later round is open, so `task next` refuses; its notice names the unread turns.
             text::finished(&due, None)
         } else {
             text::finished(&due, super::unread(store.conn(), store.dir(), &due.task)?)
@@ -227,7 +190,6 @@ pub(super) fn send_due(store: &mut Store, interest: &mut Interest) -> Result<Opt
     Ok(next)
 }
 
-/// Whether a notice's round still needs it, and whether it is a blocked notice.
 pub(super) static STILL_WANTED: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT {}, n.kind = 'blocked'
@@ -237,9 +199,6 @@ pub(super) static STILL_WANTED: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-/// Records a claimed notice's send result. If nothing left, the notice returns to `pending` unless
-/// its round was acknowledged or its episode ended during the send. Those transitions drop only
-/// pending notices, so a notice still `sending` then must be superseded here.
 fn record_send(tx: &Transaction, notice: &str, sent: (&str, Option<String>)) -> Result<()> {
     let (mut state, mut note) = sent;
     if state == "pending" {
@@ -269,8 +228,8 @@ fn record_send(tx: &Transaction, notice: &str, sent: (&str, Option<String>)) -> 
     Ok(())
 }
 
-/// Claims a pending notice for sending at `?3`, unless a `task wait` registered since `?2`, the
-/// dead waiter (or none) the daemon saw before the transaction.
+/// `?2` is the waiter the daemon found dead, or none, before the transaction; any other waiter
+/// holds the notice.
 pub(super) const CLAIM: &str = "UPDATE notice SET state = 'sending', sent_at = ?3,
     attempts = attempts + 1
   WHERE id = ?1 AND state = 'pending'
@@ -282,10 +241,8 @@ pub(super) fn claim(tx: &Transaction, notice: &str, seen_waiter: Option<i64>) ->
     Ok(tx.execute(CLAIM, params![notice, seen_waiter, now_ms()])? == 1)
 }
 
-/// Notices and requests a stopped daemon left mid-send. Only the daemon holding the state
-/// directory's lock claims either for sending, so once the next one holds it, one still marked as
-/// sending may or may not have reached its receiver. It becomes unknown: never sent again, settled
-/// only by the receiver's own record. Returns each one's kind and ID.
+/// Only the daemon holding the state directory's lock claims notices and requests for sending, so
+/// a `sending` row its successor finds may or may not have reached its receiver.
 pub fn orphaned_sends(store: &mut Store) -> Result<Vec<(&'static str, String)>> {
     let tx = store.write()?;
     let mut orphaned = Vec::new();
@@ -312,12 +269,12 @@ pub fn orphaned_sends(store: &mut Store) -> Result<Vec<(&'static str, String)>> 
     Ok(orphaned)
 }
 
-/// The task's owner when its conversation runs as the foreground program of a pane on the
-/// instance the running daemon observes, is between turns, and has no notice on its way that was
-/// sent after the pane last reported its status: such an owner has not come back between turns
-/// since, so its runtime may still take that notice. Any later status means the runtime had its
-/// chance, so a notice it dropped, as one held during a turn the user interrupts can be, holds
-/// nothing, and neither does one sent to a program whose status the pane no longer has.
+/// An owner gets one notice at a time: Codex, Pi, and omp run one queued message per turn and
+/// Claude Code holds what arrives during a turn, so sending more saves no turn and only moves them
+/// from this outbox, where `task wait`, `task ack`, and `task release` can still drop them, into a
+/// queue Codex replays on resume and Pi and omp lose on exit. A status the pane reports after the
+/// send releases the next without a receipt, since a notice the runtime dropped, as one held during
+/// a turn the user interrupts can be, never shows in its record.
 pub(super) const READY_OWNER: &str = "SELECT o.runtime, o.native_id, o.transport
   FROM task t
   JOIN occupant o ON o.runtime = t.owner_runtime AND o.native_id = t.owner_native_id

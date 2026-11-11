@@ -3,7 +3,6 @@ use rusqlite::{Connection, params};
 
 use crate::store::Store;
 
-/// The definitions a new database gets.
 fn fresh() -> Result<Vec<(String, String, Option<String>)>> {
     let dir = tempfile::tempdir()?;
     definitions(Store::open(dir.path())?.conn())
@@ -16,7 +15,6 @@ fn definitions(conn: &Connection) -> Result<Vec<(String, String, Option<String>)
         .collect::<rusqlite::Result<_>>()?)
 }
 
-/// A notice's kind, state, and when it was written.
 fn notice_of(store: &Store, id: &str) -> Result<(String, String, i64)> {
     Ok(store.conn().query_row(
         "SELECT kind, state, created_at FROM notice WHERE id = ?1",
@@ -30,10 +28,6 @@ fn open_upgrades_a_version_1_database_and_keeps_its_tasks() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let conn = Connection::open(dir.path().join("state.db"))?;
     conn.execute_batch(include_str!("../../../tests/fixtures/schema-v1.sql"))?;
-    // Task `i` is interactive: its worker reported for round 2 only, which is blocked at offset
-    // 250. Task `r` is a run whose acknowledged round left its pane being closed. Task `k`
-    // keeps its pane, so its acknowledged round did not release it. Task `u` was rearmed before
-    // its pane's next conversation reported.
     conn.execute_batch(
         "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
            VALUES ('claude', 'owner', 1, 0), ('codex', 'worker', 1, 0);
@@ -102,10 +96,6 @@ fn open_upgrades_a_version_1_database_and_keeps_its_tasks() -> Result<()> {
     Ok(())
 }
 
-/// Task `a` was registered, and pane `b1`'s occupant reported, while an epoch observed instance
-/// `i1` until the server's end; task `b` while an epoch observed `i2` before the daemon
-/// reconnected to it; task `c` and pane `b3`'s occupant while no daemon observed the server.
-/// Two slots typed their reopen command, one of them claimed.
 #[test]
 fn open_upgrades_a_version_2_database_dating_each_process_by_its_epoch() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -140,8 +130,6 @@ fn open_upgrades_a_version_2_database_dating_each_process_by_its_epoch() -> Resu
         .prepare("SELECT id, worker_pid, worker_instance_id FROM task ORDER BY id")?
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
-    // Between epochs, and in an epoch whose end is not known: one closed by the daemon after a
-    // daemon that died, as another instance's epoch follows, or one still open.
     assert_eq!(
         tasks,
         [
@@ -179,8 +167,6 @@ fn open_upgrades_a_version_2_database_dating_each_process_by_its_epoch() -> Resu
     Ok(())
 }
 
-/// Version 4 adds where each occupant's record started; an occupant reported before keeps its
-/// columns and starts at 0.
 #[test]
 fn open_upgrades_a_version_3_database_and_keeps_its_occupants() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -213,8 +199,6 @@ fn open_upgrades_a_version_3_database_and_keeps_its_occupants() -> Result<()> {
     Ok(())
 }
 
-/// Version 5 adds blocked episodes. A blocked round has none until the daemon sees its pane blocked
-/// again, and every earlier notice told of a finished round.
 #[test]
 fn open_upgrades_versions_3_and_4_and_keeps_rounds_notices_and_requests() -> Result<()> {
     for fixture in [
@@ -224,8 +208,6 @@ fn open_upgrades_versions_3_and_4_and_keeps_rounds_notices_and_requests() -> Res
         let dir = tempfile::tempdir()?;
         let conn = Connection::open(dir.path().join("state.db"))?;
         conn.execute_batch(fixture)?;
-        // Task `i` finished round 1, whose notice was delivered, and its request round 2 is
-        // blocked with the request still unsent.
         conn.execute_batch(
             "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
                VALUES ('claude', 'owner', 1, 0), ('codex', 'worker', 1, 0);

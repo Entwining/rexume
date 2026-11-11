@@ -24,9 +24,6 @@ fn a_change_is_read_at_once_unless_a_read_was_just_made() {
     );
 }
 
-/// A pane whose first report reached the stream before its session did has nothing recorded, so
-/// listing its session's panes reads it, in a window or detached; a pane already recorded is left
-/// to its events.
 #[test]
 fn listing_a_session_reads_only_its_unrecorded_panes() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -75,11 +72,6 @@ fn listing_a_session_reads_only_its_unrecorded_panes() -> Result<()> {
     Ok(())
 }
 
-/// The server restores every pane it saved, so a worker's pane a new instance does not list was
-/// closed before the earlier instance ended: the task records the close, as its close event would
-/// have, also for a worker registered while no daemon ran, which has no row in `block`. A worker
-/// registered after the server listed its sessions is not judged by that list, and one in a pane
-/// in no window is listed like the rest.
 #[test]
 fn a_worker_pane_a_new_instance_does_not_list_is_closed() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -142,9 +134,6 @@ fn a_worker_pane_a_new_instance_does_not_list_is_closed() -> Result<()> {
     Ok(())
 }
 
-/// A list of panes carries no revision, so the revision a view change reports stands for the list
-/// read after it: a change at that revision or an earlier one, which can arrive late, lists
-/// nothing more, and a later one lists again.
 #[test]
 fn a_view_change_at_a_revision_already_reported_lists_nothing() -> Result<()> {
     let dir = tempfile::tempdir()?;

@@ -23,8 +23,6 @@ pub(super) fn transcript(lines: &[&str]) -> tempfile::NamedTempFile {
     file
 }
 
-/// How the record of `runtime`, a runtime reached through an inbox, shows the conversation taking
-/// in the notice or request whose token is `token`.
 pub(crate) fn receipt_line(runtime: Runtime, token: &str) -> Value {
     match runtime {
         Runtime::Pi => json!({"type": "custom_message", "id": "n1", "customType": "rexume",
@@ -34,8 +32,6 @@ pub(crate) fn receipt_line(runtime: Runtime, token: &str) -> Value {
     }
 }
 
-/// How the record of `runtime`, a runtime reached through an inbox, shows a turn ending with the
-/// answer `text`, which `id` names.
 pub(crate) fn answer_line(runtime: Runtime, id: &str, text: &str) -> Value {
     match runtime {
         Runtime::Pi => json!({"type": "message", "id": id, "message": {"role": "assistant",
@@ -45,8 +41,6 @@ pub(crate) fn answer_line(runtime: Runtime, id: &str, text: &str) -> Value {
     }
 }
 
-/// Appends `lines` to the record of `runtime`, a runtime reached through an inbox, where the
-/// runtime writes it: Pi's session file `transcript`, or the file the omp extension appends to.
 pub(crate) fn append_to_record(
     runtime: Runtime,
     state_dir: &Path,
@@ -82,7 +76,6 @@ pub(super) fn node() -> Result<String> {
 const PROMPT: &str = r#"{"event":"prompt","prompt_id":"p1","token":null}"#;
 const ANSWER: &str = r#"{"event":"stop","prompt_id":"p1","id":"s1","answer":"Done."}"#;
 
-/// A tracker following a first round from the record's start.
 fn tracker(path: &Path) -> Tracker {
     Tracker::new(Runtime::Claude, path, 0, Taken::default(), None)
 }
@@ -100,7 +93,6 @@ fn a_tracker_reads_only_whole_lines_and_continues_from_them() -> Result<()> {
     let mut tracker = tracker(file.path());
     tracker.update()?;
     assert!(tracker.chosen().is_none());
-    // Half of the answer reaches the file first.
     let (head, tail) = ANSWER.split_at(20);
     write!(file, "{head}")?;
     file.flush()?;
@@ -134,7 +126,6 @@ fn a_tracker_stops_when_the_record_is_replaced_or_cut() -> Result<()> {
     std::fs::write(&path, format!("{PROMPT}\n{ANSWER}\n"))?;
     cut.update()?;
     assert!(cut.replaced() && cut.chosen().is_none());
-    // Replaced by another file of the same length.
     let mut replaced = tracker(&path);
     replaced.update()?;
     let other = dir.path().join("other.jsonl");
@@ -156,9 +147,6 @@ fn a_missing_record_has_no_turn_and_other_read_errors_surface() -> Result<()> {
     Ok(())
 }
 
-/// Claude Code's input counts as received once the turn that took it in ends, which may be in a
-/// later check than its prompt; a prompt another hook rejected, which the next prompt follows
-/// without an end, and an answer that mentions a token are no receipts.
 #[test]
 fn only_input_a_finished_turn_took_counts_as_a_receipt() -> Result<()> {
     let mut file = transcript(&[
@@ -178,8 +166,6 @@ fn only_input_a_finished_turn_took_counts_as_a_receipt() -> Result<()> {
     Ok(())
 }
 
-/// Pi's inbox stays where every released extension watches it, and omp's is apart from it, since
-/// either opens the other's session file under the ID the file records.
 #[test]
 fn pi_and_omp_take_a_shared_id_from_different_inboxes() {
     let state = Path::new("/state");
@@ -218,7 +204,6 @@ fn claude_resumes_by_id_with_the_reported_settings() {
 fn a_line_that_is_not_json_leaves_the_last_turn_unknown() -> Result<()> {
     let file = transcript(&[PROMPT, "{not json", ANSWER]);
     assert_eq!(last_turn(Runtime::Claude, file.path(), 0)?, None);
-    // A tracker following a round still reads the records around it.
     let mut tracker = tracker(file.path());
     tracker.update()?;
     assert_eq!(chosen_text(&tracker).as_deref(), Some("Done."));
@@ -246,12 +231,10 @@ fn the_last_record_is_found_across_read_blocks_and_not_in_an_unfinished_line() -
     let pad = "x".repeat(100_000);
     let mut file = transcript(&[
         r#"{"mode":"old"}"#,
-        // Longer than a read block, so it is found only by joining blocks.
         &format!(r#"{{"mode":"last","pad":"{pad}"}}"#),
         &format!(r#"{{"other":"{pad}"}}"#),
         r#"{"mode":"broken"#,
     ]);
-    // Also longer than a read block, so no newline is found in the first block read.
     write!(file, r#"{{"mode":"unfinished","pad":"{pad}"}}"#)?;
     file.flush()?;
     assert_eq!(

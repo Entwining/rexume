@@ -1,8 +1,5 @@
 use super::*;
 
-/// A conversation shown in two panes reopens in one, and the other keeps its shell; a round its
-/// worker left open there goes on from the conversation's record, while one in a pane that had no
-/// conversation ends.
 #[test]
 fn a_conversation_shown_in_two_panes_is_reopened_in_one() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -10,7 +7,6 @@ fn a_conversation_shown_in_two_panes_is_reopened_in_one() -> Result<()> {
     let transcript = dir.path().join("t.jsonl");
     std::fs::write(&transcript, "")?;
     conversation(&store, "a", "codex", &transcript)?;
-    // Pane b shows the same conversation, as after `codex resume` in a second pane.
     store.conn().execute_batch(
         "INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env, reported_at)
            VALUES ('b', 'codex', 'a-conversation', 20, 0, 0);
@@ -47,13 +43,10 @@ fn a_conversation_shown_in_two_panes_is_reopened_in_one() -> Result<()> {
         .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
     assert_eq!(planned, [(a, "a".into(), Some("s".into()))]);
-    // Planning again on the same instance plans nothing new.
     assert_eq!(plan(&mut store, "i2", "a", Some("s"))?, None);
     Ok(())
 }
 
-/// A turn the server's end cut off continues in the pane it ran in, even when another pane that
-/// showed the conversation idle was planned first.
 #[test]
 fn the_pane_whose_turn_was_cut_off_reopens_a_conversation_two_panes_showed() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -79,8 +72,6 @@ fn the_pane_whose_turn_was_cut_off_reopens_a_conversation_two_panes_showed() -> 
     Ok(())
 }
 
-/// A pane that left the conversation to another pane's restore keeps its rounds only while that
-/// restore may still start the conversation: once it is skipped, they end as its own do.
 #[test]
 fn a_round_left_to_another_panes_restore_ends_when_that_restore_is_skipped() -> Result<()> {
     let dir = tempfile::tempdir()?;

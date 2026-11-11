@@ -4,8 +4,6 @@ use rusqlite::Connection;
 use super::{definitions, fresh};
 use crate::store::Store;
 
-/// Version 6 adds `epoch.error`. A version 5 database keeps its epochs, the newest of which
-/// `status` reads.
 #[test]
 fn open_upgrades_a_version_5_database_and_keeps_its_epochs() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -27,8 +25,6 @@ fn open_upgrades_a_version_5_database_and_keeps_its_epochs() -> Result<()> {
     Ok(())
 }
 
-/// Version 7 drops the saved layouts, the restores of recreated sessions, and the pane columns
-/// only they read; a version 6 pane keeps the rest of its record.
 #[test]
 fn open_upgrades_a_version_6_database_and_keeps_its_panes() -> Result<()> {
     let dir = tempfile::tempdir()?;

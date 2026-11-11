@@ -1,5 +1,3 @@
-//! The LaunchAgent that runs the daemon: its plist and launchd's loaded copy of it.
-
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -10,22 +8,18 @@ use anyhow::{Context, Result, bail};
 use super::{Install, Outcome, remove_file, run_manager, write};
 use crate::event::Queue;
 
-/// The keys of install's and uninstall's output, and the job's label.
 pub(super) const KEY: &str = "launch_agent";
 pub(super) const NAME_KEY: &str = "launch_agent_label";
 pub(super) const NAME: &str = "io.github.entwining.rexume";
 
-/// How long a stop waits for the daemon to exit. The daemon exits on `SIGTERM` once `rex do` has
-/// ended, and launchd kills a job that outlives its exit timeout, so this only bounds a stop
-/// that neither ends.
+/// launchd kills a job that outlives its exit timeout, so this bounds only a stop that neither the
+/// daemon nor launchd ends.
 const EXIT_DEADLINE: Duration = Duration::from_secs(30);
 
 fn plist_path(home: &Path) -> PathBuf {
     home.join(format!("Library/LaunchAgents/{NAME}.plist"))
 }
 
-/// Writes the plist when its parsed content differs, and loads the job when the plist changed or
-/// the job is not loaded: a loaded job keeps the definition it was loaded with.
 pub(super) fn install(install: &Install, home: &Path) -> Result<&'static str> {
     let path = plist_path(home);
     let logs = home.join("Library/Logs");
@@ -63,7 +57,6 @@ pub(super) fn install(install: &Install, home: &Path) -> Result<&'static str> {
     })
 }
 
-/// Stops the job when launchd has it loaded.
 pub(super) fn unload(_home: &Path) -> Result<()> {
     if let Some(job) = loaded()? {
         stop(&job)?;
@@ -71,20 +64,16 @@ pub(super) fn unload(_home: &Path) -> Result<()> {
     Ok(())
 }
 
-/// Removes the plist of a job already stopped.
 pub(super) fn remove(home: &Path) -> Result<Outcome> {
     remove_file(&plist_path(home), |_| true)
 }
 
-/// launchd's loaded copy of the job.
 struct Loaded {
-    /// The daemon's process, while it runs.
     pid: Option<i64>,
 }
 
-/// Boots the job out and returns once launchd no longer has it. `bootout` returns as soon as
-/// launchd has sent `SIGTERM`, and the job stays loaded until its process exits, so a `bootstrap`
-/// before then fails with `5: Input/output error`; a job with no process is gone at once.
+/// `bootout` returns once launchd has sent `SIGTERM`, but the job stays loaded until its process
+/// exits, and a `bootstrap` before then fails with `5: Input/output error`.
 fn stop(job: &Loaded) -> Result<()> {
     let queue = Queue::new()?;
     // Watched before the bootout, so that an exit in between is not missed.

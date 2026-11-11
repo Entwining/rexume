@@ -1,5 +1,3 @@
-//! The command line.
-
 use std::io::Write as _;
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -35,8 +33,8 @@ struct StateDir {
 }
 
 impl StateDir {
-    /// The state directory as an absolute path, since commands hand paths in it to processes that
-    /// run in another directory: Git in a task's working tree, and the gate in a restored shell.
+    /// Absolute, because commands hand paths in it to processes that run in another directory: Git
+    /// in a task's working tree, and the gate in a restored shell.
     fn resolve(self) -> Result<PathBuf> {
         let dir = self.state_dir.map_or_else(store::default_dir, Ok)?;
         Ok(std::path::absolute(dir)?)
@@ -192,7 +190,6 @@ pub fn main() -> ExitCode {
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(level)).init();
     let result = match args.command {
         Command::Report { runtime, state } => {
-            // A hook must not hold up or fail the session it reports.
             if let Err(e) = state
                 .resolve()
                 .and_then(|dir| report::run(runtime, &dir))
@@ -227,7 +224,6 @@ pub fn main() -> ExitCode {
     })
 }
 
-/// Runs a command, returning what it prints and its exit status.
 fn run(command: Command) -> Result<Option<(Value, u8)>> {
     match command {
         Command::Install(server) => {
@@ -283,8 +279,8 @@ fn home() -> Result<PathBuf> {
     std::env::home_dir().context("HOME is not set")
 }
 
-/// This executable by the path it was started with, so that commands written into the job
-/// and restored panes keep working after a package manager replaces the file behind it.
+/// The path this was started by, not the file behind it, so that commands written into the job
+/// and restored panes keep working after a package manager replaces that file.
 fn exe() -> Result<PathBuf> {
     let argv0 = PathBuf::from(std::env::args_os().next().unwrap_or_default());
     if argv0.is_absolute() {
@@ -317,14 +313,13 @@ fn server_address(given: Option<String>) -> Result<String> {
     ))
 }
 
-/// The socket of the server the Rex app starts.
 #[cfg(target_os = "macos")]
 fn default_socket() -> Result<PathBuf> {
     Ok(home()?.join("Library/Application Support/rex/server.sock"))
 }
 
-/// The socket of the user's own Rex server. Without a runtime directory Rex puts it elsewhere, in
-/// a place that has changed between Rex releases, so it is not guessed.
+/// Without a runtime directory Rex puts the socket in a place that has changed between Rex
+/// releases, so it is not guessed.
 #[cfg(target_os = "linux")]
 fn default_socket() -> Result<PathBuf> {
     std::env::var_os("XDG_RUNTIME_DIR")
@@ -334,7 +329,6 @@ fn default_socket() -> Result<PathBuf> {
         .context("XDG_RUNTIME_DIR is not set to an absolute path; pass --server or set REX_SERVER")
 }
 
-/// The bytes a `unix://` address escapes in its path.
 const PATH_ESCAPES: percent_encoding::AsciiSet = percent_encoding::CONTROLS
     .add(b' ')
     .add(b'%')

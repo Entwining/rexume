@@ -11,8 +11,6 @@ use crate::runtime;
 use crate::runtime::claude;
 use crate::task::tests::{ANSWER, ANSWER_2, PROMPT, PROMPT_2, task_world, turn_record};
 
-/// Task `t`'s completed first round and its finished notice `d` in `state`, to the owner idle in
-/// pane `a`, whose turn record is `transcript` and whose messaging socket is the returned listener.
 fn notice_world(dir: &Path, transcript: &Path, state: &str) -> Result<(Store, UnixListener)> {
     let socket = dir.join("owner.sock");
     let listener = UnixListener::bind(&socket)?;
@@ -43,15 +41,12 @@ fn notice(store: &Store) -> Result<(String, Option<String>)> {
         })?)
 }
 
-/// The turn record lines of Claude Code taking in notice `id` from another session, in a turn it
-/// finished.
 fn receipt(id: &str) -> String {
     let prompt = json!({ "event": "prompt", "prompt_id": "p9", "token": runtime::token(id) });
     let stop = json!({ "event": "stop", "prompt_id": "p9", "id": "s9", "answer": "Noted." });
     format!("{prompt}\n{stop}")
 }
 
-/// What the next daemon does with the notice on its start and through its first pass.
 fn restart_daemon(store: &mut Store) -> Result<(String, Option<String>)> {
     assert_eq!(orphaned_sends(store)?, [("notice", "d".to_owned())]);
     let mut interest = Interest::default();
@@ -72,8 +67,6 @@ fn a_notice_left_mid_send_settles_from_the_owners_receipt() -> Result<()> {
     Ok(())
 }
 
-/// An owner's record that cannot be read, here a directory, fails only its own check and is not
-/// watched, and its receipts are found once it can be read.
 #[test]
 fn an_owner_record_that_cannot_be_read_is_checked_again() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -108,8 +101,6 @@ fn a_notice_left_mid_send_without_a_receipt_stays_unknown_and_unsent() -> Result
     Ok(())
 }
 
-/// A PID names a process only on the server instance it was reported on, so an owner reported on
-/// an earlier one is not the program now in its pane with that PID.
 #[test]
 fn a_notice_waits_for_its_owner_to_report_on_the_running_instance() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -129,7 +120,6 @@ fn a_notice_goes_to_its_idle_owner_once_its_grace_has_passed() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let transcript = tempfile::NamedTempFile::new()?;
     let (mut store, listener) = notice_world(dir.path(), transcript.path(), "pending")?;
-    // The round took the worker's first turn; a second finished after it.
     let worker = [PROMPT, ANSWER, PROMPT_2, ANSWER_2].join("\n") + "\n";
     std::fs::write(dir.path().join("worker.jsonl"), worker)?;
     store
@@ -158,8 +148,6 @@ fn a_notice_goes_to_its_idle_owner_once_its_grace_has_passed() -> Result<()> {
     Ok(())
 }
 
-/// While a later round of the task is open, `task next` refuses, so a finished notice leaves the
-/// worker's unread turns to that round's own notice.
 #[test]
 fn a_finished_notice_names_no_unread_turns_while_a_later_round_is_open() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -203,8 +191,6 @@ fn a_failed_send_stays_pending_and_is_listed_with_its_reason() -> Result<()> {
     Ok(())
 }
 
-/// Each claim counts as an attempt. One that failed before anything left keeps its count but not
-/// its send time, and the receipt that settles the next records when it was seen.
 #[test]
 fn a_notice_records_each_attempt_and_when_it_was_delivered() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -238,8 +224,6 @@ fn a_notice_records_each_attempt_and_when_it_was_delivered() -> Result<()> {
     Ok(())
 }
 
-/// The owner's acknowledgement makes a notice moot without being a receipt: the notice leaves the
-/// list and stays `sent`.
 #[test]
 fn a_notice_of_an_acknowledged_round_is_not_listed() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -256,8 +240,6 @@ fn a_notice_of_an_acknowledged_round_is_not_listed() -> Result<()> {
     Ok(())
 }
 
-/// Acknowledgement leaves a `sending` notice unchanged. If the send then fails before anything
-/// leaves, recording that failure supersedes the notice instead of returning it to `pending`.
 #[test]
 fn a_failed_send_drops_a_notice_of_a_round_acknowledged_meanwhile() -> Result<()> {
     let dir = tempfile::tempdir()?;
@@ -296,7 +278,6 @@ fn a_registered_waiter_keeps_the_notice_from_the_daemon() -> Result<()> {
         listener.accept().is_err(),
         "the notice was sent past a live waiter"
     );
-    // A waiter that registered after the daemon saw a dead one, or none, also holds it.
     let tx = store.write()?;
     assert!(!claim(&tx, "d", None)?);
     assert!(!claim(&tx, "d", Some(alive + 1))?);

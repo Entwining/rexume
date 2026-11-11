@@ -1,7 +1,3 @@
-//! One epoch: a connection to one server instance, from its witness until it ends. The loop
-//! records events, reconciles restores, and runs task passes, and sleeps on the event queue
-//! between.
-
 use std::time::Instant;
 
 use anyhow::Result;
@@ -16,7 +12,6 @@ use crate::store::{self, archive, now_ms};
 use crate::task::{self, Follow, Interest};
 
 impl Daemon<'_> {
-    /// Observes one connection until it ends, and returns how it ended.
     pub(super) fn observe(&mut self) -> Result<&'static str> {
         let (mut child, mut pipe) = self.connect()?;
         self.queue.read(pipe.fd(), PIPE)?;
@@ -36,16 +31,12 @@ impl Daemon<'_> {
             };
             log::info!("observing instance {instance} as epoch {epoch}");
             let observed = self.observe_epoch(&mut rex, &instance);
-            // The connection ending does not by itself mean the server stopped: only a server
-            // that no longer answers as this instance makes the last observations its final state.
             let reason = match self.options.cli.call("server.status", &json!({})) {
                 Ok(status) if str_at(&status, "/instance_id") == Some(instance.as_str()) => {
                     "disconnected"
                 }
                 _ => "server_gone",
             };
-            // Stopping and replacing the daemon end the epoch through `Err` too, but are not
-            // failures.
             let error = observed
                 .as_ref()
                 .err()
@@ -84,8 +75,7 @@ impl Daemon<'_> {
             tx.commit()?;
         }
         restorer.reconcile(rex, &mut self.store, instance);
-        // After the first restores, which it must not hold up, and on a failure the epoch goes on:
-        // the next one archives what this one could not.
+        // After the first restores so as not to delay them; the next epoch retries what fails here.
         if let Err(e) = archive::sweep(&mut self.store, instance, now_ms()) {
             log::warn!("failed to archive finished records: {e:#}");
         }
@@ -99,8 +89,8 @@ impl Daemon<'_> {
         let mut follow_due = true;
         loop {
             let (events, ended) = pipe_of(rex).events();
-            // The daemon's own writes leave `data_version` as it was, so a pane change it records
-            // from an event wakes the restores itself.
+            // `data_version` misses this connection's own commits, so `recorded` wakes the
+            // restores for a pane change recorded here.
             let mut recorded = false;
             for event in &events {
                 if str_at(event, "/event") == Some("session_view_changed") {
@@ -147,8 +137,6 @@ impl Daemon<'_> {
         }
     }
 
-    /// Waits for the next wakeup and handles the watches it fired. Returns whether a task may have
-    /// moved, or `None` when the adapter exited.
     fn sleep_until(&mut self, deadline: Option<Instant>) -> Result<Option<bool>> {
         let mut follow_due = false;
         for fired in self.wait(deadline.map(|at| at.saturating_duration_since(Instant::now())))? {
@@ -165,8 +153,6 @@ impl Daemon<'_> {
         Ok(Some(follow_due))
     }
 
-    /// Follows the files and processes the task module asked for, and returns whether one changed
-    /// before it could be followed.
     fn register(&mut self, interest: Interest) -> Result<bool> {
         let mut again = false;
         self.files.retain(|path, token| {
@@ -182,8 +168,6 @@ impl Daemon<'_> {
                 continue;
             }
             let token = self.next_file;
-            // A file not written yet is followed through its directory until it appears; that
-            // watch is replaced by one on the file at the next change.
             let via_dir = if self.queue.file(&path, token)? {
                 false
             } else if let Some(dir) = path.parent()

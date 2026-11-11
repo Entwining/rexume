@@ -6,7 +6,6 @@ use super::{WAIT, task};
 use crate::common::{Daemon, Server, claude, db, query, wait_until};
 use crate::restore::{agents, report, restart, restores, screen};
 
-/// The pane's state in `task show`.
 fn pane_state(server: &Server, state: &Path, owner: &str, id: &str) -> String {
     task(server, state, owner, &["show", id])["pane"]["state"]
         .as_str()
@@ -14,7 +13,6 @@ fn pane_state(server: &Server, state: &Path, owner: &str, id: &str) -> String {
         .to_owned()
 }
 
-/// Each pane of the session with its placement.
 fn placements(server: &Server, session: &str) -> Vec<(String, String)> {
     let list = server.call("session.list_blocks", &json!({ "session_id": session }));
     let mut blocks: Vec<(String, String)> = list["blocks"]
@@ -30,8 +28,8 @@ fn placements(server: &Server, session: &str) -> Vec<(String, String)> {
     blocks
 }
 
-/// Starts a shell in a pane in no window, which the daemon records from the pane's own events,
-/// since creating it changes no view, and which takes input as any pane does.
+/// Creating a pane in no window changes no view, so the daemon records it from the pane's own
+/// events.
 fn start_detached(server: &Server, state: &Path, session: &str, cwd: &Path) -> String {
     let worker = server.call(
         "session.new_block",
@@ -68,10 +66,6 @@ fn start_detached(server: &Server, state: &Path, session: &str, cwd: &Path) -> S
     worker
 }
 
-/// A pane in no window, as an orchestrator starts a worker nobody watches, is a pane like any
-/// other: its worker stays the task's across a daemon restart and a server crash, which restores
-/// it under its ID, a conversation cut off in another such pane continues there, and closing the
-/// worker ends its task as any close does.
 #[test]
 #[ignore = "needs a Rex server"]
 fn a_worker_in_no_window_stays_a_worker_across_restarts() {

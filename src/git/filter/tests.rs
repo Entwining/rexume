@@ -11,8 +11,6 @@ use crate::git::worktree;
 
 mod lfs;
 
-/// A repository whose `*.secret` files the clean filter `up` turns to upper case, after doing
-/// `first`, recording each run in `tools`, and that holds `s.secret` cleaned.
 fn filtered(root: &Path, tools: &Path, first: &str) -> Result<PathBuf> {
     let body = format!(
         "{first}echo run >> '{}' && tr a-z A-Z",
@@ -29,7 +27,6 @@ fn filtered(root: &Path, tools: &Path, first: &str) -> Result<PathBuf> {
     Ok(repo)
 }
 
-/// How many times the filter `filtered` configured has run.
 fn runs(tools: &Path) -> Result<usize> {
     match std::fs::read_to_string(tools.join("runs")) {
         Ok(runs) => Ok(runs.lines().count()),
@@ -38,7 +35,6 @@ fn runs(tools: &Path) -> Result<usize> {
     }
 }
 
-/// Whether this process can deny a command writes, which on macOS a sandboxed one cannot.
 fn can_deny_writes() -> bool {
     cfg!(target_os = "macos")
         && Command::new("/usr/bin/sandbox-exec")
@@ -48,8 +44,6 @@ fn can_deny_writes() -> bool {
             .is_ok_and(|status| status.success())
 }
 
-/// A filter that no changed file needs does not run, and does not keep the snapshot from being
-/// taken: a filtered file that is unchanged, or deleted, is not read.
 #[test]
 fn a_filter_runs_for_no_file_unchanged_or_deleted() -> Result<()> {
     let (root, tools, state) = (
@@ -64,7 +58,6 @@ fn a_filter_runs_for_no_file_unchanged_or_deleted() -> Result<()> {
     std::fs::remove_file(repo.join("gone.secret"))?;
     write(&repo.join("a.txt"), "changed\n")?;
     age(root.path())?;
-    // The index records the aged files, so that only what changed is read.
     git(&repo, &["update-index", "-q", "--refresh"])?;
     let (before, ran) = (listing(root.path())?, runs(tools.path())?);
     let tree = capture(&worktree(&repo)?, state.path())?;
@@ -75,11 +68,6 @@ fn a_filter_runs_for_no_file_unchanged_or_deleted() -> Result<()> {
     Ok(())
 }
 
-/// A filter other than Git LFS's runs for a changed file only denied writes to the repository: a
-/// filter that writes there fails, and where writes cannot be denied, the filter does not run and
-/// no snapshot is taken. Either way the repository stays as it was. The change keeps the file's
-/// size, so that finding it changed compares its content, which a required filter that is off
-/// would fail.
 #[test]
 fn a_changed_file_runs_its_filter_only_denied_writes_to_the_repository() -> Result<()> {
     let deny = can_deny_writes();
@@ -90,6 +78,8 @@ fn a_changed_file_runs_its_filter_only_denied_writes_to_the_repository() -> Resu
             tempfile::tempdir()?,
         );
         let repo = filtered(root.path(), tools.path(), first)?;
+        // Of the staged size, so that listing compares content, which a required filter that is
+        // off would fail.
         write(&repo.join("s.secret"), "plaix\n")?;
         let ran = runs(tools.path())?;
         let (top, taken) = untouched(root.path(), &repo, state.path())?;
@@ -110,9 +100,6 @@ fn a_changed_file_runs_its_filter_only_denied_writes_to_the_repository() -> Resu
     Ok(())
 }
 
-/// A filter the changed files were not found to need does not run even if `git add` needs it, so
-/// it never runs where it could write in the repository. Finding the changed files compares the
-/// content unfiltered, which here equals what is staged, so `git add` alone filters the file.
 #[test]
 fn a_filter_not_found_needed_does_not_run() -> Result<()> {
     let (root, tools, state) = (
@@ -121,6 +108,8 @@ fn a_filter_not_found_needed_does_not_run() -> Result<()> {
         tempfile::tempdir()?,
     );
     let repo = filtered(root.path(), tools.path(), "")?;
+    // Unfiltered, it equals the staged blob, so the listing finds it unchanged while `git add`
+    // needs its filter.
     write(&repo.join("s.secret"), "PLAIN\n")?;
     let ran = runs(tools.path())?;
     let (_, taken) = untouched(root.path(), &repo, state.path())?;
@@ -130,8 +119,6 @@ fn a_filter_not_found_needed_does_not_run() -> Result<()> {
     Ok(())
 }
 
-/// A filter that fails stores nothing: Git keeps a file unfiltered when a filter that is not
-/// required fails, so every filter runs required. Git LFS's runs wherever Rexume runs.
 #[test]
 fn a_filter_that_fails_leaves_nothing_unfiltered() -> Result<()> {
     let (root, tools, state) = (
@@ -139,8 +126,8 @@ fn a_filter_that_fails_leaves_nothing_unfiltered() -> Result<()> {
         tempfile::tempdir()?,
         tempfile::tempdir()?,
     );
-    // An error for the one file to clean. Every Git version that has the protocol keeps that file
-    // unfiltered unless the filter is required.
+    // An error for the one file to clean, from Git LFS's filter, the only one that runs on Linux
+    // and in a sandbox.
     let refuse = "printf '0011status=error\\n0000'\ncat >/dev/null";
     let repo = lfs_repository(root.path(), &fake_lfs(tools.path(), refuse)?)?;
     git(&repo, &["config", "filter.lfs.required", "false"])?;

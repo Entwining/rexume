@@ -1,7 +1,3 @@
-//! The files install writes and removes. A write follows every link to where the file lives and
-//! replaces it there through a rename; a removal takes the entry at the path itself, a link rather
-//! than what it points to.
-
 use std::io::{ErrorKind, Write as _};
 use std::path::{Component, Path, PathBuf};
 
@@ -23,9 +19,6 @@ pub(super) fn remove_file(path: &Path, ours: impl Fn(&str) -> bool) -> Result<Ou
     }
 }
 
-/// Rewrites a file install wrote when it differs from `bytes`. A missing file stays missing, so
-/// that uninstall stays final, and one install did not write is left as it is. Returns `updated`,
-/// `unchanged`, `absent`, or `kept`.
 pub(super) fn refresh_file(
     path: &Path,
     bytes: &[u8],
@@ -55,8 +48,8 @@ pub(super) fn write_json(path: &Path, value: &Value) -> Result<()> {
     Ok(())
 }
 
-/// `path` once every link in it is resolved, including a link whose target does not exist yet,
-/// so that writing through that link creates its target instead of replacing the link.
+/// Also resolves a link whose target does not exist yet, which `canonicalize` refuses, so that
+/// writing through the link creates its target instead of replacing the link.
 pub(super) fn physical(path: &Path) -> Result<PathBuf> {
     for ancestor in path.ancestors() {
         let rest = path.strip_prefix(ancestor)?;
@@ -81,7 +74,6 @@ pub(super) fn physical(path: &Path) -> Result<PathBuf> {
         }
         if ancestor.is_symlink() {
             let mut target = ancestor.to_path_buf();
-            // An absolute target replaces the whole path; a relative one replaces only the link.
             target
                 .set_file_name(std::fs::read_link(ancestor).with_context(|| {
                     format!("failed to read the link `{}`", ancestor.display())
@@ -93,10 +85,7 @@ pub(super) fn physical(path: &Path) -> Result<PathBuf> {
     Ok(path.to_path_buf())
 }
 
-/// Replaces a file through a rename, keeping its permissions and leaving it whole if this stops
-/// midway, and returns `created`, `updated`, or `unchanged`.
 pub(super) fn write(path: &Path, bytes: &[u8]) -> Result<&'static str> {
-    // A file linked from elsewhere is changed where it lives.
     let path = physical(path)?;
     let old = match std::fs::read(&path) {
         Ok(old) => Some(old),
@@ -127,9 +116,6 @@ pub(super) fn write(path: &Path, bytes: &[u8]) -> Result<&'static str> {
 mod tests {
     use super::*;
 
-    /// A relative link reached through a linked directory points from the directory it really
-    /// lives in, as the kernel resolves it, even when its target does not exist yet: its `..`
-    /// leaves that directory, not the one in the path the runtime reads.
     #[test]
     fn a_relative_link_is_followed_from_its_real_directory() -> Result<()> {
         let home = tempfile::tempdir()?;
@@ -151,9 +137,6 @@ mod tests {
         Ok(())
     }
 
-    /// A link whose target goes back with `..` from a directory that does not exist names no file
-    /// yet, but would name the file beside that directory once write created it, so write refuses
-    /// it rather than replace a file it never read.
     #[test]
     fn a_link_back_out_of_a_missing_directory_is_refused() -> Result<()> {
         let home = tempfile::tempdir()?;

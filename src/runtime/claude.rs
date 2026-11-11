@@ -1,5 +1,3 @@
-//! Claude Code.
-
 pub mod launch;
 
 use std::fs::OpenOptions;
@@ -14,18 +12,13 @@ use super::lines::last_record;
 use super::{Conversation, Sealed, Sent, Span, Target, Turn, text_at};
 use crate::store::new_id;
 
-/// The hooks module of the plugin `rexume install` registers, which takes the notices and requests
-/// `send` writes and submits them as the user's own prompts.
 pub const PLUGIN: &str = include_str!("claude/plugin.ts");
 
-/// Claude Code's resume does not bring back the effort a session ran at, nor the model on a
-/// provider with its own deployment IDs, so the model and effort its record last shows
-/// (`settings`) are passed. Its resume starts a session that was bypassing permissions in a new
-/// session's mode, and a Manual one in a settings `defaultMode`, so the mode the record shows is
-/// passed too. The command a launcher declared (`launch_command`) starts it, in place of
-/// `claude`, so that the launcher makes the choice it made at launch again rather than its current
-/// default. Launch flags go before `--resume`, so a continuation prompt the gate appends stays
-/// positional after an optional or variadic value.
+/// Claude Code's resume brings back neither the effort nor, on a provider with its own deployment
+/// IDs, the model, and starts a session that was bypassing permissions in a new session's mode and
+/// a Manual one in the settings' `defaultMode`, so all three are passed. Launch flags go before
+/// `--resume` so that a continuation prompt the gate appends stays positional after a flag whose
+/// value is optional or variadic.
 pub fn resume_argv(c: &Conversation) -> Vec<String> {
     let mut argv: Vec<&str> = c.setting_strings("launch_command").collect();
     if argv.is_empty() {
@@ -45,7 +38,6 @@ pub fn resume_argv(c: &Conversation) -> Vec<String> {
     argv.into_iter().map(str::to_owned).collect()
 }
 
-/// The provider variables Claude Code was started with, saved as `NAME=value`.
 pub fn resume_env(c: &Conversation) -> Vec<(String, String)> {
     c.setting_strings("launch_env")
         .filter_map(|entry| entry.split_once('='))
@@ -53,18 +45,10 @@ pub fn resume_env(c: &Conversation) -> Vec<(String, String)> {
         .collect()
 }
 
-/// The model, effort, and permission mode the conversation last used.
-///
-/// Each answer records the model as it was requested, which keeps a context-window suffix such
-/// as `[1m]` that the response's model drops, and the effort when the request had one; the last
-/// answer counts, so a model switched to after the session started, or one without effort levels,
-/// is what reopens. A synthetic answer, which Claude Code writes itself, as for an API error, ran
-/// no model. An answer in a turn that invoked a skill names it in `attributionSkill` and may run
-/// at the model and effort the skill sets for that turn alone, so the answer before such turns
-/// counts.
-///
-/// Claude Code writes the permission mode on each prompt and in a `permission-mode` entry when a
-/// turn ends and when the session exits, so a mode changed after the last prompt is there too.
+/// `requestedModel` keeps a context-window suffix such as `[1m]` that the response's model drops.
+/// A turn that invoked a skill (`attributionSkill`) may run at the model and effort the skill sets
+/// for that turn alone. Claude Code writes `permissionMode` on each prompt and in a
+/// `permission-mode` entry when a turn ends and when the session exits.
 pub fn settings(transcript: &Path, conversation: &mut Conversation) -> Result<()> {
     let main_chain =
         |record: &Value| record.get("isSidechain").and_then(Value::as_bool) != Some(true);
@@ -101,8 +85,7 @@ pub fn settings(transcript: &Path, conversation: &mut Conversation) -> Result<()
     Ok(())
 }
 
-/// Claude Code delivers a line on its session socket as a message from another session, and
-/// starts a turn with it when idle. The socket answers nothing.
+/// Claude Code starts a turn with a line on its session socket when idle, and answers nothing.
 pub fn send(target: &Target, text: &str) -> Result<Sent> {
     let socket = target
         .transport
@@ -125,24 +108,16 @@ pub fn send(target: &Target, text: &str) -> Result<Sent> {
     }
 }
 
-/// The file this tool keeps a Claude Code conversation's turns in, written by its turn hooks:
-/// Claude Code's transcript names no turn, so it does not show which records end one, while the
-/// hooks name the prompt whose turn they report and give its final answer, which the transcript
-/// may not hold yet when the turn ends.
+/// Turns are read from this record the turn hooks write, since Claude Code's transcript shows no
+/// turn's end and may not hold its final answer yet when the turn ends.
 pub fn record(state_dir: &Path, native_id: &str) -> PathBuf {
     records(state_dir).join(format!("{native_id}.jsonl"))
 }
 
-/// The directory of the turn records.
 pub fn records(state_dir: &Path) -> PathBuf {
     state_dir.join("claude")
 }
 
-/// The line a turn hook adds to the conversation's record: `prompt` when Claude Code takes input,
-/// typed or from another session, which while a turn runs carries that turn's prompt ID; `stop`
-/// when it has finished responding, with its final answer; `failure` when an API error ended the
-/// turn. `None` for any other event and for a subagent's. A prompt that starts with a notice's or
-/// request's token keeps the token, and no other text.
 pub fn turn_event(input: &Value) -> Option<Value> {
     if input.get("agent_id").is_some_and(|v| !v.is_null()) {
         return None;
@@ -170,7 +145,6 @@ pub fn turn_event(input: &Value) -> Option<Value> {
     })
 }
 
-/// The token a notice or request starts with (`runtime::token`).
 fn leading_token(prompt: &str) -> Option<&str> {
     let id = prompt.strip_prefix("[rexume ")?;
     let end = id
@@ -179,8 +153,8 @@ fn leading_token(prompt: &str) -> Option<&str> {
     Some(&prompt[.."[rexume ".len() + end + 1])
 }
 
-/// Appends a turn hook's line to the conversation's record. Each line goes in one write to a file
-/// opened for appending, so a reader sees it whole or not yet, as with a runtime's own record.
+/// The line goes in one write to a file opened for appending, so that a reader sees it whole or
+/// not yet.
 pub fn append(state_dir: &Path, native_id: &str, event: &Value) -> Result<()> {
     if native_id.is_empty() || native_id.starts_with('.') || native_id.contains('/') {
         bail!("`{native_id}` cannot name a record");
@@ -197,26 +171,21 @@ pub fn append(state_dir: &Path, native_id: &str, event: &Value) -> Result<()> {
         .with_context(|| format!("failed to append to `{}`", path.display()))
 }
 
-/// Claude Code's turns as its hooks record them. A prompt with a new ID starts a turn, and one
-/// with the running turn's ID is input that turn takes in. Each `stop` ends a turn with its
-/// answer: a Stop hook that makes Claude Code go on after it finished responding records another
-/// `stop` once it finishes again, which ends a turn of its own. A `failure` ends a turn with the
-/// error. A prompt that nothing ended when the next one starts was interrupted, or rejected by
-/// another `UserPromptSubmit` hook, which the hooks do not tell apart: it ends as cancelled, and
-/// the input it carried counts as not received. A turn the server's end cut off records no end;
-/// the continuation prompt a restore sends it (`continuation_prompt`) carries on that turn, with
-/// what it took in, under the new prompt's ID.
+/// Input Claude Code takes while a turn runs, typed or from another session, carries that turn's
+/// prompt ID. A Stop hook that makes Claude Code go on after it finished responding records another
+/// `stop` once it finishes again. An interrupted prompt and one another `UserPromptSubmit` hook
+/// rejected both record no end, so a prompt nothing ended when the next one starts is cancelled. A
+/// turn the server's end cut off records no end either; the continuation prompt a restore sends
+/// carries it on under the new prompt's ID.
 #[derive(Default)]
 pub struct Parser {
     turn: Option<Turn>,
     open: Option<Open>,
 }
 
-/// The turn not yet yielded.
 struct Open {
     prompt_id: Option<String>,
     start: u64,
-    /// The notice and request tokens of the prompts it took in.
     took: Vec<String>,
 }
 
@@ -265,7 +234,6 @@ impl Parser {
         self.turn = Some(ended);
     }
 
-    /// Yields the open turn, if any, as `turn`, ending at `end`.
     fn seal(&mut self, turn: Turn, end: u64, sealed: &mut Vec<Sealed>) {
         if let Some(open) = self.open.take() {
             sealed.push(Sealed {
