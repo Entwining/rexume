@@ -55,7 +55,7 @@ An agent with Rexume's skill reads the guide `rexume skill show` prints. The gui
 
 The skill starts a worker nobody needs to watch in a detached pane of the orchestrator's session. No tab shows it, the Rex app included. Ask the agent to put a worker in a tab when you want to watch it or step in. Before it finishes, the agent releases or closes its detached workers and reports any it leaves running.
 
-Run task commands from the orchestrator's own Rex pane. They find the orchestrator through `REX_BLOCK`. Start the worker without `REX_SESSION`, as in `env -u REX_SESSION codex ...`, as the skill does: with Rex's Let agents name sessions setting on, Rex asks an agent that has the variable to label the session after its own task, and a worker's task is not the session's. Register the worker right after starting it, with its pane's block ID:
+Run task commands from the orchestrator's own Rex pane. They find the orchestrator through `REX_BLOCK`. Start the worker without `REX_SESSION`, as the skill does with `env -u REX_SESSION codex ...`: with Rex's Let agents name sessions setting on, Rex asks an agent that has the variable to label the session after its own task, and a worker's task is not the session's. Register the worker right after starting it, with its pane's block ID:
 
 ```sh
 rexume task add --worker "$WORKER_BLOCK" --title 'review the parser'

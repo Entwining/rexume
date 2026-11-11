@@ -194,8 +194,6 @@ mod tests {
         Ok(())
     }
 
-    /// The largest message `task send` takes, after its request's token, starts a process as one
-    /// argument, as `send` passes it to `codex queue`.
     #[test]
     fn the_largest_message_starts_a_process_as_one_argument() -> Result<()> {
         let text = "x".repeat(usize::try_from(crate::task::MESSAGE_LIMIT)?);
