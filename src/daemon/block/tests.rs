@@ -7,8 +7,8 @@ use serde_json::{Value, json};
 use super::super::view::View;
 use super::touch_block;
 use crate::store::{Store, now_ms};
-use crate::task::Follow;
-use crate::task::tests::{PROMPT, record, task_world};
+use crate::task::tests::{ANSWER, PROMPT, record, task_world};
+use crate::task::{Follow, retired_workers};
 
 /// Records, as its event does, that process `pid` in pane `block` of `instance` reports `status`,
 /// an object with Rex's `state` and, for a `blocked` one, its `kind` and `msg`.
@@ -226,4 +226,63 @@ fn a_restored_worker_stopping_on_a_dialog_before_a_pass_begins_a_new_episode() -
         &mut follow,
         superseded("the block ended before it was sent"),
     )
+}
+
+/// Records, as its event does, Rex's report `generation` that pane `b` of instance `i1` has the
+/// foreground process `pid`, or none.
+fn foreground(store: &mut Store, pid: Option<i64>, generation: i64) -> Result<()> {
+    let foreground = pid.map(|pid| json!({ "pid": pid, "name": "claude" }));
+    let payload = json!({ "foreground": foreground, "generation": generation });
+    let event = json!({ "event": "process_changed", "block_id": "b", "payload": payload });
+    View::new("i1").block_event(store, "process_changed", &event, &payload)?;
+    Ok(())
+}
+
+/// Rex reports a pane again when its foreground process changes directory or a client starts
+/// receiving the terminal's output, which is no use of a released worker's pane: the pane is
+/// still closed. Another program that runs there is use, even once the worker's process is the
+/// foreground again.
+#[test]
+fn only_another_foreground_process_keeps_a_released_workers_pane() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = record(&[PROMPT, ANSWER])?;
+    let mut store = task_world(dir.path(), transcript.path(), None)?;
+    report(&mut store, "i1", "b", json!({ "state": "done" }), 100)?;
+    Follow::default().pass(&mut store, None)?;
+    assert_eq!(observed(&store)?.0, "completed");
+    store
+        .conn()
+        .execute_batch("UPDATE task_round SET acked_at = 1; UPDATE task SET released_at = 1;")?;
+    let retired = [("t".to_owned(), "b".to_owned())];
+    assert_eq!(retired_workers(store.conn(), store.dir())?, retired);
+    foreground(&mut store, Some(100), 6)?;
+    foreground(&mut store, Some(100), 7)?;
+    assert_eq!(retired_workers(store.conn(), store.dir())?, retired);
+    foreground(&mut store, Some(300), 8)?;
+    foreground(&mut store, Some(100), 9)?;
+    assert!(retired_workers(store.conn(), store.dir())?.is_empty());
+    Ok(())
+}
+
+/// The pane's own program ending clears its foreground, a change of process like any other; an
+/// empty foreground Rex reports after it is no further change.
+#[test]
+fn the_exit_of_the_panes_program_counts_as_a_foreground_change() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = record(&[PROMPT])?;
+    let mut store = task_world(dir.path(), transcript.path(), None)?;
+    let payload = json!({ "exit_code": 0 });
+    let event = json!({ "event": "child_exited", "block_id": "b", "payload": payload });
+    View::new("i1").block_event(&mut store, "child_exited", &event, &payload)?;
+    let pane = |store: &Store| -> Result<(Option<i64>, Option<i64>, i64)> {
+        Ok(store.conn().query_row(
+            "SELECT fg_pid, last_exit, fg_changes FROM block WHERE lineage = 'b'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?)
+    };
+    assert_eq!(pane(&store)?, (None, Some(0), 1));
+    foreground(&mut store, None, 6)?;
+    assert_eq!(pane(&store)?, (None, Some(0), 1));
+    Ok(())
 }

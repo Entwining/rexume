@@ -20,15 +20,17 @@ pub(super) fn recorded(conn: &Connection, instance: &str, block: &str) -> Result
 }
 
 /// Makes sure a block has a row on this instance and returns its lineage. A lineage on a new
-/// instance is a new pane: its processes, their statuses and exit, and the generation that orders
-/// their reports, start again, and a dialog its worker waited on went with the earlier instance.
+/// instance is a new pane: its processes, their statuses and exit, the generation that orders
+/// their reports, and the count of foreground changes start again, and a dialog its worker waited
+/// on went with the earlier instance.
 pub(super) fn touch_block(tx: &Transaction, instance: &str, block: &str) -> Result<String> {
     let lineage = ensure_lineage(tx, instance, block)?;
     let written = tx.execute(
         "INSERT INTO block (lineage, instance_id) VALUES (?1, ?2)
-         ON CONFLICT (lineage) DO UPDATE SET fg_pid = NULL, fg_generation = NULL, last_exit = NULL,
-           status = NULL, status_kind = NULL, status_message = NULL, status_pid = NULL,
-           status_name = NULL, status_at = NULL, instance_id = excluded.instance_id
+         ON CONFLICT (lineage) DO UPDATE SET fg_pid = NULL, fg_generation = NULL, fg_changes = 0,
+           last_exit = NULL, status = NULL, status_kind = NULL, status_message = NULL,
+           status_pid = NULL, status_name = NULL, status_at = NULL,
+           instance_id = excluded.instance_id
          WHERE instance_id != excluded.instance_id",
         params![lineage, instance],
     )?;
@@ -38,8 +40,8 @@ pub(super) fn touch_block(tx: &Transaction, instance: &str, block: &str) -> Resu
     Ok(lineage)
 }
 
-/// Records the foreground process, whose parent was `parent` when read, ignoring a report older
-/// than one already recorded.
+/// Records the foreground process, whose parent was `parent` when read, and counts a change of
+/// process, ignoring a report older than one already recorded.
 pub(super) fn set_foreground(
     tx: &Transaction,
     lineage: &str,
@@ -58,8 +60,10 @@ pub(super) fn set_foreground(
         }
     }
     let pid = foreground_pid(foreground);
+    // Every expression reads the row as it was, so the count compares with the recorded process.
     tx.execute(
-        "UPDATE block SET fg_pid = ?1, fg_generation = COALESCE(?2, fg_generation)
+        "UPDATE block SET fg_changes = fg_changes + (fg_pid IS NOT ?1), fg_pid = ?1,
+           fg_generation = COALESCE(?2, fg_generation)
          WHERE lineage = ?3",
         params![pid, generation, lineage],
     )?;

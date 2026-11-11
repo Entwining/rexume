@@ -14,29 +14,44 @@ use crate::store::Store;
 
 mod view;
 
+/// A pane restored on a new server counts its foreground changes and its reports from its own
+/// start there. Only another process counts: a later report or a read without a generation about
+/// the recorded process does not, and a report older than the one recorded is ignored.
 #[test]
-fn a_restored_pane_takes_new_foreground_reports_and_ignores_older_ones() -> Result<()> {
+fn a_restored_pane_counts_new_foreground_processes_and_ignores_older_reports() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let mut store = Store::open(dir.path())?;
     let tx = store.write()?;
     tx.execute_batch(
-        "INSERT INTO block (lineage, instance_id, fg_pid, fg_generation, last_exit)
-           VALUES ('b', 'i1', 100, 5, 1);
+        "INSERT INTO block (lineage, instance_id, fg_pid, fg_generation, fg_changes, last_exit)
+           VALUES ('b', 'i1', 100, 5, 4, 1);
          INSERT INTO live (instance_id, live_id, lineage) VALUES ('i2', 'nb', 'b');",
     )?;
-    // The restored pane's generations count from its own start on the new server.
     let lineage = touch_block(&tx, "i2", "nb")?;
+    let row: (Option<i64>, Option<i64>, i64, Option<i64>) = tx.query_row(
+        "SELECT fg_pid, fg_generation, fg_changes, last_exit FROM block WHERE lineage = 'b'",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+    )?;
+    assert_eq!(row, (None, None, 0, None));
     let zsh = json!({ "pid": 200, "name": "zsh" });
     let claude = json!({ "pid": 300, "name": "claude" });
-    set_foreground(&tx, &lineage, Some(&zsh), Some(1), None)?;
-    set_foreground(&tx, &lineage, Some(&claude), Some(2), None)?;
-    set_foreground(&tx, &lineage, Some(&zsh), Some(1), None)?;
-    let row: (Option<i64>, Option<i64>, Option<i64>) = tx.query_row(
-        "SELECT fg_pid, fg_generation, last_exit FROM block WHERE lineage = 'b'",
-        [],
-        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-    )?;
-    assert_eq!(row, (Some(300), Some(2), None));
+    for (foreground, generation, recorded) in [
+        (&zsh, Some(1), (Some(200), Some(1), 1)),
+        (&claude, Some(2), (Some(300), Some(2), 2)),
+        (&zsh, Some(1), (Some(300), Some(2), 2)),
+        (&claude, Some(3), (Some(300), Some(3), 2)),
+        (&claude, None, (Some(300), Some(3), 2)),
+        (&zsh, None, (Some(200), Some(3), 3)),
+    ] {
+        set_foreground(&tx, &lineage, Some(foreground), generation, None)?;
+        let row: (Option<i64>, Option<i64>, i64) = tx.query_row(
+            "SELECT fg_pid, fg_generation, fg_changes FROM block WHERE lineage = 'b'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )?;
+        assert_eq!(row, recorded, "{foreground} at {generation:?}");
+    }
     Ok(())
 }
 

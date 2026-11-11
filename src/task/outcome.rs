@@ -234,7 +234,7 @@ pub(super) fn finish(
 }
 
 /// Ends one round as `finish` describes, leaving the queue as it is. The worker pane's status time
-/// and foreground generation are kept to tell later activity in the pane apart.
+/// and count of foreground changes are kept to tell later activity in the pane apart.
 pub(super) fn end(
     tx: &Transaction,
     id: &str,
@@ -243,9 +243,9 @@ pub(super) fn end(
     done: Option<Finished>,
     note: Option<&str>,
 ) -> Result<()> {
-    let (instance, status_at, generation): (Option<String>, Option<i64>, Option<i64>) = tx
+    let (instance, status_at, fg_changes): (Option<String>, Option<i64>, Option<i64>) = tx
         .query_row(
-            "SELECT b.instance_id, b.status_at, b.fg_generation
+            "SELECT b.instance_id, b.status_at, b.fg_changes
              FROM task t LEFT JOIN block b ON b.lineage = t.worker_lineage WHERE t.id = ?1",
             params![id],
             |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
@@ -254,10 +254,10 @@ pub(super) fn end(
     let now = now_ms();
     tx.execute(
         "UPDATE task_round SET state = ?1, result = ?2, result_ref = ?3, finished_at = ?4,
-           finished_instance_id = ?5, finished_status_at = ?6, finished_generation = ?7, note = ?8
+           finished_instance_id = ?5, finished_status_at = ?6, finished_fg_changes = ?7, note = ?8
          WHERE task_id = ?9 AND round = ?10",
         params![
-            state, result, reference, now, instance, status_at, generation, note, id, round
+            state, result, reference, now, instance, status_at, fg_changes, note, id, round
         ],
     )?;
     notice::write(tx, Kind::Finished, id, round, now, None)?;

@@ -38,24 +38,31 @@ CREATE INDEX IF NOT EXISTS epoch_instance ON epoch (instance_id, id);
 
 -- What the server last said about each pane: a cache of the live server while its instance
 -- runs, and after 'server_gone' the only record of how the pane stood when the server stopped
--- (foreground and status for the decision to reopen and continue, status time and generation
--- for the cleanup). `instance_id` is the server instance the row describes; a row on the current
--- instance was seen in that instance's open epoch. A pane the server restored itself keeps its
--- row, which moves to the new instance once the daemon reads the pane there, and its foreground,
--- status, and exit, which describe processes of one instance, start empty. The row goes when the
--- pane closes. Program states are Rex's vocabulary and are not constrained here. `status_kind` and
--- `status_message` are what a `blocked` status says the program waits for (Rex's `kind`) and its
--- one line of text (Rex's `msg`), as reported and unconstrained like the state; NULL when the
--- status gives none. `status_pid` and `status_name` are the process that reported the status,
--- which need not be the foreground, and `status_at` is the time Rex gives the status. `last_exit`
--- is the exit code of the program the terminal started (Rex's child_exited), which a pane reports
--- once, or -1 when a signal ended it; it is attributed to a task by the pane having that program
--- as its foreground when the task was registered.
+-- (foreground and status for the decision to reopen and continue, status time and foreground
+-- changes for the cleanup). `instance_id` is the server instance the row describes; a row on the
+-- current instance was seen in that instance's open epoch. A pane the server restored itself keeps
+-- its row, which moves to the new instance once the daemon reads the pane there, and its
+-- foreground, status, and exit, which describe processes of one instance, start empty. The row goes
+-- when the pane closes. Program states are Rex's vocabulary and are not constrained here.
+-- `status_kind` and `status_message` are what a `blocked` status says the program waits for (Rex's
+-- `kind`) and its one line of text (Rex's `msg`), as reported and unconstrained like the state;
+-- NULL when the status gives none. `status_pid` and `status_name` are the process that reported the
+-- status, which need not be the foreground, and `status_at` is the time Rex gives the status.
+-- `last_exit` is the exit code of the program the terminal started (Rex's child_exited), which a
+-- pane reports once, or -1 when a signal ended it; it is attributed to a task by the pane having
+-- that program as its foreground when the task was registered. `fg_changes` counts the times the
+-- daemon found the foreground process ID different from the one it had recorded, a foreground that
+-- appeared or went included, since the row came to its instance; a report about the same process,
+-- as when it changes directory or a client starts receiving the terminal's output, does not count.
+-- `fg_generation` is Rex's count of its process_changed events for the terminal, which moves on
+-- those reports too, so it serves only to drop a report older than the one recorded and to tell a
+-- waiting restore that the pane was reported again.
 CREATE TABLE IF NOT EXISTS block (
   lineage        TEXT    PRIMARY KEY,
   instance_id    TEXT    NOT NULL,
   fg_pid         INTEGER,
   fg_generation  INTEGER,
+  fg_changes     INTEGER NOT NULL DEFAULT 0,
   status         TEXT,
   status_kind    TEXT,
   status_message TEXT,
@@ -282,10 +289,13 @@ CREATE INDEX IF NOT EXISTS task_worker_conversation ON task (worker_runtime, wor
 -- finished notice; every final state sets `finished_at`. A round is 'abandoned' when its owner
 -- stopped waiting for it with `task abandon`, which acknowledges it in the same transaction and
 -- leaves the worker as it is.
--- `finished_instance_id`, `finished_status_at`, and `finished_generation` are the worker pane's
+-- `finished_instance_id`, `finished_status_at`, and `finished_fg_changes` are the worker pane's
 -- record when the round finished, to tell later activity in the pane apart: its server instance,
 -- NULL when the pane was not recorded or the round finished before version 3 and no epoch dates
--- it, and its status time and foreground generation, which mean something only on that instance.
+-- it, and its status time and `fg_changes`, which mean something only on that instance.
+-- `finished_fg_changes` is NULL when the pane was not recorded, and for a round finished before
+-- version 10 unless its pane's `fg_generation` was recorded then and has not moved since: whether
+-- a program ran there is unknown.
 -- `acked_at`: when the owner acknowledged the result. `result_ref` is the record ID of an
 -- interactive worker's answer (for Claude Code and omp, the ID of the `stop` or `end` line that
 -- ends its turn in their record), or a non-interactive run's result file; `note` says why a round
@@ -302,7 +312,7 @@ CREATE TABLE IF NOT EXISTS task_round (
   finished_at          INTEGER,
   finished_instance_id TEXT,
   finished_status_at   INTEGER,
-  finished_generation  INTEGER,
+  finished_fg_changes  INTEGER,
   acked_at             INTEGER,
   created_at           INTEGER NOT NULL,
   turn_start           INTEGER,

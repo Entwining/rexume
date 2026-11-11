@@ -230,8 +230,9 @@ impl View {
             // The pane's own program ended. Rex reports the empty foreground later, if at all, as
             // it did after a program that printed just before it exited, so it is cleared here.
             Change::Exit(code) => {
+                set_foreground(&tx, &lineage, None, None, None)?;
                 tx.execute(
-                    "UPDATE block SET last_exit = ?1, fg_pid = NULL WHERE lineage = ?2",
+                    "UPDATE block SET last_exit = ?1 WHERE lineage = ?2",
                     params![code, lineage],
                 )?;
                 true

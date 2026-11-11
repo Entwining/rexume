@@ -156,3 +156,49 @@ fn open_upgrades_a_version_9_database_leaving_its_records_as_they_were() -> Resu
     assert_eq!(notice, (0, Some(12), None, None, None));
     Ok(())
 }
+
+/// A round finished before version 10 recorded Rex's generation of its pane's reports, which also
+/// moves on reports about the same process. One whose pane's recorded generation has not moved
+/// since saw no report, so it takes the count the upgraded pane starts at; whether a program ran in
+/// any other's pane is unknown, so it takes none.
+#[test]
+fn open_upgrades_a_version_9_round_to_a_count_only_where_its_pane_was_not_reported_since()
+-> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let conn = version_9(dir.path())?;
+    conn.execute_batch(
+        "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
+           created_at)
+           VALUES ('moved', 'x', 'claude', 'owner', 'c', 0, 0),
+             ('unreported', 'x', 'claude', 'owner', 'd', 0, 0),
+             ('unrecorded', 'x', 'claude', 'owner', 'e', 0, 0);
+         INSERT INTO block (lineage, instance_id, fg_pid, fg_generation)
+           VALUES ('b', 'i1', 100, 5), ('c', 'i1', 100, 7), ('d', 'i1', 100, NULL);
+         INSERT INTO task_round (task_id, round, state, finished_at, finished_generation, created_at)
+           VALUES ('t', 1, 'cancelled', 8, 5, 0), ('moved', 1, 'cancelled', 8, 5, 0),
+             ('unreported', 1, 'cancelled', 8, NULL, 0), ('unrecorded', 1, 'cancelled', 8, 5, 0);",
+    )?;
+    drop(conn);
+    let store = Store::open(dir.path())?;
+    let rounds: Vec<(String, Option<i64>)> = store
+        .conn()
+        .prepare("SELECT task_id, finished_fg_changes FROM task_round ORDER BY task_id")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    assert_eq!(
+        rounds,
+        [
+            ("moved".into(), None),
+            ("t".into(), Some(0)),
+            ("unrecorded".into(), None),
+            ("unreported".into(), None)
+        ]
+    );
+    let counts: Vec<i64> = store
+        .conn()
+        .prepare("SELECT fg_changes FROM block")?
+        .query_map([], |row| row.get(0))?
+        .collect::<rusqlite::Result<_>>()?;
+    assert_eq!(counts, [0, 0, 0]);
+    Ok(())
+}

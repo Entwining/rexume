@@ -17,7 +17,7 @@ pub(super) struct Taken {
     pub(super) finished_at: Option<i64>,
     pub(super) finished_instance: Option<String>,
     pub(super) status_at: Option<i64>,
-    pub(super) generation: Option<i64>,
+    pub(super) fg_changes: Option<i64>,
     pub(super) position: i64,
     pub(super) conversation: Option<(Runtime, String)>,
 }
@@ -26,7 +26,7 @@ pub(super) fn taken(conn: &Connection, id: &str) -> Result<Taken> {
     Ok(conn.query_row(
         &format!(
             "SELECT t.result_file IS NULL, t.worker_lineage,
-               r.finished_at, r.finished_status_at, r.finished_generation, t.position,
+               r.finished_at, r.finished_status_at, r.finished_fg_changes, t.position,
                t.worker_runtime, t.worker_native_id, t.worker_instance_id, r.finished_instance_id
              FROM task t JOIN task_round r ON r.task_id = t.id
              WHERE t.id = ?1 AND r.round = {current}",
@@ -43,7 +43,7 @@ pub(super) fn taken(conn: &Connection, id: &str) -> Result<Taken> {
                 finished_at: row.get(2)?,
                 finished_instance: row.get(9)?,
                 status_at: row.get(3)?,
-                generation: row.get(4)?,
+                fg_changes: row.get(4)?,
                 position: row.get(5)?,
                 conversation: runtime.zip(native_id),
             })
@@ -59,26 +59,19 @@ pub(super) enum Untouched {
 }
 
 /// Whether the worker's pane, as recorded, is unchanged since its result. A run's pane still shows
-/// the run's exit; an interactive worker's has the same foreground generation (or none observed
-/// on either side), a status that leaves it as the result did (`idle_since`), the task's
-/// conversation still the pane's occupant on the pane's instance and not reported since, and no
-/// turn in its record after the task's position.
+/// the run's exit; an interactive worker's has had no other foreground process since, a status that
+/// leaves it as the result did (`idle_since`), the task's conversation still the pane's occupant on
+/// the pane's instance and not reported since, and no turn in its record after the task's position.
 pub(super) fn untouched(conn: &Connection, state_dir: &Path, id: &str) -> Result<Untouched> {
     let taken = taken(conn, id)?;
     let no = |reason: &str| Ok(Untouched::No(reason.to_owned()));
     let Some(finished_at) = taken.finished_at else {
         return no("the task has no result");
     };
-    type Pane = (
-        String,
-        Option<String>,
-        Option<i64>,
-        Option<i64>,
-        Option<i64>,
-    );
+    type Pane = (String, Option<String>, Option<i64>, i64, Option<i64>);
     let pane: Option<Pane> = conn
         .query_row(
-            "SELECT instance_id, status, status_at, fg_generation, last_exit FROM block
+            "SELECT instance_id, status, status_at, fg_changes, last_exit FROM block
              WHERE lineage = ?1",
             params![taken.worker],
             |row| {
@@ -92,11 +85,11 @@ pub(super) fn untouched(conn: &Connection, state_dir: &Path, id: &str) -> Result
             },
         )
         .optional()?;
-    let Some((instance, status, status_at, generation, last_exit)) = pane else {
+    let Some((instance, status, status_at, fg_changes, last_exit)) = pane else {
         return no("the worker's pane is not recorded");
     };
     // The record of a later server instance is a new terminal, restored after the result, and its
-    // status time and generation say nothing about the earlier one. A round the upgrade to
+    // status time and foreground changes say nothing about the earlier one. A round the upgrade to
     // version 3 could not date counts as finished where its task was registered; if it finished
     // on a later instance, the pane is only kept.
     let finished_on = taken.finished_instance.or(taken.worker_instance);
@@ -104,16 +97,17 @@ pub(super) fn untouched(conn: &Connection, state_dir: &Path, id: &str) -> Result
         return no("the worker's pane was restored after its result");
     }
     // A run's round ends on the exit of the terminal's own program, after which Rex starts nothing
-    // in that terminal. Rex can still report an empty foreground after the exit, which moves the
-    // generation, so the generation does not tell whether the pane was used. A pane without the
-    // exit is a new terminal, restored after the run.
+    // in that terminal. The round can end once the run is no longer the foreground, before Rex
+    // reports the exit, which the count of foreground changes then takes in after the result, so
+    // the count does not tell whether the pane was used. A pane without the exit is a new
+    // terminal, restored after the run.
     if !taken.interactive {
         if last_exit.is_none() {
             return no("the worker's pane was restored after its run");
         }
         return Ok(Untouched::Yes(taken.worker));
     }
-    if generation != taken.generation {
+    if taken.fg_changes != Some(fg_changes) {
         return no("another program ran in the worker's pane after its result");
     }
     if let Err(reason) = idle_since(status.as_deref(), status_at, taken.status_at) {

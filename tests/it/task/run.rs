@@ -58,17 +58,20 @@ fn a_run_reaches_its_owner_and_its_pane_closes_after_release() {
         (waited["state"].as_str(), waited["result"].as_str()),
         (Some("completed"), Some("Reviewed."))
     );
-    // Rex has so far reported the pane once more within a second of the result, moving its
-    // generation past the round's; the pane closes either way.
-    poll(Duration::from_secs(5), || {
+    // Rex has so far reported the pane once more within a second of the result; the pane closes
+    // either way.
+    let generation = || {
         query::<i64>(
             &state,
             &format!(
-                "SELECT 1 FROM task t JOIN task_round r ON r.task_id = t.id
-                 JOIN block b ON b.lineage = t.worker_lineage
-                 WHERE t.id = '{id}' AND b.fg_generation > r.finished_generation"
+                "SELECT b.fg_generation FROM task t JOIN block b ON b.lineage = t.worker_lineage
+                 WHERE t.id = '{id}'"
             ),
         )
+    };
+    let at_result = generation();
+    poll(Duration::from_secs(5), || {
+        generation().filter(|now| Some(*now) > at_result)
     });
     assert!(
         run_task(&server, &state, owner, &["release", &id])

@@ -16,7 +16,7 @@ use crate::store::Store;
 
 /// Lines of a Claude Code turn record, as its turn hooks write them.
 pub(crate) const PROMPT: &str = r#"{"event":"prompt","prompt_id":"p1","token":null}"#;
-pub(super) const ANSWER: &str = r#"{"event":"stop","prompt_id":"p1","id":"m1","answer":"Done."}"#;
+pub(crate) const ANSWER: &str = r#"{"event":"stop","prompt_id":"p1","id":"m1","answer":"Done."}"#;
 pub(super) const PROMPT_2: &str = r#"{"event":"prompt","prompt_id":"p2","token":null}"#;
 pub(super) const ANSWER_2: &str =
     r#"{"event":"stop","prompt_id":"p2","id":"m2","answer":"Again."}"#;

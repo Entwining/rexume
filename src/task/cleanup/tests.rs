@@ -12,7 +12,7 @@ fn released_worker(dir: &Path, transcript: &Path) -> Result<Store> {
     store.conn().execute_batch(
         "UPDATE block SET status = 'idle', status_at = 90 WHERE lineage = 'b';
          UPDATE task_round SET state = 'completed', result = 'Done.', result_ref = 'm1', finished_at = 100,
-           finished_instance_id = 'i1', finished_status_at = 90, finished_generation = 5, turn_start = 0,
+           finished_instance_id = 'i1', finished_status_at = 90, finished_fg_changes = 0, turn_start = 0,
            acked_at = 120;",
     )?;
     store.conn().execute(
@@ -29,22 +29,22 @@ fn released_run(dir: &Path) -> Result<Store> {
     store.conn().execute_batch(
         "UPDATE block SET fg_pid = NULL, last_exit = 0 WHERE lineage = 'b';
          UPDATE task_round SET state = 'completed', result = 'Done.', result_ref = '/r', finished_at = 100,
-           finished_instance_id = 'i1', finished_generation = 5, acked_at = 120;
+           finished_instance_id = 'i1', finished_fg_changes = 0, acked_at = 120;
          UPDATE task SET released_at = 120;",
     )?;
     Ok(store)
 }
 
-/// The server can report the run's pane without a foreground after the exit, once the round has
-/// its result; that moves the generation but runs nothing. A pane restored on a later instance
-/// is a new terminal and may be anyone's, also once its own program exits.
+/// A run's round can end before the server reports the run's exit, which then counts as a change
+/// of foreground after the result but runs nothing. A pane restored on a later instance is a new
+/// terminal and may be anyone's, also once its own program exits.
 #[test]
 fn a_pane_whose_run_exited_is_retired_until_it_is_restored() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let store = released_run(dir.path())?;
     store
         .conn()
-        .execute_batch("UPDATE block SET fg_generation = 6 WHERE lineage = 'b'")?;
+        .execute_batch("UPDATE block SET fg_changes = 1 WHERE lineage = 'b'")?;
     assert_eq!(
         retired_workers(store.conn(), store.dir())?,
         [("t".into(), "b".into())]
@@ -127,7 +127,7 @@ fn a_dropped_round_does_not_keep_an_untouched_worker() -> Result<()> {
     let store = released_worker(dir.path(), transcript.path())?;
     store.conn().execute_batch(
         "INSERT INTO task_round (task_id, round, state, finished_at, finished_instance_id,
-           finished_status_at, finished_generation, acked_at, created_at)
+           finished_status_at, finished_fg_changes, acked_at, created_at)
          VALUES ('t', 2, 'dropped', 60, 'i1', 50, 3, 60, 40)",
     )?;
     assert_eq!(
@@ -179,8 +179,8 @@ fn later_activity_in_the_worker_pane_keeps_it() -> Result<()> {
         "INSERT INTO conversation (runtime, native_id, resumable, reported_at) VALUES ('claude', 'new', 1, 300);
          UPDATE occupant SET native_id = 'new', pid = 200, reported_at = 300 WHERE block_lineage = 'b';",
         "UPDATE block SET status = 'working', status_at = 200 WHERE lineage = 'b'",
-        "UPDATE block SET fg_pid = 300, fg_generation = 6 WHERE lineage = 'b'",
-        // The pane restored on a later instance, whose status and generation happen to match.
+        "UPDATE block SET fg_pid = 300, fg_changes = fg_changes + 1 WHERE lineage = 'b'",
+        // The pane restored on a later instance, whose status and count happen to match.
         "UPDATE block SET instance_id = 'i2' WHERE lineage = 'b'",
         // A pane an earlier close attempt found in use, whatever it shows now.
         "UPDATE task SET pane_state = 'kept', pane_note = 'the worker''s status changed after its result'",

@@ -12,6 +12,18 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
     if !(1..SCHEMA_VERSION).contains(&version) {
         bail!("schema {version} has no upgrade");
     }
+    // Version 10 counts the times the daemon found another foreground process in a pane, where a
+    // round recorded Rex's generation of the pane's reports, which also moves on reports about the
+    // same process. A round whose pane's recorded generation has not moved since saw no report,
+    // so it takes the count the upgraded pane starts at; any other can take none. Added before any
+    // step copies `task_round`, which keeps the columns both shapes have.
+    tx.execute_batch(
+        "ALTER TABLE task_round ADD COLUMN finished_fg_changes INTEGER;
+         UPDATE task_round SET finished_fg_changes = 0
+           WHERE EXISTS (SELECT 1 FROM task t JOIN block b ON b.lineage = t.worker_lineage
+                         WHERE t.id = task_round.task_id
+                           AND b.fg_generation = task_round.finished_generation);",
+    )?;
     // Read before any step rebuilds `task_round` without the column.
     let blocked = if version >= 5 {
         open_episodes(tx)?
@@ -23,9 +35,10 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
     }
     // Version 9 adds the 'queued' and 'dropped' round states to a `CHECK`, which changes only with
     // its table. Version 10 adds `epoch.host_id` and `epoch.daemon_version`, the pane's
-    // `status_kind` and `status_message`, `task.meta`, `task.worktree` and `task.worktree_note`, the
-    // delivery columns of `request` and `notice`, `blocked_episode`, which replaces
-    // `task_round.blocked_at`, and `snapshot`, and drops two of `task`'s `CHECK`s.
+    // `status_kind`, `status_message`, and `fg_changes`, `task.meta`, `task.worktree` and
+    // `task.worktree_note`, the delivery columns of `request` and `notice`, `blocked_episode`,
+    // which replaces `task_round.blocked_at`, `task_round.finished_fg_changes`, which replaces
+    // `finished_generation`, and `snapshot`, and drops two of `task`'s `CHECK`s.
     rebuild(
         tx,
         &["notice", "request", "task_round", "task", "epoch", "block"],
@@ -159,9 +172,9 @@ fn from_v1(tx: &Transaction) -> Result<()> {
          LEFT JOIN v1_round l ON l.task_id = t.id
            AND l.round = (SELECT MAX(round) FROM v1_round WHERE task_id = t.id);
          INSERT INTO main.task_round (task_id, round, waiter_pid, state, note, finished_at,
-           finished_status_at, finished_generation, acked_at, created_at, result_ref, result)
+           finished_status_at, finished_fg_changes, acked_at, created_at, result_ref, result)
          SELECT task_id, round, waiter_pid, state, note, finished_at, finished_status_at,
-           finished_generation, acked_at, created_at, result_ref, result
+           finished_fg_changes, acked_at, created_at, result_ref, result
          FROM v1_round;
          INSERT INTO main.notice (id, task_id, round, kind, state, note, created_at)
          SELECT id, task_id, round, kind, state, note, created_at FROM v1_notice;

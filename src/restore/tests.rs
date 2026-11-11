@@ -266,7 +266,7 @@ fn a_retired_workers_pane_is_closed_unless_it_is_in_use() -> Result<()> {
              UPDATE task SET result_file = '/r', worker_runtime = NULL, worker_native_id = NULL,
                released_at = 120;
              UPDATE task_round SET state = 'completed', result = 'Done.', result_ref = '/r',
-               finished_at = 100, finished_instance_id = 'i1', finished_generation = 5, acked_at = 120;",
+               finished_at = 100, finished_instance_id = 'i1', finished_fg_changes = 0, acked_at = 120;",
         )?;
         let mut restorer = new_restorer();
         restorer.start(&mut rex, &mut store, "i2")?;
@@ -307,7 +307,7 @@ fn a_pane_held_by_an_earlier_epoch_is_let_go() -> Result<()> {
          UPDATE task SET result_file = '/r', worker_runtime = NULL, worker_native_id = NULL,
            released_at = 120;
          UPDATE task_round SET state = 'completed', result = 'Done.', result_ref = '/r',
-           finished_at = 100, finished_instance_id = 'i1', finished_generation = 5, acked_at = 120;",
+           finished_at = 100, finished_instance_id = 'i1', finished_fg_changes = 0, acked_at = 120;",
     )?;
     new_restorer().start(&mut rex, &mut store, "i2")?;
     let pane = |store: &Store| -> Result<String> {

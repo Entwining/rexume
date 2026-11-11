@@ -193,3 +193,67 @@ fn a_worker_answers_each_round_tells_its_owner_once_and_closes_after_release() {
             .is_err()
     );
 }
+
+/// Rex reports a pane again when its foreground process changes directory, which is no use of the
+/// pane: a released worker whose process did is still closed.
+#[test]
+#[ignore = "needs a Rex server"]
+fn a_released_worker_whose_process_changed_directory_closes() {
+    let world = Orchestration::start();
+    let Orchestration {
+        server,
+        state,
+        session,
+        owner,
+        worker,
+        id,
+        ..
+    } = &world;
+    claude::turn(
+        state,
+        "worker",
+        "p1",
+        "Review the diff",
+        Some("Looks good."),
+    );
+    let waited = task(server, state, owner, &["wait", id, "--timeout", "20"]);
+    assert_eq!(waited["result"].as_str(), Some("Looks good."));
+    let generation = || {
+        query::<i64>(
+            state,
+            &format!(
+                "SELECT b.fg_generation FROM task t JOIN block b ON b.lineage = t.worker_lineage
+                 WHERE t.id = '{id}'"
+            ),
+        )
+    };
+    let at_result = generation();
+    server.call(
+        "block.event",
+        &json!({ "session_id": session, "block_id": worker,
+                 "event": { "type": "paste", "payload": { "text": "cd /" } } }),
+    );
+    assert!(
+        server
+            .cli()
+            .args(["send-key", "-s", session, "-b", worker, "enter"])
+            .status()
+            .unwrap()
+            .success()
+    );
+    wait_until("Rex to report the worker's process again", WAIT, || {
+        generation().filter(|now| Some(*now) > at_result)
+    });
+    let released = task(server, state, owner, &["release", id]);
+    assert!(released["released_at"].is_i64());
+    let pane = wait_until("the daemon to settle the worker's pane", WAIT, || {
+        query::<String>(
+            state,
+            &format!(
+                "SELECT pane_state || ': ' || COALESCE(pane_note, '') FROM task
+                 WHERE id = '{id}' AND pane_state IN ('closed', 'kept')"
+            ),
+        )
+    });
+    assert_eq!(pane, "closed: ");
+}
