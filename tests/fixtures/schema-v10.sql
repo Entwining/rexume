@@ -456,8 +456,8 @@ CREATE UNIQUE INDEX IF NOT EXISTS notice_blocked_unsent ON notice (task_id, roun
 -- not bound its turn, as its times do not, and two equal trees show equal endpoints, not that
 -- nothing changed between them. `tree` is NULL when the snapshot could not be taken, `note` saying
 -- why. `created_at` is when the snapshot began. The objects a tree names that the repository did
--- not hold are in the state directory's `snapshots/TASK_ID/objects` until the sweep archives the
--- task.
+-- not hold are in the state directory's `snapshots/TASK_ID/objects` until the sweep deletes
+-- `snapshots/TASK_ID`, once the task is archived and nothing was written there for 30 days.
 CREATE TABLE IF NOT EXISTS snapshot (
   task_id    TEXT    NOT NULL,
   round      INTEGER NOT NULL,
