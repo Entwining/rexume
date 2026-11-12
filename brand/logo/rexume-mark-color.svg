@@ -1,0 +1,21 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160" role="img" aria-labelledby="title">
+  <title id="title">Rexume</title>
+  <defs>
+    <linearGradient id="first-color" x1="8%" y1="3%" x2="91%" y2="94%">
+      <stop offset="0" stop-color="#F7E0D5"/>
+      <stop offset=".28" stop-color="#F4D2D5"/>
+      <stop offset=".58" stop-color="#F0C7E3"/>
+      <stop offset="1" stop-color="#B6CCF0"/>
+    </linearGradient>
+    <linearGradient id="second-color" x1="6%" y1="95%" x2="90%" y2="0%">
+      <stop offset="0" stop-color="#ACC4EF"/>
+      <stop offset=".38" stop-color="#C199DD"/>
+      <stop offset=".63" stop-color="#E0ADDC"/>
+      <stop offset="1" stop-color="#F8D8CE"/>
+    </linearGradient>
+    <path id="first-stroke" d="M30 33C38 27 46 29 52 36L72 57C82 69 97 78 107 89L129 110C137 118 134 127 127 132C120 137 112 133 106 127C89.83 112.37 79.59 102.48 69.8 93.69C61.28 86.03 53.8 67.85 39 56.75L30 50C23 44 24 38 30 33Z"/>
+    <path id="second-stroke" d="M19 119C43 95 69 75 90 57L121 30C128 24 138 27 144 32L134 42C115 61 95 77 82 92C68 107 59 120 42 133C34 139 23 138 18 132C14 128 15 123 19 119Z"/>
+  </defs>
+  <use href="#first-stroke" fill="url(#first-color)"/>
+  <use href="#second-stroke" fill="url(#second-color)"/>
+</svg>
