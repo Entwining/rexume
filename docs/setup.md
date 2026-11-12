@@ -1,6 +1,6 @@
 # Set up Rexume
 
-Rexume runs on the machine that runs the Rex server. On macOS, it needs the Rex app and is developed on Apple Silicon. On Linux, it needs Linux 5.3 or later on x86_64 or arm64 and runs as a systemd user service. Installing its hooks and job needs the Rex CLI, `rex`, on `PATH`.
+Rexume runs on the machine that runs the Rex server. On macOS, it needs macOS 15 or later and the Rex app, and is developed on Apple Silicon. On Linux, it needs Linux 5.3 or later on x86_64 or arm64 and runs as a systemd user service. Installing its hooks and job needs the Rex CLI, `rex`, on `PATH`.
 
 Rexume needs Rex's own session restore: the Rex app 0.1.0-preview.23 or later on macOS, or the Rex server 0.1.0-preview.11 or later on Linux. The first restart after upgrading Rex brings nothing back. The earlier server saved nothing.
 
