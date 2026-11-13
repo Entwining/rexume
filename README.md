@@ -1,8 +1,8 @@
-# <img src="brand/logo/rexume-mark-color.svg#readme" width="34" height="34" align="texttop" hspace="4" alt="">Rexume
+<h1 align="center"><img src="brand/logo/rexume-mark-color.svg#readme" width="60" height="60" alt=""><br>Rexume</h1>
 
-Rexume brings agent conversations back to their [Rex](https://www.superlogical.com/rex) panes after the server restarts. It supports Claude Code, Codex, Pi, and omp on macOS and Linux.
+Rexume reopens agent conversations in the panes [Rex](https://www.superlogical.com/rex) restores after a server restart and returns worker results to the orchestrator. It supports Claude Code, Codex, Pi, and omp on macOS and Linux.
 
-![Rexume: Pick up where you left off. Worker results, returned.](https://github.com/user-attachments/assets/87e5b8a8-ec76-4532-b353-7384ea249325)
+To get started, [install Rexume](#install) on the machine running the Rex server.
 
 ## Conversations come back
 
