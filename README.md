@@ -1,4 +1,4 @@
-# <img src="brand/logo/rexume-mark-color.svg" width="34" height="34" align="texttop" hspace="4" alt="">Rexume
+# <img src="brand/logo/rexume-mark-color.svg#readme" width="34" height="34" align="texttop" hspace="4" alt="">Rexume
 
 Rexume brings agent conversations back to their [Rex](https://www.superlogical.com/rex) panes after the server restarts. It supports Claude Code, Codex, Pi, and omp on macOS and Linux.
 

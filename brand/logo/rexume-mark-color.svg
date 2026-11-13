@@ -1,5 +1,6 @@
 <svg xmlns="http://www.w3.org/2000/svg" width="160" height="160" viewBox="0 0 160 160" role="img" aria-labelledby="title">
   <title id="title">Rexume</title>
+  <view id="readme" viewBox="0 -9 160 160"/>
   <defs>
     <linearGradient id="first-color" x1="8%" y1="3%" x2="91%" y2="94%">
       <stop offset="0" stop-color="#F7E0D5"/>
