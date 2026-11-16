@@ -16,11 +16,14 @@ fn status_shows_the_error_of_the_newest_epoch_only() -> Result<()> {
     };
     insert(&mut store, Some("UNIQUE constraint failed"))?;
     assert_eq!(
-        run(dir.path(), dir.path())?["epoch_error"],
+        run(dir.path(), &crate::install::Dirs::new(dir.path()))?["epoch_error"],
         json!({ "error": "UNIQUE constraint failed", "started_at": 1, "ended_at": 2 })
     );
     insert(&mut store, None)?;
-    assert_eq!(run(dir.path(), dir.path())?["epoch_error"], Value::Null);
+    assert_eq!(
+        run(dir.path(), &crate::install::Dirs::new(dir.path()))?["epoch_error"],
+        Value::Null
+    );
     Ok(())
 }
 
@@ -37,11 +40,11 @@ fn status_lists_missing_claude_hooks_unless_the_settings_cannot_be_read() -> Res
         json!({ "hooks": { "SessionStart": [{ "hooks": [hook] }] } }).to_string(),
     )?;
     assert_eq!(
-        run(dir.path(), home.path())?["claude_hooks_missing"],
+        run(dir.path(), &crate::install::Dirs::new(home.path()))?["claude_hooks_missing"],
         json!(["UserPromptSubmit", "Stop", "StopFailure"])
     );
     std::fs::write(&settings, "{")?;
-    let status = run(dir.path(), home.path())?;
+    let status = run(dir.path(), &crate::install::Dirs::new(home.path()))?;
     assert_eq!(status["claude_hooks_missing"], Value::Null);
     assert_eq!(status["restores"], json!([]));
     Ok(())

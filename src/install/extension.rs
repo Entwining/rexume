@@ -2,7 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use super::{Outcome, refresh_file, remove_file, write};
+use super::{Dirs, Outcome, refresh_file, remove_file, write};
 use crate::runtime::{omp, pi};
 
 /// Every version of either extension starts with this, whatever follows it on the first line.
@@ -10,49 +10,50 @@ const WRITTEN_BY: &str = "// Written by `rexume install`";
 
 pub(super) struct Extension {
     name: &'static str,
-    agent: &'static str,
+    agent: fn(&Dirs) -> &Path,
     text: &'static str,
 }
 
 pub(super) const PI_EXTENSION: Extension = Extension {
     name: "Pi",
-    agent: ".pi/agent",
+    agent: |dirs| &dirs.pi,
     text: pi::EXTENSION,
 };
 pub(super) const OMP_EXTENSION: Extension = Extension {
     name: "omp",
-    agent: ".omp/agent",
+    agent: |dirs| &dirs.omp,
     text: omp::EXTENSION,
 };
 
 impl Extension {
-    fn path(&self, home: &Path) -> PathBuf {
-        home.join(self.agent).join("extensions/rexume.ts")
+    fn path(&self, dirs: &Dirs) -> PathBuf {
+        (self.agent)(dirs).join("extensions/rexume.ts")
     }
 
-    pub(super) fn install(&self, home: &Path) -> Result<Outcome> {
-        if !home.join(self.agent).is_dir() {
+    pub(super) fn install(&self, dirs: &Dirs) -> Result<Outcome> {
+        let agent = (self.agent)(dirs);
+        if !agent.is_dir() {
             return Ok((
                 "skipped",
-                Some(format!("`~/{}` does not exist", self.agent)),
+                Some(format!("`{}` does not exist", dirs.show(agent))),
             ));
         }
-        Ok((write(&self.path(home), self.text.as_bytes())?, None))
+        Ok((write(&self.path(dirs), self.text.as_bytes())?, None))
     }
 
-    pub(super) fn uninstall(&self, home: &Path) -> Result<Outcome> {
-        remove_file(&self.path(home), |text| text.starts_with(WRITTEN_BY))
+    pub(super) fn uninstall(&self, dirs: &Dirs) -> Result<Outcome> {
+        remove_file(&self.path(dirs), |text| text.starts_with(WRITTEN_BY))
     }
 
-    fn refresh(&self, home: &Path) -> Result<&'static str> {
-        refresh_file(&self.path(home), self.text.as_bytes(), |text| {
+    fn refresh(&self, dirs: &Dirs) -> Result<&'static str> {
+        refresh_file(&self.path(dirs), self.text.as_bytes(), |text| {
             text.starts_with(WRITTEN_BY)
         })
     }
 }
 
-pub fn refresh_extensions(home: &Path) -> [(&'static str, Result<&'static str>); 2] {
-    [PI_EXTENSION, OMP_EXTENSION].map(|extension| (extension.name, extension.refresh(home)))
+pub fn refresh_extensions(dirs: &Dirs) -> [(&'static str, Result<&'static str>); 2] {
+    [PI_EXTENSION, OMP_EXTENSION].map(|extension| (extension.name, extension.refresh(dirs)))
 }
 
 #[cfg(test)]
@@ -64,14 +65,15 @@ mod tests {
     #[test]
     fn the_daemon_refreshes_only_an_extension_install_wrote() -> Result<()> {
         let home = tempfile::tempdir()?;
+        let dirs = Dirs::new(home.path());
         let refresh = || -> Result<Vec<&'static str>> {
-            refresh_extensions(home.path())
+            refresh_extensions(&dirs)
                 .into_iter()
                 .map(|(_, r)| r)
                 .collect()
         };
-        let pi_path = PI_EXTENSION.path(home.path());
-        let omp_path = OMP_EXTENSION.path(home.path());
+        let pi_path = PI_EXTENSION.path(&dirs);
+        let omp_path = OMP_EXTENSION.path(&dirs);
         assert_eq!(refresh()?, ["absent", "absent"]);
         assert!(
             !pi_path.exists() && !omp_path.exists(),

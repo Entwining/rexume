@@ -10,7 +10,7 @@ use std::fs::{File, Permissions, TryLockError};
 use std::os::fd::AsFd;
 use std::os::unix::fs::PermissionsExt;
 use std::os::unix::net::UnixListener;
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
 use clap::ValueEnum as _;
@@ -28,7 +28,7 @@ pub struct Options {
     pub state_dir: PathBuf,
     pub cli: Cli,
     pub exe: PathBuf,
-    pub home: PathBuf,
+    pub dirs: install::Dirs,
 }
 
 const LISTEN: Token = 1;
@@ -84,7 +84,7 @@ pub fn run(options: &Options) -> Result<()> {
             });
         }
     }
-    refresh_integrations(&options.home);
+    refresh_integrations(&options.dirs);
     let mut store = Store::open(&options.state_dir)?;
     {
         let tx = store.write()?;
@@ -139,20 +139,20 @@ pub fn run(options: &Options) -> Result<()> {
 
 /// A daemon starts after every upgrade, so this is where an upgrade's integration files reach
 /// each runtime. A runtime missing one is no reason to stop restoring the others.
-fn refresh_integrations(home: &Path) {
-    for (runtime, refreshed) in install::refresh_extensions(home) {
+fn refresh_integrations(dirs: &install::Dirs) {
+    for (runtime, refreshed) in install::refresh_extensions(dirs) {
         match refreshed {
             Ok("updated") => log::info!("updated the {runtime} extension"),
             Ok(_) => {}
             Err(e) => log::warn!("failed to refresh the {runtime} extension: {e:#}"),
         }
     }
-    match install::refresh_claude_plugin(home) {
+    match install::refresh_claude_plugin(dirs) {
         Ok("updated") => log::info!("updated the Claude Code plugin"),
         Ok(_) => {}
         Err(e) => log::warn!("failed to refresh the Claude Code plugin: {e:#}"),
     }
-    match install::refresh_skills(home) {
+    match install::refresh_skills(dirs) {
         Ok(refreshed) => {
             for (key, outcome) in refreshed {
                 if outcome == "updated" {
@@ -162,7 +162,7 @@ fn refresh_integrations(home: &Path) {
         }
         Err(e) => log::warn!("failed to refresh the skill stubs: {e:#}"),
     }
-    match install::refresh_claude_hooks(home) {
+    match install::refresh_claude_hooks(dirs) {
         Ok("created") => log::info!("added the Claude Code turn hooks"),
         Ok(_) => {}
         Err(e) => log::warn!("failed to add the Claude Code turn hooks: {e:#}"),

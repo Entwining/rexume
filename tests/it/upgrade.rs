@@ -46,6 +46,10 @@ fn a_daemon_exits_when_an_upgrade_replaces_its_executable() {
                 .args(["--rex", "/usr/bin/false", "--server"])
                 .arg(format!("unix://{}", dir.path().join("s.sock").display()))
                 .env("HOME", dir.path().join("home"))
+                // The runtimes' directories are the home's defaults, not the developer's.
+                .env_remove("CLAUDE_CONFIG_DIR")
+                .env_remove("CODEX_HOME")
+                .env_remove("PI_CODING_AGENT_DIR")
                 .stdout(Stdio::null())
                 .stderr(std::fs::File::create(&log).unwrap())
                 .spawn()

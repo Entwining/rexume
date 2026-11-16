@@ -149,7 +149,7 @@ fn any_wait_drops_the_watch_of_a_replaced_file() -> Result<()> {
             endpoint: String::new(),
         },
         exe: dir.path().join("rexume"),
-        home: dir.path().to_owned(),
+        dirs: crate::install::Dirs::new(dir.path()),
     };
     let socket = dir.path().join("daemon.sock");
     let mut daemon = Daemon {

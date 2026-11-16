@@ -59,7 +59,19 @@ A runtime whose directory does not exist is skipped. The JSON says so. Pi needs 
 
 The skill goes to `~/.claude/skills` when `~/.claude` exists. It goes to `~/.agents/skills` when `~/.codex` or `~/.pi/agent` exists. A `rexume` skill you wrote yourself there stays as it is.
 
-An omp profile's agent directory gets no extension. Neither does one that `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR` names. Sessions there report nothing and take no notices.
+### Moved configuration directories
+
+The paths above are each runtime's default. Install uses the directory a runtime's own variable names instead, when that variable is set to an absolute path in the environment you run `install` in:
+
+| Variable | Replaces | Holds |
+| --- | --- | --- |
+| `CLAUDE_CONFIG_DIR` | `~/.claude` | `settings.json` with the Claude Code hooks, and `skills/rexume` |
+| `CODEX_HOME` | `~/.codex` | `hooks.json` with the Codex hook |
+| `PI_CODING_AGENT_DIR` | `~/.pi/agent` | `extensions/rexume.ts` |
+
+Install runs `claude plugin` with the same `CLAUDE_CONFIG_DIR`, and writes the variables it used into the job, so the daemon refreshes the files in the same directories. `uninstall` and `status` read the variables too. If you change one, run `rexume uninstall` with its old value and `rexume install` with the new one. An empty or relative value leaves the default. `~/.agents/skills` has no variable.
+
+An omp profile's agent directory gets no extension. Neither does an omp directory that `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR` names: those variables move Pi's directory, not omp's. omp sessions there report nothing and take no notices.
 
 If you install Claude Code, Codex, Pi, or omp later, run `rexume install` again once it is set up. Running it again leaves one copy of each entry and keeps your other hooks and settings. Install [recognizes its entries by their commands, names, and markers](cli.md#how-install-recognizes-its-entries).
 

@@ -97,7 +97,10 @@ pub(super) fn unit(install: &Install) -> String {
         .enumerate()
         .map(|(i, arg)| quote(arg, i > 0))
         .collect();
-    let path = quote(&format!("PATH={}", install.path), false);
+    let environment: Vec<String> = std::iter::once(("PATH", install.path.as_str()))
+        .chain(install.env.iter().map(|(k, v)| (k.as_str(), v.as_str())))
+        .map(|(k, v)| format!("Environment={}", quote(&format!("{k}={v}"), false)))
+        .collect();
     // The service restarts after any exit, as it does after the daemon exits for a replaced
     // executable. With 2 seconds between starts, six never fall within the default window of 10
     // seconds, so the window is 30 seconds, and the retries end at the sixth start within it, as
@@ -110,14 +113,15 @@ StartLimitBurst=5
 
 [Service]
 ExecStart={}
-Environment={path}
+{}
 Restart=always
 RestartSec=2
 
 [Install]
 WantedBy=default.target
 ",
-        command.join(" ")
+        command.join(" "),
+        environment.join("\n"),
     )
 }
 

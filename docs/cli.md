@@ -36,6 +36,8 @@ On Linux, `systemd_unit`, `systemd_unit_note`, and `systemd_unit_name` (`rexume.
 
 Each field has a `_note` beside it, which says why when the value needs a reason and is `null` otherwise.
 
+The paths in this section are the defaults. `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `PI_CODING_AGENT_DIR`, when set to absolute paths, replace `~/.claude`, `~/.codex`, and `~/.pi/agent` for `install`, `uninstall`, `status`, and the daemon ([moved configuration directories](setup.md#moved-configuration-directories)). The job carries each of them that install used, beside `PATH`, and install runs `claude plugin` with `CLAUDE_CONFIG_DIR` set to the directory it read. A note names a missing directory by the path install checked.
+
 ### How install recognizes its entries
 
 - **Hooks.** Rexume's Claude Code hook runs on `SessionStart`, `UserPromptSubmit`, `Stop`, and `StopFailure` in `~/.claude/settings.json`, and its Codex hook on `SessionStart` in `~/.codex/hooks.json`. A hook in any group of one of those events is Rexume's when its `command`, split as a shell would, is exactly three words: a path whose file name is `rexume`, `report`, and the runtime (`claude` or `codex`). Any path to `rexume` counts, so a hook written by a configuration manager as `/opt/homebrew/bin/rexume report claude` is kept as it is. For each of those events without one, install appends a new group, `{"hooks": [{"type": "command", "command": "rexume report claude", "timeout": 5}]}` for Claude Code and `{"hooks": [{"command": "rexume report codex", "timeout": 5, "type": "command"}]}` for Codex, and leaves every other key, group, and hook in place and in order.
