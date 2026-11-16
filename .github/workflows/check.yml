@@ -38,7 +38,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2.9.3
         with:
           cache-bin: false
-      - uses: taiki-e/install-action@v2.87.31
+      - uses: taiki-e/install-action@v2.90.3
         with:
           tool: cargo-deny@${{ env.CARGO_DENY_VERSION }},cargo-about@${{ env.CARGO_ABOUT_VERSION }}
           fallback: none
@@ -96,7 +96,7 @@ jobs:
         with:
           cache-bin: false
           key: ${{ matrix.target }}
-      - uses: taiki-e/install-action@v2.87.31
+      - uses: taiki-e/install-action@v2.90.3
         with:
           tool: cargo-deny@${{ env.CARGO_DENY_VERSION }},cargo-about@${{ env.CARGO_ABOUT_VERSION }}
           fallback: none
