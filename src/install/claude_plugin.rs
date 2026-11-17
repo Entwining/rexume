@@ -41,13 +41,17 @@ fn dir(home: &Path) -> PathBuf {
 /// user disabled.
 pub(super) fn install(dirs: &Dirs, path: &str) -> Result<Outcome> {
     let home = &dirs.home;
-    if !dirs.claude.is_dir() {
-        let note = format!("`{}` does not exist", dirs.show(&dirs.claude));
-        return Ok(("skipped", Some(note)));
-    }
+    let claude = match dirs.claude.usable() {
+        Ok(claude) if claude.is_dir() => claude,
+        Ok(claude) => {
+            let note = format!("`{}` does not exist", dirs.show(claude));
+            return Ok(("skipped", Some(note)));
+        }
+        Err(note) => return Ok(("skipped", Some(note))),
+    };
     let dir = dir(home);
     let mut outcome = write_files(&dir)?;
-    let settings = read_json(&Targets::new(dirs).claude)?;
+    let settings = read_json(&claude.join("settings.json"))?;
     let mut steps: Vec<Vec<&str>> = Vec::new();
     if settings.pointer(MARKETPLACE_KEY).is_none() {
         let dir = dir.to_str().context("the plugin's path is not UTF-8")?;
@@ -78,7 +82,11 @@ pub(super) fn install(dirs: &Dirs, path: &str) -> Result<Outcome> {
 
 pub(super) fn uninstall(dirs: &Dirs, path: &str) -> Result<&'static str> {
     let home = &dirs.home;
-    let settings = read_json(&Targets::new(dirs).claude)?;
+    // Without a configuration directory install can resolve, it registered nothing there.
+    let settings = match &Targets::new(dirs).claude {
+        Ok(path) => read_json(path)?,
+        Err(_) => Value::Null,
+    };
     let mut removed = false;
     for (key, args) in [
         (PLUGIN_KEY, ["uninstall", PLUGIN].as_slice()),
@@ -124,11 +132,12 @@ fn write_files(dir: &Path) -> Result<&'static str> {
 /// `claude plugin` changes. It is named the configuration directory install read, so that it
 /// registers the plugin in the settings install checked.
 fn run_claude(dirs: &Dirs, path: &str, args: &[&str]) -> Result<Option<()>> {
+    let claude = dirs.claude.usable().map_err(anyhow::Error::msg)?;
     let output = Command::new("claude")
         .arg("plugin")
         .args(args)
         .env("HOME", &dirs.home)
-        .env("CLAUDE_CONFIG_DIR", &dirs.claude)
+        .env("CLAUDE_CONFIG_DIR", claude)
         .env("PATH", path)
         .stdin(Stdio::null())
         .output();

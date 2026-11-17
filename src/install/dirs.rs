@@ -5,33 +5,75 @@ use std::path::{Path, PathBuf};
 struct Location {
     var: &'static str,
     default: &'static str,
+    /// Whether the runtime reads `~` and `~/…` in the variable as the home, as Pi does.
+    tilde: bool,
 }
 
 const CLAUDE: Location = Location {
     var: "CLAUDE_CONFIG_DIR",
     default: ".claude",
+    tilde: false,
 };
 const CODEX: Location = Location {
     var: "CODEX_HOME",
     default: ".codex",
+    tilde: false,
 };
 const PI: Location = Location {
     var: "PI_CODING_AGENT_DIR",
     default: ".pi/agent",
+    tilde: true,
 };
 
+/// Where one runtime reads its configuration, and whether install may write there.
+pub struct Dir {
+    /// `None` when the variable holds a value install cannot resolve, such as a relative path,
+    /// which the runtime reads against a working directory install does not know.
+    path: Option<PathBuf>,
+    /// Why install neither writes nor refreshes anything for the runtime, if it does not.
+    blocked: Option<String>,
+}
+
+impl Dir {
+    fn at(path: PathBuf) -> Self {
+        Self {
+            path: Some(path),
+            blocked: None,
+        }
+    }
+
+    /// The directory install writes and the daemon refreshes in, or why there is none.
+    pub fn usable(&self) -> Result<&Path, String> {
+        match (&self.blocked, &self.path) {
+            (Some(note), _) => Err(note.clone()),
+            (None, Some(path)) => Ok(path),
+            (None, None) => unreachable!("a directory without a path is blocked"),
+        }
+    }
+
+    /// The directory uninstall removes install's entries from: a blocked one too, when it is known,
+    /// since an earlier install may have written there.
+    pub fn known(&self) -> Result<&Path, String> {
+        self.path.as_deref().ok_or_else(|| {
+            self.blocked
+                .clone()
+                .unwrap_or_else(|| unreachable!("a directory without a path is blocked"))
+        })
+    }
+}
+
 /// Where each runtime reads its configuration. Install, the daemon, and status resolve it the same
-/// way, and the job passes the variables that moved a directory on to the daemon, so that the
-/// daemon refreshes the files install wrote and not ones in the home's defaults.
+/// way, and the job passes the variables install read on to the daemon, so that the daemon
+/// refreshes the files install wrote and not ones in the home's defaults.
 pub struct Dirs {
     pub home: PathBuf,
-    pub claude: PathBuf,
-    pub codex: PathBuf,
-    pub pi: PathBuf,
+    pub claude: Dir,
+    pub codex: Dir,
+    pub pi: Dir,
     /// omp reads `~/.omp/agent` unless a profile or a variable it shares with Pi moves it; install
     /// writes only the default (`docs/setup.md`).
-    pub omp: PathBuf,
-    moved: Vec<(&'static str, PathBuf)>,
+    pub omp: Dir,
+    vars: Vec<(&'static str, OsString)>,
 }
 
 impl Dirs {
@@ -45,33 +87,51 @@ impl Dirs {
         Self::resolve(home, |var| std::env::var_os(var))
     }
 
-    /// A variable that is unset, empty, or not absolute leaves its runtime's default, as an
-    /// `XDG_CONFIG_HOME` that is not absolute does.
+    /// An unset or empty variable leaves its runtime's default. One the runtime would read against
+    /// its working directory blocks the runtime, since install cannot know that directory, and so
+    /// does `PI_CODING_AGENT_DIR` while omp is installed, because omp loads extensions from the
+    /// directory it names too.
     pub fn resolve(home: &Path, var: impl Fn(&str) -> Option<OsString>) -> Self {
-        let mut moved = Vec::new();
-        let mut dir = |location: Location| match var(location.var).map(PathBuf::from) {
-            Some(path) if path.is_absolute() => {
-                moved.push((location.var, path.clone()));
-                path
+        let mut vars = Vec::new();
+        let mut dir = |location: Location| {
+            let Some(value) = var(location.var).filter(|value| !value.is_empty()) else {
+                return Dir::at(home.join(location.default));
+            };
+            vars.push((location.var, value.clone()));
+            match expand(home, &value, location.tilde) {
+                Some(path) => Dir::at(path),
+                None => Dir {
+                    path: None,
+                    blocked: Some(unsupported(location, &value)),
+                },
             }
-            _ => home.join(location.default),
         };
-        let (claude, codex, pi) = (dir(CLAUDE), dir(CODEX), dir(PI));
+        let (claude, codex, mut pi) = (dir(CLAUDE), dir(CODEX), dir(PI));
+        let pi_moved = vars.iter().any(|(name, _)| *name == PI.var);
+        if pi_moved && omp_installed(home, var("PATH")) {
+            pi.blocked.get_or_insert_with(|| {
+                format!(
+                    "`{}` also moves omp's agent directory, and omp would load Pi's extension there",
+                    PI.var
+                )
+            });
+        }
         Self {
             home: home.to_owned(),
             claude,
             codex,
             pi,
-            omp: home.join(".omp/agent"),
-            moved,
+            omp: Dir::at(home.join(".omp/agent")),
+            vars,
         }
     }
 
-    /// The variables that moved a directory, with the directories they name, for the job.
-    pub fn moved(&self) -> Vec<(String, String)> {
-        self.moved
+    /// The runtimes' variables that are set, as install read them, for the job, so that the
+    /// daemon resolves each directory as install did.
+    pub fn vars(&self) -> Vec<(String, String)> {
+        self.vars
             .iter()
-            .map(|(var, path)| ((*var).to_owned(), path.to_string_lossy().into_owned()))
+            .map(|(var, value)| ((*var).to_owned(), value.to_string_lossy().into_owned()))
             .collect()
     }
 
@@ -84,75 +144,42 @@ impl Dirs {
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_variable_moves_its_runtime_only_when_it_names_an_absolute_path() {
-        let home = Path::new("/home/u");
-        let vars = [
-            ("CLAUDE_CONFIG_DIR", "/home/u/.config/claude"),
-            ("CODEX_HOME", "relative/codex"),
-            ("PI_CODING_AGENT_DIR", ""),
-        ];
-        let dirs = Dirs::resolve(home, |var| {
-            vars.iter()
-                .find(|(name, _)| *name == var)
-                .map(|(_, value)| OsString::from(value))
-        });
-        assert_eq!(dirs.claude, Path::new("/home/u/.config/claude"));
-        assert_eq!(dirs.codex, Path::new("/home/u/.codex"));
-        assert_eq!(dirs.pi, Path::new("/home/u/.pi/agent"));
-        assert_eq!(dirs.omp, Path::new("/home/u/.omp/agent"));
-        assert_eq!(
-            dirs.moved(),
-            [(
-                "CLAUDE_CONFIG_DIR".to_owned(),
-                "/home/u/.config/claude".to_owned()
-            )]
-        );
-        assert_eq!(dirs.show(&dirs.claude), "~/.config/claude");
-        assert_eq!(dirs.show(Path::new("/srv/pi")), "/srv/pi");
-        assert!(Dirs::new(home).moved().is_empty());
+/// The directory `value` names, if the runtime reads it the same from any working directory.
+fn expand(home: &Path, value: &OsString, tilde: bool) -> Option<PathBuf> {
+    let path = PathBuf::from(value);
+    if path.is_absolute() {
+        return Some(path);
     }
-
-    #[test]
-    fn install_writes_where_the_variables_point_and_nothing_in_the_home() -> anyhow::Result<()> {
-        use super::super::{CLAUDE_EVENTS, PI_EXTENSION, Targets, add_hook, skill};
-
-        let home = tempfile::tempdir()?;
-        let (claude, pi) = (
-            home.path().join("cfg/claude"),
-            home.path().join("cfg/pi/agent"),
-        );
-        for dir in [&claude, &pi] {
-            std::fs::create_dir_all(dir)?;
+    if tilde {
+        if path == Path::new("~") {
+            return Some(home.to_owned());
         }
-        let vars = [("CLAUDE_CONFIG_DIR", &claude), ("PI_CODING_AGENT_DIR", &pi)];
-        let dirs = Dirs::resolve(home.path(), |var| {
-            vars.iter()
-                .find(|(name, _)| *name == var)
-                .map(|(_, path)| path.as_os_str().to_owned())
-        });
-        let hook = serde_json::json!({ "type": "command", "command": "rexume report claude" });
-        let settings = Targets::new(&dirs).claude;
-        assert_eq!(settings, claude.join("settings.json"));
-        assert_eq!(
-            add_hook(&dirs, &settings, "claude", &CLAUDE_EVENTS, &hook)?.0,
-            "created"
-        );
-        assert_eq!(PI_EXTENSION.install(&dirs)?.0, "created");
-        assert!(pi.join("extensions/rexume.ts").is_file());
-        let [(_, agents), (_, claude_skill)] = skill::install(&dirs)?;
-        assert_eq!((agents.0, claude_skill.0), ("created", "created"));
-        assert!(claude.join("skills/rexume/SKILL.md").is_file());
-        for default in [".claude", ".pi", ".codex"] {
-            assert!(!home.path().join(default).exists(), "{default} was created");
+        if let Some(rest) = value.to_str().and_then(|value| value.strip_prefix("~/")) {
+            return Some(home.join(rest));
         }
-        let codex = Targets::new(&dirs).codex;
-        let (_, note) = add_hook(&dirs, &codex, "codex", &["SessionStart"], &hook)?;
-        assert_eq!(note.as_deref(), Some("`~/.codex` does not exist"));
-        Ok(())
     }
+    None
 }
+
+fn unsupported(location: Location, value: &OsString) -> String {
+    let wanted = if location.tilde {
+        "an absolute path or one starting with `~/`"
+    } else {
+        "an absolute path"
+    };
+    format!(
+        "`{}` is `{}`, not {wanted}",
+        location.var,
+        value.to_string_lossy()
+    )
+}
+
+/// omp is set up when its default directory exists or `omp` is on `PATH`.
+fn omp_installed(home: &Path, path: Option<OsString>) -> bool {
+    home.join(".omp").is_dir()
+        || path
+            .is_some_and(|path| std::env::split_paths(&path).any(|dir| dir.join("omp").is_file()))
+}
+
+#[cfg(test)]
+mod tests;

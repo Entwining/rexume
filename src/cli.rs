@@ -237,7 +237,7 @@ fn run(command: Command) -> Result<Option<(Value, u8)>> {
                 rex: rex_path(server.rex)?,
                 server: server_address(server.server)?,
                 path: std::env::var("PATH").context("PATH is not set")?,
-                env: dirs.moved(),
+                env: dirs.vars(),
             };
             install::install(&dirs, &options).map(|value| Some((value, 0)))
         }

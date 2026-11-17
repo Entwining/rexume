@@ -10,6 +10,7 @@ fn read(path: &Path) -> Result<Value> {
 fn another_path_to_rexume_is_the_same_hook() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let path = dir.path().join("settings.json");
+    let target = Ok(path.clone());
     let other = json!({ "hooks": [{ "type": "command", "command": "other", "timeout": 5 }] });
     let installed = json!({ "hooks": [{ "type": "command",
         "command": "/opt/homebrew/bin/rexume report claude", "timeout": 5 }] });
@@ -20,7 +21,7 @@ fn another_path_to_rexume_is_the_same_hook() -> Result<()> {
     assert_eq!(
         add_hook(
             &Dirs::new(dir.path()),
-            &path,
+            &target,
             "claude",
             &CLAUDE_EVENTS,
             &hook
@@ -28,13 +29,13 @@ fn another_path_to_rexume_is_the_same_hook() -> Result<()> {
         .0,
         "unchanged"
     );
-    assert_eq!(remove_hook(&path, "claude", &CLAUDE_EVENTS)?, "removed");
+    assert_eq!(remove_hook(&target, "claude", &CLAUDE_EVENTS)?.0, "removed");
     assert_eq!(
         read(&path)?,
         json!({ "hooks": { "SessionStart": [other], "UserPromptSubmit": [], "Stop": [],
             "StopFailure": [] } })
     );
-    assert_eq!(remove_hook(&path, "claude", &CLAUDE_EVENTS)?, "absent");
+    assert_eq!(remove_hook(&target, "claude", &CLAUDE_EVENTS)?.0, "absent");
     Ok(())
 }
 
@@ -42,7 +43,7 @@ fn another_path_to_rexume_is_the_same_hook() -> Result<()> {
 fn the_daemon_adds_the_turn_hooks_an_earlier_install_left_out() -> Result<()> {
     let home = tempfile::tempdir()?;
     let dirs = Dirs::new(home.path());
-    let path = Targets::new(&dirs).claude;
+    let path = Targets::new(&dirs).claude.unwrap();
     assert_eq!(refresh_claude_hooks(&dirs)?, "absent");
     std::fs::create_dir_all(path.parent().unwrap())?;
     let other = json!({ "hooks": [{ "type": "command", "command": "other" }] });
@@ -79,7 +80,7 @@ fn a_runtime_that_is_not_set_up_gets_no_settings() -> Result<()> {
     let path = dir.path().join(".codex/hooks.json");
     let (value, note) = add_hook(
         &Dirs::new(dir.path()),
-        &path,
+        &Ok(path.clone()),
         "codex",
         &CODEX_EVENTS,
         &json!({}),
@@ -168,7 +169,7 @@ impl FakeClaude {
 
     fn settings(&self, value: &Value) -> Result<()> {
         Ok(std::fs::write(
-            Targets::new(&Dirs::new(self.home.path())).claude,
+            Targets::new(&Dirs::new(self.home.path())).claude.unwrap(),
             value.to_string(),
         )?)
     }

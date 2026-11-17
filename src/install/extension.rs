@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
+use super::dirs::Dir;
 use super::{Dirs, Outcome, refresh_file, remove_file, write};
 use crate::runtime::{omp, pi};
 
@@ -10,7 +11,7 @@ const WRITTEN_BY: &str = "// Written by `rexume install`";
 
 pub(super) struct Extension {
     name: &'static str,
-    agent: fn(&Dirs) -> &Path,
+    agent: fn(&Dirs) -> &Dir,
     text: &'static str,
 }
 
@@ -25,28 +26,44 @@ pub(super) const OMP_EXTENSION: Extension = Extension {
     text: omp::EXTENSION,
 };
 
+fn path(agent: &Path) -> PathBuf {
+    agent.join("extensions/rexume.ts")
+}
+
 impl Extension {
+    #[cfg(test)]
     fn path(&self, dirs: &Dirs) -> PathBuf {
-        (self.agent)(dirs).join("extensions/rexume.ts")
+        path((self.agent)(dirs).known().unwrap())
     }
 
     pub(super) fn install(&self, dirs: &Dirs) -> Result<Outcome> {
-        let agent = (self.agent)(dirs);
+        let agent = match (self.agent)(dirs).usable() {
+            Ok(agent) => agent,
+            Err(note) => return Ok(("skipped", Some(note))),
+        };
         if !agent.is_dir() {
             return Ok((
                 "skipped",
                 Some(format!("`{}` does not exist", dirs.show(agent))),
             ));
         }
-        Ok((write(&self.path(dirs), self.text.as_bytes())?, None))
+        Ok((write(&path(agent), self.text.as_bytes())?, None))
     }
 
+    /// Removes an extension an earlier install wrote, also from a directory install now leaves
+    /// alone.
     pub(super) fn uninstall(&self, dirs: &Dirs) -> Result<Outcome> {
-        remove_file(&self.path(dirs), |text| text.starts_with(WRITTEN_BY))
+        match (self.agent)(dirs).known() {
+            Ok(agent) => remove_file(&path(agent), |text| text.starts_with(WRITTEN_BY)),
+            Err(note) => Ok(("skipped", Some(note))),
+        }
     }
 
     fn refresh(&self, dirs: &Dirs) -> Result<&'static str> {
-        refresh_file(&self.path(dirs), self.text.as_bytes(), |text| {
+        let Ok(agent) = (self.agent)(dirs).usable() else {
+            return Ok("skipped");
+        };
+        refresh_file(&path(agent), self.text.as_bytes(), |text| {
             text.starts_with(WRITTEN_BY)
         })
     }

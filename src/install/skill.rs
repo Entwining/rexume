@@ -3,6 +3,7 @@ use std::path::{Path, PathBuf};
 
 use anyhow::{Context, Result};
 
+use super::dirs::Dir;
 use super::file::physical;
 use super::{Dirs, Outcome, refresh_file, remove_file, write};
 use crate::skill::STUB;
@@ -11,35 +12,51 @@ const WRITTEN_BY: &str = "<!-- Written by `rexume install`";
 
 struct Target {
     key: &'static str,
-    skills: fn(&Dirs) -> PathBuf,
+    /// Where the skills are, or why install leaves them alone.
+    skills: fn(&Dirs) -> Result<PathBuf, String>,
     /// The runtimes that read these skills; the stub is written only when one is set up.
-    runtimes: fn(&Dirs) -> Vec<&Path>,
+    runtimes: fn(&Dirs) -> Vec<&Dir>,
 }
 
 const TARGETS: [Target; 2] = [
     Target {
         key: "agents_skill",
-        skills: |dirs| dirs.home.join(".agents/skills"),
+        skills: |dirs| Ok(dirs.home.join(".agents/skills")),
         runtimes: |dirs| vec![&dirs.codex, &dirs.pi],
     },
     Target {
         key: "claude_skill",
-        skills: |dirs| dirs.claude.join("skills"),
+        skills: |dirs| dirs.claude.known().map(|claude| claude.join("skills")),
         runtimes: |dirs| vec![&dirs.claude],
     },
 ];
+
+fn skipped(note: String) -> Outcome {
+    ("skipped", Some(note))
+}
 
 fn is_ours(text: &str) -> bool {
     text.lines().any(|line| line.starts_with(WRITTEN_BY))
 }
 
+/// `skipped` is the outcome for skills whose directory install cannot resolve.
 fn each<T: Clone>(
     dirs: &Dirs,
+    skipped: impl Fn(String) -> T,
     mut apply: impl FnMut(&[&Target], &Path) -> Result<T>,
 ) -> Result<[(&'static str, T); 2]> {
     let [agents, claude] = &TARGETS;
-    let (agents_skills, claude_skills) = ((agents.skills)(dirs), (claude.skills)(dirs));
+    let agents_skills = (agents.skills)(dirs).map_err(anyhow::Error::msg)?;
     let agents_path = agents_skills.join("rexume/SKILL.md");
+    let claude_skills = match (claude.skills)(dirs) {
+        Ok(skills) => skills,
+        Err(note) => {
+            return Ok([
+                (agents.key, apply(&[agents], &agents_path)?),
+                (claude.key, skipped(note)),
+            ]);
+        }
+    };
     if physical(&claude_skills)? == physical(&agents_skills)? {
         let result = apply(&[agents, claude], &agents_path)?;
         return Ok([(agents.key, result.clone()), (claude.key, result)]);
@@ -52,14 +69,22 @@ fn each<T: Clone>(
 }
 
 pub(super) fn install(dirs: &Dirs) -> Result<[(&'static str, Outcome); 2]> {
-    each(dirs, |targets, path| {
-        let runtimes: Vec<&Path> = targets.iter().flat_map(|t| (t.runtimes)(dirs)).collect();
-        if !runtimes.iter().any(|r| r.is_dir()) {
-            let shown: Vec<String> = runtimes
+    each(dirs, skipped, |targets, path| {
+        let runtimes: Vec<Result<&Path, String>> = targets
+            .iter()
+            .flat_map(|t| (t.runtimes)(dirs))
+            .map(Dir::usable)
+            .collect();
+        if !runtimes.iter().flatten().any(|r| r.is_dir()) {
+            let missing: Vec<String> = runtimes
                 .iter()
+                .flatten()
                 .map(|r| format!("`{}`", dirs.show(r)))
                 .collect();
-            return Ok(("skipped", Some(format!("no {}", shown.join(" or ")))));
+            let notes = runtimes.iter().filter_map(|r| r.as_ref().err().cloned());
+            let missing = (!missing.is_empty()).then(|| format!("no {}", missing.join(" or ")));
+            let note: Vec<String> = missing.into_iter().chain(notes).collect();
+            return Ok(("skipped", Some(note.join("; "))));
         }
         match std::fs::read_to_string(path) {
             Ok(text) if !is_ours(&text) => {
@@ -76,7 +101,7 @@ pub(super) fn install(dirs: &Dirs) -> Result<[(&'static str, Outcome); 2]> {
 }
 
 pub(super) fn uninstall(dirs: &Dirs) -> Result<[(&'static str, Outcome); 2]> {
-    each(dirs, |_, path| {
+    each(dirs, skipped, |_, path| {
         let outcome = remove_file(path, is_ours)?;
         if outcome.0 == "removed"
             && let Some(dir) = path.parent()
@@ -100,7 +125,11 @@ pub(super) fn uninstall(dirs: &Dirs) -> Result<[(&'static str, Outcome); 2]> {
 }
 
 pub fn refresh_skills(dirs: &Dirs) -> Result<[(&'static str, &'static str); 2]> {
-    each(dirs, |_, path| refresh_file(path, STUB.as_bytes(), is_ours))
+    each(
+        dirs,
+        |_| "skipped",
+        |_, path| refresh_file(path, STUB.as_bytes(), is_ours),
+    )
 }
 
 #[cfg(test)]
