@@ -108,7 +108,11 @@ jobs:
           name="rexume-$version-$TARGET"
           make build OUT="$RUNNER_TEMP/$name" TARGET="$TARGET"
           test "$("$RUNNER_TEMP/$name/bin/rexume" --version)" = "rexume $version"
-          ! readelf -d "$RUNNER_TEMP/$name/bin/rexume" | grep -q NEEDED
+          dynamic_section=$(readelf -d "$RUNNER_TEMP/$name/bin/rexume")
+          if grep -q NEEDED <<< "$dynamic_section"; then
+            printf '%s\n' 'rexume has a dynamic dependency' >&2
+            exit 1
+          fi
           mkdir "$RUNNER_TEMP/dist"
           tar -czf "$RUNNER_TEMP/dist/$name.tar.gz" -C "$RUNNER_TEMP" "$name"
           (cd "$RUNNER_TEMP/dist" && sha256sum "$name.tar.gz" > "$name.tar.gz.sha256")

@@ -16,6 +16,8 @@ pub(super) fn git(dir: &Path, args: &[&str]) -> Result<String> {
             "commit.gpgsign=false",
             "-c",
             "core.hooksPath=/dev/null",
+            "-c",
+            "maintenance.auto=false",
         ])
         .args(["-c", "user.name=Test", "-c", "user.email=test@example.com"])
         .args([
