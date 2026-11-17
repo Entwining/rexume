@@ -13,6 +13,26 @@ pub use server::{SHELL, Server, rex_bin};
 
 pub const REXUME: &str = env!("CARGO_BIN_EXE_rexume");
 
+/// The variables that move a runtime's configuration directory away from the home's default.
+const RUNTIME_DIRS: [&str; 4] = [
+    "CLAUDE_CONFIG_DIR",
+    "CODEX_HOME",
+    "PI_CODING_AGENT_DIR",
+    "PI_CONFIG_DIR",
+];
+
+/// `program` run with `home` as its home and none of the developer's own runtime directories, so
+/// that what it writes into a runtime's configuration stays in `home`. Install, uninstall, status,
+/// and the daemon read those directories from the variables, not from `HOME` alone.
+pub fn in_home(program: impl AsRef<std::ffi::OsStr>, home: &Path) -> Command {
+    let mut command = Command::new(program);
+    command.env("HOME", home);
+    for var in RUNTIME_DIRS {
+        command.env_remove(var);
+    }
+    command
+}
+
 pub fn rexume(args: &[&str], vars: &[(&str, &str)], stdin: &str) -> Output {
     let mut child = Command::new(REXUME)
         .args(args)

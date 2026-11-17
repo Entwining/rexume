@@ -1,7 +1,7 @@
-use std::process::{Command, Stdio};
+use std::process::Stdio;
 use std::time::Duration;
 
-use crate::common::{REXUME, Running, wait_until};
+use crate::common::{REXUME, Running, in_home, wait_until};
 
 #[test]
 fn a_daemon_starts_as_soon_as_a_server_appears_under_directories_that_did_not_exist() {
@@ -9,13 +9,12 @@ fn a_daemon_starts_as_soon_as_a_server_appears_under_directories_that_did_not_ex
     let socket = dir.path().join("rex/run/s.sock");
     let log = dir.path().join("daemon.log");
     let _daemon = Running(
-        Command::new(REXUME)
+        in_home(REXUME, &dir.path().join("home"))
             .arg("daemon")
             .arg("--state-dir")
             .arg(dir.path().join("state"))
             .args(["--rex", "/usr/bin/false", "--server"])
             .arg(format!("unix://{}", socket.display()))
-            .env("HOME", dir.path().join("home"))
             .stdout(Stdio::null())
             .stderr(std::fs::File::create(&log).unwrap())
             .spawn()
