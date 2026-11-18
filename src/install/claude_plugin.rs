@@ -5,7 +5,7 @@ use std::process::{Command, Stdio};
 use anyhow::{Context, Result};
 use serde_json::Value;
 
-use super::{Outcome, Targets, check, read_json, write};
+use super::{Dirs, Outcome, Targets, check, read_json, write};
 use crate::runtime::claude;
 
 pub(super) const KEY: &str = "claude_plugin";
@@ -39,13 +39,19 @@ fn dir(home: &Path) -> PathBuf {
 
 /// A plugin the settings name is not installed again: `claude plugin install` would enable one the
 /// user disabled.
-pub(super) fn install(home: &Path, path: &str) -> Result<Outcome> {
-    if !home.join(".claude").is_dir() {
-        return Ok(("skipped", Some("`~/.claude` does not exist".to_owned())));
-    }
+pub(super) fn install(dirs: &Dirs, path: &str) -> Result<Outcome> {
+    let home = &dirs.home;
+    let claude = match dirs.claude.usable() {
+        Ok(claude) if claude.is_dir() => claude,
+        Ok(claude) => {
+            let note = format!("`{}` does not exist", dirs.show(claude));
+            return Ok(("skipped", Some(note)));
+        }
+        Err(note) => return Ok(("skipped", Some(note))),
+    };
     let dir = dir(home);
     let mut outcome = write_files(&dir)?;
-    let settings = read_json(&Targets::new(home).claude)?;
+    let settings = read_json(&claude.join("settings.json"))?;
     let mut steps: Vec<Vec<&str>> = Vec::new();
     if settings.pointer(MARKETPLACE_KEY).is_none() {
         let dir = dir.to_str().context("the plugin's path is not UTF-8")?;
@@ -59,7 +65,7 @@ pub(super) fn install(home: &Path, path: &str) -> Result<Outcome> {
     // uninstall though Claude Code never knew it, so it is removed when no step registers it.
     let mut written_only = outcome == "created";
     for args in steps {
-        let ran = run_claude(home, path, &args);
+        let ran = run_claude(dirs, path, &args);
         if written_only && !matches!(ran, Ok(Some(()))) {
             std::fs::remove_dir_all(&dir)
                 .with_context(|| format!("failed to remove `{}`", dir.display()))?;
@@ -74,15 +80,20 @@ pub(super) fn install(home: &Path, path: &str) -> Result<Outcome> {
     Ok((outcome, note))
 }
 
-pub(super) fn uninstall(home: &Path, path: &str) -> Result<&'static str> {
-    let settings = read_json(&Targets::new(home).claude)?;
+pub(super) fn uninstall(dirs: &Dirs, path: &str) -> Result<&'static str> {
+    let home = &dirs.home;
+    // Without a configuration directory install can resolve, it registered nothing there.
+    let settings = match &Targets::new(dirs).claude {
+        Ok(path) => read_json(path)?,
+        Err(_) => Value::Null,
+    };
     let mut removed = false;
     for (key, args) in [
         (PLUGIN_KEY, ["uninstall", PLUGIN].as_slice()),
         (MARKETPLACE_KEY, &["marketplace", "remove", MARKETPLACE]),
     ] {
         if settings.pointer(key).is_some() {
-            run_claude(home, path, args)?.context("`claude` is not on `PATH`")?;
+            run_claude(dirs, path, args)?.context("`claude` is not on `PATH`")?;
             removed = true;
         }
     }
@@ -96,8 +107,8 @@ pub(super) fn uninstall(home: &Path, path: &str) -> Result<&'static str> {
 }
 
 /// Claude Code reads a directory marketplace in place, so rewriting the files updates the plugin.
-pub fn refresh(home: &Path) -> Result<&'static str> {
-    let dir = dir(home);
+pub fn refresh(dirs: &Dirs) -> Result<&'static str> {
+    let dir = dir(&dirs.home);
     if !dir.is_dir() {
         return Ok("absent");
     }
@@ -118,12 +129,15 @@ fn write_files(dir: &Path) -> Result<&'static str> {
 }
 
 /// Claude Code keeps an installed plugin in a registry of its own besides the settings, which only
-/// `claude plugin` changes.
-fn run_claude(home: &Path, path: &str, args: &[&str]) -> Result<Option<()>> {
+/// `claude plugin` changes. It is named the configuration directory install read, so that it
+/// registers the plugin in the settings install checked.
+fn run_claude(dirs: &Dirs, path: &str, args: &[&str]) -> Result<Option<()>> {
+    let claude = dirs.claude.usable().map_err(anyhow::Error::msg)?;
     let output = Command::new("claude")
         .arg("plugin")
         .args(args)
-        .env("HOME", home)
+        .env("HOME", &dirs.home)
+        .env("CLAUDE_CONFIG_DIR", claude)
         .env("PATH", path)
         .stdin(Stdio::null())
         .output();

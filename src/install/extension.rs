@@ -2,7 +2,8 @@ use std::path::{Path, PathBuf};
 
 use anyhow::Result;
 
-use super::{Outcome, refresh_file, remove_file, write};
+use super::dirs::Dir;
+use super::{Dirs, Outcome, refresh_file, remove_file, write};
 use crate::runtime::{omp, pi};
 
 /// Every version of either extension starts with this, whatever follows it on the first line.
@@ -10,49 +11,66 @@ const WRITTEN_BY: &str = "// Written by `rexume install`";
 
 pub(super) struct Extension {
     name: &'static str,
-    agent: &'static str,
+    agent: fn(&Dirs) -> &Dir,
     text: &'static str,
 }
 
 pub(super) const PI_EXTENSION: Extension = Extension {
     name: "Pi",
-    agent: ".pi/agent",
+    agent: |dirs| &dirs.pi,
     text: pi::EXTENSION,
 };
 pub(super) const OMP_EXTENSION: Extension = Extension {
     name: "omp",
-    agent: ".omp/agent",
+    agent: |dirs| &dirs.omp,
     text: omp::EXTENSION,
 };
 
+fn path(agent: &Path) -> PathBuf {
+    agent.join("extensions/rexume.ts")
+}
+
 impl Extension {
-    fn path(&self, home: &Path) -> PathBuf {
-        home.join(self.agent).join("extensions/rexume.ts")
+    #[cfg(test)]
+    fn path(&self, dirs: &Dirs) -> PathBuf {
+        path((self.agent)(dirs).known().unwrap())
     }
 
-    pub(super) fn install(&self, home: &Path) -> Result<Outcome> {
-        if !home.join(self.agent).is_dir() {
+    pub(super) fn install(&self, dirs: &Dirs) -> Result<Outcome> {
+        let agent = match (self.agent)(dirs).usable() {
+            Ok(agent) => agent,
+            Err(note) => return Ok(("skipped", Some(note))),
+        };
+        if !agent.is_dir() {
             return Ok((
                 "skipped",
-                Some(format!("`~/{}` does not exist", self.agent)),
+                Some(format!("`{}` does not exist", dirs.show(agent))),
             ));
         }
-        Ok((write(&self.path(home), self.text.as_bytes())?, None))
+        Ok((write(&path(agent), self.text.as_bytes())?, None))
     }
 
-    pub(super) fn uninstall(&self, home: &Path) -> Result<Outcome> {
-        remove_file(&self.path(home), |text| text.starts_with(WRITTEN_BY))
+    /// Removes an extension an earlier install wrote, also from a directory install now leaves
+    /// alone.
+    pub(super) fn uninstall(&self, dirs: &Dirs) -> Result<Outcome> {
+        match (self.agent)(dirs).known() {
+            Ok(agent) => remove_file(&path(agent), |text| text.starts_with(WRITTEN_BY)),
+            Err(note) => Ok(("skipped", Some(note))),
+        }
     }
 
-    fn refresh(&self, home: &Path) -> Result<&'static str> {
-        refresh_file(&self.path(home), self.text.as_bytes(), |text| {
+    fn refresh(&self, dirs: &Dirs) -> Result<&'static str> {
+        let Ok(agent) = (self.agent)(dirs).usable() else {
+            return Ok("skipped");
+        };
+        refresh_file(&path(agent), self.text.as_bytes(), |text| {
             text.starts_with(WRITTEN_BY)
         })
     }
 }
 
-pub fn refresh_extensions(home: &Path) -> [(&'static str, Result<&'static str>); 2] {
-    [PI_EXTENSION, OMP_EXTENSION].map(|extension| (extension.name, extension.refresh(home)))
+pub fn refresh_extensions(dirs: &Dirs) -> [(&'static str, Result<&'static str>); 2] {
+    [PI_EXTENSION, OMP_EXTENSION].map(|extension| (extension.name, extension.refresh(dirs)))
 }
 
 #[cfg(test)]
@@ -64,14 +82,15 @@ mod tests {
     #[test]
     fn the_daemon_refreshes_only_an_extension_install_wrote() -> Result<()> {
         let home = tempfile::tempdir()?;
+        let dirs = Dirs::new(home.path());
         let refresh = || -> Result<Vec<&'static str>> {
-            refresh_extensions(home.path())
+            refresh_extensions(&dirs)
                 .into_iter()
                 .map(|(_, r)| r)
                 .collect()
         };
-        let pi_path = PI_EXTENSION.path(home.path());
-        let omp_path = OMP_EXTENSION.path(home.path());
+        let pi_path = PI_EXTENSION.path(&dirs);
+        let omp_path = OMP_EXTENSION.path(&dirs);
         assert_eq!(refresh()?, ["absent", "absent"]);
         assert!(
             !pi_path.exists() && !omp_path.exists(),

@@ -114,7 +114,16 @@ pub(super) fn plist(install: &Install, log: &Path) -> plist::Value {
         ),
         (
             "EnvironmentVariables",
-            dict(vec![("PATH", install.path.clone().into())]),
+            dict(
+                std::iter::once(("PATH", install.path.clone().into()))
+                    .chain(
+                        install
+                            .env
+                            .iter()
+                            .map(|(k, v)| (k.as_str(), v.clone().into())),
+                    )
+                    .collect(),
+            ),
         ),
         ("ProcessType", "Background".to_owned().into()),
         (

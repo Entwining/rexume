@@ -1,4 +1,5 @@
 mod claude_plugin;
+mod dirs;
 mod extension;
 mod file;
 #[cfg(target_os = "macos")]
@@ -18,6 +19,7 @@ use serde_json::{Value, json};
 use systemd_unit as job;
 
 pub use claude_plugin::refresh as refresh_claude_plugin;
+pub use dirs::Dirs;
 pub use extension::refresh_extensions;
 use extension::{OMP_EXTENSION, PI_EXTENSION};
 use file::{read_json, refresh_file, remove_file, write, write_json};
@@ -29,18 +31,24 @@ pub struct Install {
     pub server: String,
     /// Install's own `PATH`, so that the daemon starts the same `codex` the user does.
     pub path: String,
+    /// The runtimes' variables install read, so that the daemon resolves their directories as
+    /// install did and refreshes the files install wrote there.
+    pub env: Vec<(String, String)>,
 }
 
+/// Each runtime's hook settings, or why install leaves the runtime alone.
+type Target = std::result::Result<PathBuf, String>;
+
 struct Targets {
-    claude: PathBuf,
-    codex: PathBuf,
+    claude: Target,
+    codex: Target,
 }
 
 impl Targets {
-    fn new(home: &Path) -> Self {
+    fn new(dirs: &Dirs) -> Self {
         Self {
-            claude: home.join(".claude/settings.json"),
-            codex: home.join(".codex/hooks.json"),
+            claude: dirs.claude.usable().map(|dir| dir.join("settings.json")),
+            codex: dirs.codex.usable().map(|dir| dir.join("hooks.json")),
         }
     }
 }
@@ -78,28 +86,31 @@ fn outcomes<const N: usize>(entries: [(&str, Outcome); N]) -> Value {
     Value::Object(out)
 }
 
-pub fn install(home: &Path, install: &Install) -> Result<Value> {
-    let targets = Targets::new(home);
+pub fn install(dirs: &Dirs, install: &Install) -> Result<Value> {
+    let home = &dirs.home;
+    let targets = Targets::new(dirs);
     let claude = add_hook(
+        dirs,
         &targets.claude,
         "claude",
         &CLAUDE_EVENTS,
         &json!({ "type": "command", "command": "rexume report claude", "timeout": 5 }),
     )?;
     let codex = add_hook(
+        dirs,
         &targets.codex,
         "codex",
         &CODEX_EVENTS,
         &json!({ "command": "rexume report codex", "timeout": 5, "type": "command" }),
     )?;
-    let pi = PI_EXTENSION.install(home)?;
-    let omp = OMP_EXTENSION.install(home)?;
+    let pi = PI_EXTENSION.install(dirs)?;
+    let omp = OMP_EXTENSION.install(dirs)?;
     let daemon = job::install(install, home)?;
     // After the job, so that a stub that cannot be written does not keep the daemon from running.
-    let [agents_skill, claude_skill] = skill::install(home)?;
+    let [agents_skill, claude_skill] = skill::install(dirs)?;
     // Last: notices and requests reach Claude Code without the plugin, so a failing `claude`
     // leaves only the plugin for the next install.
-    let plugin = claude_plugin::install(home, &install.path)?;
+    let plugin = claude_plugin::install(dirs, &install.path)?;
     let mut out = outcomes([
         ("claude_hook", claude),
         (claude_plugin::KEY, plugin),
@@ -114,23 +125,24 @@ pub fn install(home: &Path, install: &Install) -> Result<Value> {
     Ok(out)
 }
 
-pub fn uninstall(home: &Path, path: &str) -> Result<Value> {
-    let targets = Targets::new(home);
+pub fn uninstall(dirs: &Dirs, path: &str) -> Result<Value> {
+    let home = &dirs.home;
+    let targets = Targets::new(dirs);
     // The daemon rewrites the plugin, the extensions, and the stub when it starts, so it is stopped
     // before they are removed.
     job::unload(home)?;
     let claude = remove_hook(&targets.claude, "claude", &CLAUDE_EVENTS)?;
     let codex = remove_hook(&targets.codex, "codex", &CODEX_EVENTS)?;
-    let pi = PI_EXTENSION.uninstall(home)?;
-    let omp = OMP_EXTENSION.uninstall(home)?;
+    let pi = PI_EXTENSION.uninstall(dirs)?;
+    let omp = OMP_EXTENSION.uninstall(dirs)?;
     let daemon = job::remove(home)?;
-    let [agents_skill, claude_skill] = skill::uninstall(home)?;
+    let [agents_skill, claude_skill] = skill::uninstall(dirs)?;
     // Last, so that a missing or failing `claude` leaves only the plugin for the next uninstall.
-    let plugin = claude_plugin::uninstall(home, path)?;
+    let plugin = claude_plugin::uninstall(dirs, path)?;
     Ok(outcomes([
-        ("claude_hook", (claude, None)),
+        ("claude_hook", claude),
         (claude_plugin::KEY, (plugin, None)),
-        ("codex_hook", (codex, None)),
+        ("codex_hook", codex),
         ("pi_extension", pi),
         ("omp_extension", omp),
         agents_skill,
@@ -139,18 +151,21 @@ pub fn uninstall(home: &Path, path: &str) -> Result<Value> {
     ]))
 }
 
-pub fn refresh_claude_hooks(home: &Path) -> Result<&'static str> {
-    let path = Targets::new(home).claude;
+pub fn refresh_claude_hooks(dirs: &Dirs) -> Result<&'static str> {
+    let Ok(path) = Targets::new(dirs).claude else {
+        return Ok("skipped");
+    };
     let settings = read_json(&path)?;
     let Some(hook) = ours(&settings, "SessionStart", "claude") else {
         return Ok("absent");
     };
     let hook = json!({ "type": "command", "command": hook["command"], "timeout": 5 });
-    Ok(add_hook(&path, "claude", &CLAUDE_EVENTS[1..], &hook)?.0)
+    Ok(add_hook(dirs, &Ok(path), "claude", &CLAUDE_EVENTS[1..], &hook)?.0)
 }
 
-pub fn missing_claude_hooks(home: &Path) -> Result<Vec<&'static str>> {
-    let settings = read_json(&Targets::new(home).claude)?;
+pub fn missing_claude_hooks(dirs: &Dirs) -> Result<Vec<&'static str>> {
+    let path = Targets::new(dirs).claude.map_err(anyhow::Error::msg)?;
+    let settings = read_json(&path)?;
     if ours(&settings, "SessionStart", "claude").is_none() {
         return Ok(Vec::new());
     }
@@ -185,12 +200,22 @@ fn is_ours(hook: &Value, runtime: &str) -> bool {
 }
 
 /// Appends the hook in a group of its own: Codex keys a hook's approval by its position.
-fn add_hook(path: &Path, runtime: &str, events: &[&str], hook: &Value) -> Result<Outcome> {
-    if !path.parent().is_some_and(Path::is_dir) {
-        let dir = path.parent().and_then(Path::file_name).unwrap_or_default();
+fn add_hook(
+    dirs: &Dirs,
+    path: &Target,
+    runtime: &str,
+    events: &[&str],
+    hook: &Value,
+) -> Result<Outcome> {
+    let path = match path {
+        Ok(path) => path,
+        Err(note) => return Ok(("skipped", Some(note.clone()))),
+    };
+    let dir = path.parent().unwrap_or(path);
+    if !dir.is_dir() {
         return Ok((
             "skipped",
-            Some(format!("`~/{}` does not exist", dir.display())),
+            Some(format!("`{}` does not exist", dirs.show(dir))),
         ));
     }
     let mut settings = read_json(path)?;
@@ -224,9 +249,13 @@ fn groups<'a>(settings: &'a mut Value, event: &str) -> Result<&'a mut Vec<Value>
         .with_context(|| format!("`hooks.{event}` is not an array"))
 }
 
-fn remove_hook(path: &Path, runtime: &str, events: &[&str]) -> Result<&'static str> {
+fn remove_hook(path: &Target, runtime: &str, events: &[&str]) -> Result<Outcome> {
+    let path = match path {
+        Ok(path) => path,
+        Err(note) => return Ok(("skipped", Some(note.clone()))),
+    };
     if !path.exists() {
-        return Ok("absent");
+        return Ok(("absent", None));
     }
     let mut settings = read_json(path)?;
     let mut removed = false;
@@ -256,10 +285,10 @@ fn remove_hook(path: &Path, runtime: &str, events: &[&str]) -> Result<&'static s
         removed |= here;
     }
     if !removed {
-        return Ok("absent");
+        return Ok(("absent", None));
     }
     write_json(path, &settings)?;
-    Ok("removed")
+    Ok(("removed", None))
 }
 
 #[cfg(test)]

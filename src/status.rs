@@ -8,7 +8,7 @@ use crate::install;
 use crate::store::Store;
 use crate::task;
 
-pub fn run(state_dir: &Path, home: &Path) -> Result<Value> {
+pub fn run(state_dir: &Path, dirs: &install::Dirs) -> Result<Value> {
     let conn = Store::open_read_only(state_dir)?;
     let restores: Vec<Value> = conn
         .prepare(
@@ -41,7 +41,7 @@ pub fn run(state_dir: &Path, home: &Path) -> Result<Value> {
             },
         )
         .optional()?;
-    let claude_hooks_missing = install::missing_claude_hooks(home)
+    let claude_hooks_missing = install::missing_claude_hooks(dirs)
         .inspect_err(|e| log::warn!("{e:#}"))
         .ok();
     Ok(json!({

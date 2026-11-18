@@ -87,6 +87,9 @@ enum Command {
     /// plugin to `~/.local/share/rexume/claude-plugin` and registers it through the `claude` on
     /// `PATH`. Prints what changed as JSON. A runtime whose directory does not exist is skipped.
     /// Running it again changes only what is missing or different.
+    ///
+    /// `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, and `PI_CODING_AGENT_DIR`, when absolute, replace
+    /// `~/.claude`, `~/.codex`, and `~/.pi/agent`, and the job passes them on to the daemon.
     Install(Server),
     /// Remove what install wrote, keeping the state directory and this executable
     ///
@@ -228,17 +231,20 @@ fn run(command: Command) -> Result<Option<(Value, u8)>> {
     match command {
         Command::Install(server) => {
             server.warn_ignored();
+            let dirs = install::Dirs::from_env(&home()?);
             let options = install::Install {
                 exe: exe()?,
                 rex: rex_path(server.rex)?,
                 server: server_address(server.server)?,
                 path: std::env::var("PATH").context("PATH is not set")?,
+                env: dirs.vars(),
             };
-            install::install(&home()?, &options).map(|value| Some((value, 0)))
+            install::install(&dirs, &options).map(|value| Some((value, 0)))
         }
         Command::Uninstall => {
             let path = std::env::var("PATH").context("PATH is not set")?;
-            install::uninstall(&home()?, &path).map(|value| Some((value, 0)))
+            let dirs = install::Dirs::from_env(&home()?);
+            install::uninstall(&dirs, &path).map(|value| Some((value, 0)))
         }
         Command::Daemon { server, state } => {
             server.warn_ignored();
@@ -249,12 +255,13 @@ fn run(command: Command) -> Result<Option<(Value, u8)>> {
                     endpoint: server_address(server.server)?,
                 },
                 exe: exe()?,
-                home: home()?,
+                dirs: install::Dirs::from_env(&home()?),
             };
             daemon::run(&options).map(|()| None)
         }
         Command::Status(state) => {
-            status::run(&state.resolve()?, &home()?).map(|value| Some((value, 0)))
+            let dirs = install::Dirs::from_env(&home()?);
+            status::run(&state.resolve()?, &dirs).map(|value| Some((value, 0)))
         }
         Command::Export(state) => {
             let mut out = std::io::BufWriter::new(std::io::stdout().lock());
