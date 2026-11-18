@@ -37,8 +37,7 @@ fn a_blocked_notice_waits_for_a_live_waiter_and_goes_once_otherwise() -> Result<
     send_due(&mut store, &mut interest)?;
     send_due(&mut store, &mut interest)?;
     assert_eq!(notice(&store)?.0, "sent");
-    let mut line = String::new();
-    std::io::Read::read_to_string(&mut listener.accept()?.0, &mut line)?;
+    let line = read_notice(&listener)?;
     assert!(listener.accept().is_err(), "the notice was sent twice");
     let message = serde_json::from_str::<Value>(&line)?;
     let sent = message["message"]["content"].as_str().unwrap_or_default();

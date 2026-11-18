@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 
@@ -39,6 +39,15 @@ fn notice(store: &Store) -> Result<(String, Option<String>)> {
         .query_row("SELECT state, note FROM notice WHERE id = 'd'", [], |row| {
             Ok((row.get(0)?, row.get(1)?))
         })?)
+}
+
+fn read_notice(listener: &UnixListener) -> Result<String> {
+    let (mut stream, _) = listener.accept()?;
+    // macOS inherits the listener's nonblocking mode on accepted sockets.
+    stream.set_nonblocking(false)?;
+    let mut text = String::new();
+    stream.read_to_string(&mut text)?;
+    Ok(text)
 }
 
 fn receipt(id: &str) -> String {
@@ -141,8 +150,7 @@ fn a_notice_goes_to_its_idle_owner_once_its_grace_has_passed() -> Result<()> {
     assert!(send_due(&mut store, &mut interest)?.is_none());
     send_due(&mut store, &mut interest)?;
     assert_eq!(notice(&store)?.0, "sent");
-    let mut sent = String::new();
-    std::io::Read::read_to_string(&mut listener.accept()?.0, &mut sent)?;
+    let sent = read_notice(&listener)?;
     assert!(sent.contains("The worker has 1 unread turn"), "{sent}");
     assert!(listener.accept().is_err(), "the notice was sent twice");
     Ok(())
@@ -164,8 +172,7 @@ fn a_finished_notice_names_no_unread_turns_while_a_later_round_is_open() -> Resu
          INSERT INTO task_round (task_id, round, state, created_at) VALUES ('t', 2, 'running', 1);",
     )?;
     send_due(&mut store, &mut Interest::default())?;
-    let mut sent = String::new();
-    std::io::Read::read_to_string(&mut listener.accept()?.0, &mut sent)?;
+    let sent = read_notice(&listener)?;
     assert!(sent.contains("finished round 1"), "{sent}");
     assert!(!sent.contains("unread"), "{sent}");
     Ok(())
