@@ -1,6 +1,6 @@
 use std::path::Path;
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use rusqlite::params;
 use serde_json::{Value, json};
 
@@ -11,10 +11,10 @@ use crate::task::tests::{ANSWER, PROMPT, record, task_world};
 use crate::task::{Follow, retired_workers};
 
 fn report(store: &mut Store, instance: &str, block: &str, status: Value, pid: i64) -> Result<()> {
-    let now = chrono::DateTime::from_timestamp_millis(now_ms()).context("now is out of range")?;
+    let now = jiff::Timestamp::from_millisecond(now_ms())?;
     let mut record = status;
     record["owner"] = json!({ "pid": pid, "name": "claude" });
-    record["updated_at"] = json!(now.to_rfc3339());
+    record["updated_at"] = json!(now.to_string());
     let payload = json!({ "record": record });
     let event = json!({ "event": "program_status_changed", "block_id": block, "payload": payload });
     View::new(instance).block_event(store, "program_status_changed", &event, &payload)?;

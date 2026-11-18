@@ -181,8 +181,8 @@ pub fn str_at<'a>(value: &'a Value, pointer: &str) -> Option<&'a str> {
 }
 
 pub fn time_at(value: &Value, pointer: &str) -> Option<i64> {
-    let time = chrono::DateTime::parse_from_rfc3339(str_at(value, pointer)?).ok()?;
-    Some(time.timestamp_millis())
+    let time: jiff::Timestamp = str_at(value, pointer)?.parse().ok()?;
+    Some(time.as_millisecond())
 }
 
 pub fn require_str(value: &Value, pointer: &str) -> Result<String> {
