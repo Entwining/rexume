@@ -31,9 +31,12 @@ impl EntityType {
     fn expired(self) -> &'static str {
         match self {
             Self::Restore => "instance_id != ?1 AND created_at < ?2",
+            // The daemon watches an interactive task's worker until the task is released or the
+            // pane closes.
             Self::Task => {
-                "(SELECT COUNT(finished_at) = COUNT(*) AND MAX(COALESCE(acked_at, finished_at)) < ?2
-                  FROM task_round WHERE task_id = task.id)"
+                "(result_file IS NOT NULL OR released_at IS NOT NULL OR pane_state = 'closed')
+                 AND (SELECT COUNT(finished_at) = COUNT(*) AND MAX(COALESCE(acked_at, finished_at)) < ?2
+                      FROM task_round WHERE task_id = task.id)"
             }
             // A pane still recorded on the epoch's instance is restored by how the epoch ended.
             Self::Epoch => "ended_at < ?2 AND instance_id NOT IN (SELECT instance_id FROM block)",

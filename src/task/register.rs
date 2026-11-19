@@ -5,8 +5,9 @@ use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
 use super::acknowledge::acknowledge_all;
-use super::queue;
+use super::blocked::START_STATE;
 use super::{caller, finished, owned, round_state, shown, snapshot, unread};
+use super::{notice, queue};
 use crate::runtime::Runtime;
 use crate::store::{Store, ensure_lineage, new_id, now_ms};
 
@@ -155,8 +156,11 @@ pub(super) fn refuse_stopped(conn: &Connection, instance: &str, asked_at: i64) -
 
 fn insert_round(tx: &Transaction, id: &str, round: i64, now: i64) -> Result<()> {
     tx.execute(
-        "INSERT INTO task_round (task_id, round, state, created_at)
-         VALUES (?1, ?2, 'running', ?3)",
+        &format!(
+            "INSERT INTO task_round (task_id, round, state, created_at)
+             VALUES (?1, ?2, {}, ?3)",
+            *START_STATE
+        ),
         params![id, round, now],
     )?;
     Ok(())
@@ -275,7 +279,9 @@ pub(super) fn start_round(
         Kind::Request(_) => "taken by task send",
     };
     acknowledge_all(tx, id, by)?;
-    insert_round(tx, id, round, now_ms())?;
+    let now = now_ms();
+    notice::supersede_unread(tx, id, by, now)?;
+    insert_round(tx, id, round, now)?;
     if let Some(taken) = taken {
         snapshot::record_before(tx, id, round, taken)?;
     }

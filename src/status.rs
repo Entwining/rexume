@@ -45,7 +45,7 @@ pub fn run(state_dir: &Path, dirs: &install::Dirs) -> Result<Value> {
         .inspect_err(|e| log::warn!("{e:#}"))
         .ok();
     Ok(json!({
-        "version": 2,
+        "version": 3,
         "restores": restores,
         "undelivered_notices": notices,
         "epoch_error": epoch_error,

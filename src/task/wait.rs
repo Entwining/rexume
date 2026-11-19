@@ -7,7 +7,7 @@ use rusqlite::{Transaction, params};
 use serde_json::{Value, json};
 
 use super::blocked::OPEN_EPISODE;
-use super::notice::{self, Kind};
+use super::notice;
 use super::{caller, finished, owned, round_state, shown, snapshot};
 use crate::event::{Queue, Token};
 use crate::proc;
@@ -117,7 +117,7 @@ static ROUND: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT r.waiter_pid, r.state,
            (SELECT e.id FROM blocked_episode e
-            WHERE e.task_id = r.task_id AND e.round = r.round AND {OPEN_EPISODE})
+            WHERE e.task_id = r.task_id AND {OPEN_EPISODE})
          FROM task_round r WHERE r.task_id = ?1 AND r.round = ?2"
     )
 });
@@ -167,11 +167,12 @@ pub(super) fn returns(
     let now = now_ms();
     Ok(match waiter {
         Waiter::Registered if finished(&state) => {
-            notice::supersede(tx, Kind::Finished, id, round, taken, now)?;
+            notice::supersede_finished(tx, id, round, taken, now)?;
             Some(Returned::Finished)
         }
-        Waiter::Registered => notice::supersede(tx, Kind::Blocked, id, round, taken, now)?
-            .then_some(Returned::Blocked),
+        Waiter::Registered => {
+            notice::supersede_blocked(tx, id, taken, now)?.then_some(Returned::Blocked)
+        }
         Waiter::Behind { .. } if finished(&state) => Some(Returned::Finished),
         Waiter::Behind { episode: seen, .. } => {
             (episode.is_some() && episode != *seen).then_some(Returned::Blocked)

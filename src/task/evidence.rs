@@ -1,5 +1,6 @@
 use std::fs::File;
 use std::io::{ErrorKind, Read};
+use std::sync::LazyLock;
 
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
@@ -93,30 +94,39 @@ pub fn is_run(conn: &Connection, lineage: &str, instance: &str, pid: i64) -> Res
     )?)
 }
 
-pub(super) const PANE: &str = "SELECT b.instance_id, b.status, b.status_kind, b.status_message,
-    b.status_pid, b.status_at, b.fg_pid, b.last_exit, b.instance_id IS e.instance_id
-  FROM block b LEFT JOIN epoch e ON e.id = (SELECT MAX(id) FROM epoch)
-  WHERE b.lineage = ?1";
+/// What `Pane::from_row` reads of pane `b`, with `i` the latest epoch.
+pub(super) const PANE_COLUMNS: &str = "b.instance_id, b.status, b.status_kind, b.status_message,
+    b.status_pid, b.status_at, b.fg_pid, b.last_exit, b.instance_id IS i.instance_id";
+
+pub(super) static PANE: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "SELECT {PANE_COLUMNS} FROM block b LEFT JOIN epoch i ON i.id = (SELECT MAX(id) FROM epoch)
+         WHERE b.lineage = ?1"
+    )
+});
 
 impl Pane {
     pub fn read(conn: &Connection, lineage: &str) -> Result<Self> {
         Ok(conn
-            .prepare_cached(PANE)?
-            .query_row(params![lineage], |row| {
-                Ok(Self {
-                    instance_id: row.get(0)?,
-                    status: row.get(1)?,
-                    status_kind: row.get(2)?,
-                    status_message: row.get(3)?,
-                    status_pid: row.get(4)?,
-                    status_at: row.get(5)?,
-                    fg_pid: row.get(6)?,
-                    last_exit: row.get(7)?,
-                    current: row.get(8)?,
-                })
-            })
+            .prepare_cached(&PANE)?
+            .query_row(params![lineage], Self::from_row)
             .optional()?
             .unwrap_or_default())
+    }
+
+    /// Reads `PANE_COLUMNS` from the row's first columns.
+    pub fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
+        Ok(Self {
+            instance_id: row.get(0)?,
+            status: row.get(1)?,
+            status_kind: row.get(2)?,
+            status_message: row.get(3)?,
+            status_pid: row.get(4)?,
+            status_at: row.get(5)?,
+            fg_pid: row.get(6)?,
+            last_exit: row.get(7)?,
+            current: row.get(8)?,
+        })
     }
 
     pub fn exited_zero(&self, run: &RunProcess) -> bool {

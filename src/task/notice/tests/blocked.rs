@@ -6,8 +6,8 @@ fn blocked_world(dir: &Path, transcript: &Path, state: &str) -> Result<(Store, U
     store.conn().execute_batch(
         "UPDATE task_round SET state = 'blocked', result = NULL, result_ref = NULL,
            finished_at = NULL;
-         INSERT INTO blocked_episode (id, task_id, round, kind, message, started_at)
-           VALUES ('e', 't', 1, 'permission', 'Run the migration?', 0);
+         INSERT INTO blocked_episode (id, task_id, kind, message, started_at)
+           VALUES ('e', 't', 'permission', 'Run the migration?', 0);
          UPDATE notice SET kind = 'blocked', blocked_episode_id = 'e';
          INSERT INTO live (instance_id, live_id, lineage) VALUES ('i1', 'block:w', 'b');",
     )?;
@@ -72,7 +72,7 @@ fn a_failed_send_keeps_a_blocked_notice_only_while_its_episode_goes_on() -> Resu
     let (mut store, _listener) = blocked_world(dir.path(), transcript.path(), "pending")?;
     let failed = ("pending", Some("failed to connect".to_owned()));
     let tx = store.write()?;
-    assert!(claim(&tx, "d", None)?);
+    assert!(claim(&tx, "d", None, None, Some(1))?);
     record_send(&tx, "d", failed.clone())?;
     tx.commit()?;
     assert_eq!(
@@ -80,7 +80,7 @@ fn a_failed_send_keeps_a_blocked_notice_only_while_its_episode_goes_on() -> Resu
         ("pending".to_owned(), Some("failed to connect".to_owned()))
     );
     let tx = store.write()?;
-    assert!(claim(&tx, "d", None)?);
+    assert!(claim(&tx, "d", None, None, Some(1))?);
     crate::task::blocked::end_blocked_episodes(&tx, "b", EndReason::StatusChanged)?;
     record_send(&tx, "d", failed)?;
     tx.commit()?;
@@ -106,16 +106,77 @@ fn a_blocked_notice_is_listed_only_while_its_episode_lasts() -> Result<()> {
     assert!(undelivered(store.conn(), None)?.is_empty());
     assert_eq!(notice(&store)?.0, "sent");
     let tx = store.write()?;
-    tx.execute(crate::task::blocked::BEGIN, params!["t", 1])?;
+    tx.execute(&crate::task::blocked::BEGIN, params!["t"])?;
     tx.execute(
-        "INSERT INTO blocked_episode (id, task_id, round, started_at) VALUES ('e2', 't', 1, 5)",
+        "INSERT INTO blocked_episode (id, task_id, started_at) VALUES ('e2', 't', 5)",
         [],
     )?;
-    crate::task::notice::write(&tx, Kind::Blocked, "t", 1, 5, Some("e2"))?;
+    crate::task::notice::write(&tx, Kind::Blocked, "t", Some(1), 5, Some("e2"))?;
     tx.execute("UPDATE notice SET state = 'sent' WHERE id != 'd'", [])?;
     tx.commit()?;
     let listed = undelivered(store.conn(), None)?;
     assert_eq!(listed.len(), 1);
     assert_ne!(listed[0]["id"], "d");
+    Ok(())
+}
+
+#[test]
+fn a_blocked_notice_goes_before_an_earlier_finished_one() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = tempfile::NamedTempFile::new()?;
+    let (mut store, listener) = notice_world(dir.path(), transcript.path(), "pending")?;
+    store.conn().execute_batch(
+        "INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
+           created_at) VALUES ('u', 'other', 'claude', 'owner', 'b', 0, 0);
+         INSERT INTO task_round (task_id, round, state, created_at) VALUES ('u', 1, 'blocked', 0);
+         INSERT INTO blocked_episode (id, task_id, started_at) VALUES ('e', 'u', 1);
+         INSERT INTO notice (id, task_id, round, kind, blocked_episode_id, state, created_at)
+           VALUES ('b', 'u', 1, 'blocked', 'e', 'pending', 1);",
+    )?;
+    send_due(&mut store, &mut Interest::default())?;
+    let sent = read_notice(&listener)?;
+    assert!(sent.contains(&runtime::token("b")), "{sent}");
+    assert!(
+        listener.accept().is_err(),
+        "the finished notice did not wait its turn"
+    );
+    Ok(())
+}
+
+#[test]
+fn a_blocked_notice_names_the_round_open_when_it_is_sent() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = tempfile::NamedTempFile::new()?;
+    let (mut store, listener) = blocked_world(dir.path(), transcript.path(), "pending")?;
+    store.conn().execute_batch(
+        "UPDATE task_round SET state = 'cancelled', finished_at = 1, acked_at = 1;
+         INSERT INTO task_round (task_id, round, state, created_at) VALUES ('t', 2, 'blocked', 2);
+         INSERT INTO request (id, task_id, round, text) VALUES ('q', 't', 2, 'go');",
+    )?;
+    send_due(&mut store, &mut Interest::default())?;
+    let sent = read_notice(&listener)?;
+    for part in [
+        "is blocked in round 2",
+        "`rexume task show t --round 2`",
+        "request is still pending",
+    ] {
+        assert!(sent.contains(part), "{part}: {sent}");
+    }
+    assert!(!sent.contains("round 1"), "{sent}");
+    Ok(())
+}
+
+#[test]
+fn a_claim_refuses_text_composed_for_a_round_that_ended_since() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = tempfile::NamedTempFile::new()?;
+    let (mut store, _listener) = blocked_world(dir.path(), transcript.path(), "pending")?;
+    let tx = store.write()?;
+    crate::task::acknowledge::abandon_round(&tx, "t", None)?;
+    assert!(
+        !claim(&tx, "d", None, None, Some(1))?,
+        "composed for round 1"
+    );
+    assert!(claim(&tx, "d", None, None, None)?);
     Ok(())
 }

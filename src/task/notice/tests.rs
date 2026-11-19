@@ -3,12 +3,17 @@ use std::io::{Read as _, Write as _};
 use std::os::unix::net::UnixListener;
 use std::path::Path;
 
-use serde_json::json;
+use rusqlite::params;
+use serde_json::{Value, json};
 
 use super::receipt::settle;
+use super::send::*;
 use super::*;
 use crate::runtime;
+use crate::runtime::Runtime;
 use crate::runtime::claude;
+use crate::store::now_ms;
+use crate::task::Interest;
 use crate::task::tests::{ANSWER, ANSWER_2, PROMPT, PROMPT_2, task_world, turn_record};
 
 fn notice_world(dir: &Path, transcript: &Path, state: &str) -> Result<(Store, UnixListener)> {
@@ -253,7 +258,7 @@ fn a_failed_send_drops_a_notice_of_a_round_acknowledged_meanwhile() -> Result<()
     let transcript = tempfile::NamedTempFile::new()?;
     let (mut store, _listener) = notice_world(dir.path(), transcript.path(), "pending")?;
     let tx = store.write()?;
-    assert!(claim(&tx, "d", None)?);
+    assert!(claim(&tx, "d", None, None, None)?);
     crate::task::acknowledge::acknowledge(&tx, "t", 1, "taken by task ack")?;
     record_send(&tx, "d", ("pending", Some("failed to connect".to_owned())))?;
     tx.commit()?;
@@ -286,12 +291,13 @@ fn a_registered_waiter_keeps_the_notice_from_the_daemon() -> Result<()> {
         "the notice was sent past a live waiter"
     );
     let tx = store.write()?;
-    assert!(!claim(&tx, "d", None)?);
-    assert!(!claim(&tx, "d", Some(alive + 1))?);
-    assert!(claim(&tx, "d", Some(alive))?);
+    assert!(!claim(&tx, "d", None, None, None)?);
+    assert!(!claim(&tx, "d", Some(alive + 1), None, None)?);
+    assert!(claim(&tx, "d", Some(alive), None, None)?);
     Ok(())
 }
 
 mod blocked;
 mod inbox;
 mod pacing;
+mod unread;

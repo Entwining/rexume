@@ -35,10 +35,11 @@ fn tasks(store: &Store) -> Result<()> {
         "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
            VALUES ('claude', 'owner', 1, 0);
          INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
-           created_at)
-           VALUES ('old', 'x', 'claude', 'owner', 'b1', 0, 0),
-             ('open', 'x', 'claude', 'owner', 'b2', 0, 0),
-             ('recent', 'x', 'claude', 'owner', 'b3', 0, 0);
+           created_at, released_at)
+           VALUES ('old', 'x', 'claude', 'owner', 'b1', 0, 0, {old}),
+             ('open', 'x', 'claude', 'owner', 'b2', 0, 0, NULL),
+             ('recent', 'x', 'claude', 'owner', 'b3', 0, 0, NULL),
+             ('watched', 'x', 'claude', 'owner', 'b4', 0, 0, NULL);
          INSERT INTO task_round (task_id, round, state, finished_at, acked_at, created_at,
            result_ref, result)
            VALUES ('old', 1, 'completed', {old}, {old}, 0, 'm1', 'the answer'),
@@ -46,16 +47,18 @@ fn tasks(store: &Store) -> Result<()> {
              ('open', 1, 'running', NULL, NULL, 0, NULL, NULL),
              ('open', 2, 'dropped', {old}, {old}, 0, NULL, NULL),
              ('recent', 1, 'failed', {old}, {now}, 0, NULL, NULL),
-             ('recent', 2, 'dropped', {old}, {old}, 0, NULL, NULL);
+             ('recent', 2, 'dropped', {old}, {old}, 0, NULL, NULL),
+             ('watched', 1, 'completed', {old}, {old}, 0, 'm1', 'the answer');
          INSERT INTO request (id, task_id, round, state, text)
            VALUES ('q', 'old', 2, 'superseded', 'go on');
-         INSERT INTO blocked_episode (id, task_id, round, kind, started_at, ended_at, end_reason)
-           VALUES ('e2', 'old', 1, NULL, 2, 3, 'round_finished'),
-             ('e1', 'old', 1, 'question', 0, 1, 'status_changed');
+         INSERT INTO blocked_episode (id, task_id, kind, started_at, ended_at, end_reason)
+           VALUES ('e2', 'old', NULL, 2, 3, 'round_finished'),
+             ('e1', 'old', 'question', 0, 1, 'status_changed');
          INSERT INTO notice (id, task_id, round, kind, blocked_episode_id, state, created_at,
            sent_at)
            VALUES ('n', 'old', 1, 'finished', NULL, 'accepted', {old}, {old}),
-             ('nb', 'old', 1, 'blocked', 'e1', 'sent', 0, 0);
+             ('nb', 'old', 1, 'blocked', 'e1', 'sent', 0, 0),
+             ('nu', 'old', NULL, 'unread', NULL, 'superseded', {old}, NULL);
          INSERT INTO snapshot (task_id, round, side, tree, note, created_at)
            VALUES ('old', 1, 'before', 'b0', NULL, 0), ('old', 1, 'after', NULL, 'failed', 1);",
         old = old(),
@@ -84,11 +87,11 @@ fn sweep_archives_a_task_once_all_its_rounds_are_old() -> Result<()> {
     assert_eq!(data["snapshot"][1]["tree"], "b0");
     assert_eq!(
         strings(&store, "SELECT id FROM task ORDER BY id"),
-        ["open", "recent"]
+        ["open", "recent", "watched"]
     );
     assert_eq!(
         strings(&store, "SELECT task_id FROM task_round GROUP BY task_id"),
-        ["open", "recent"]
+        ["open", "recent", "watched"]
     );
     assert!(strings(&store, "SELECT id FROM request").is_empty());
     assert!(strings(&store, "SELECT id FROM notice").is_empty());
@@ -178,9 +181,9 @@ fn a_document_over_the_limit_stays_in_use() -> Result<()> {
         "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
            VALUES ('claude', 'big-owner', 1, 0), ('claude', 'small-owner', 1, 0);
          INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
-           created_at)
-           VALUES ('big', 'x', 'claude', 'big-owner', 'b1', 0, 0),
-             ('small', 'x', 'claude', 'small-owner', 'b2', 0, 0);
+           created_at, released_at)
+           VALUES ('big', 'x', 'claude', 'big-owner', 'b1', 0, 0, 0),
+             ('small', 'x', 'claude', 'small-owner', 'b2', 0, 0, 0);
          INSERT INTO task_round (task_id, round, state, finished_at, acked_at, created_at)
            VALUES ('small', 1, 'cancelled', {old}, {old}, 0);"
     ))?;

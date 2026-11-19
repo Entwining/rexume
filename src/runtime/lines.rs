@@ -255,6 +255,12 @@ impl Tracker {
         self.sealed.iter().filter(|(_, taken)| !taken).count()
     }
 
+    /// Where the last finished turn no round has taken ends.
+    pub fn unread_end(&self) -> Option<u64> {
+        let (span, _) = self.sealed.iter().rfind(|(_, taken)| !taken)?;
+        Some(span.end)
+    }
+
     pub fn position_after(&self, span: Span) -> u64 {
         let mut position = self.lines.start;
         for (turn, taken) in &self.sealed {

@@ -73,7 +73,7 @@ fn open_upgrades_a_version_9_blocked_round_into_its_open_episode() -> Result<()>
     drop(conn);
     let store = Store::open(dir.path())?;
     let episode: (String, i64, Option<i64>) = store.conn().query_row(
-        "SELECT id, started_at, ended_at FROM blocked_episode WHERE task_id = 't' AND round = 1",
+        "SELECT id, started_at, ended_at FROM blocked_episode WHERE task_id = 't'",
         [],
         |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
     )?;
@@ -223,5 +223,75 @@ fn open_upgrades_a_version_10_database_and_keeps_its_occupants() -> Result<()> {
                 row.get(0)
             })?;
     assert_eq!(finished, Some(3));
+    Ok(())
+}
+
+#[test]
+fn open_upgrades_a_version_11_database_and_gives_its_episodes_to_their_tasks() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let conn = Connection::open(dir.path().join("state.db"))?;
+    conn.execute_batch(include_str!("../../../../tests/fixtures/schema-v11.sql"))?;
+    conn.execute_batch(
+        "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+           VALUES ('claude', 'owner', 1, 0);
+         INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
+           created_at) VALUES ('t', 'x', 'claude', 'owner', 'b', 0, 0);
+         INSERT INTO task_round (task_id, round, state, finished_at, acked_at, created_at)
+           VALUES ('t', 1, 'cancelled', 10, 11, 0), ('t', 2, 'blocked', NULL, NULL, 12);
+         INSERT INTO blocked_episode (id, task_id, round, kind, started_at, ended_at, end_reason)
+           VALUES ('e1', 't', 1, 'question', 5, 10, 'round_finished'),
+             ('e2', 't', 2, 'permission', 20, NULL, NULL);
+         INSERT INTO notice (id, task_id, round, kind, blocked_episode_id, state, created_at,
+           sent_at)
+           VALUES ('n1', 't', 1, 'blocked', 'e1', 'sent', 5, 6),
+             ('n2', 't', 1, 'finished', NULL, 'sent', 10, 10),
+             ('n3', 't', 2, 'blocked', 'e2', 'pending', 20, NULL);",
+    )?;
+    drop(conn);
+    let store = Store::open(dir.path())?;
+    assert_eq!(definitions(store.conn())?, fresh()?);
+    type Episode = (String, String, i64, Option<String>);
+    let episodes: Vec<Episode> = store
+        .conn()
+        .prepare("SELECT id, kind, started_at, end_reason FROM blocked_episode ORDER BY id")?
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    assert_eq!(
+        episodes,
+        [
+            (
+                "e1".into(),
+                "question".into(),
+                5,
+                Some("round_finished".into())
+            ),
+            ("e2".into(), "permission".into(), 20, None)
+        ]
+    );
+    type Notice = (String, Option<i64>, Option<String>, Option<i64>);
+    let notices: Vec<Notice> = store
+        .conn()
+        .prepare("SELECT id, round, blocked_episode_id, unread_end FROM notice ORDER BY id")?
+        .query_map([], |row| {
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+        })?
+        .collect::<rusqlite::Result<_>>()?;
+    assert_eq!(
+        notices,
+        [
+            ("n1".into(), Some(1), Some("e1".into()), None),
+            ("n2".into(), Some(1), None, None),
+            ("n3".into(), Some(2), Some("e2".into()), None)
+        ]
+    );
+    store.conn().execute("DELETE FROM task", [])?;
+    let left: i64 = store.conn().query_row(
+        "SELECT (SELECT COUNT(*) FROM notice) + (SELECT COUNT(*) FROM blocked_episode)",
+        [],
+        |row| row.get(0),
+    )?;
+    assert_eq!(left, 0);
     Ok(())
 }

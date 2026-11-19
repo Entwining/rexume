@@ -31,7 +31,7 @@ fn taken(kind: &str) -> (String, String, Option<String>) {
 fn episode(at: i64, id: &str) -> String {
     format!(
         "UPDATE task_round SET state = 'blocked';
-         INSERT INTO blocked_episode (id, task_id, round, started_at) VALUES ('e{id}', 't', 1, {at});
+         INSERT INTO blocked_episode (id, task_id, started_at) VALUES ('e{id}', 't', {at});
          INSERT INTO notice (id, task_id, round, kind, blocked_episode_id, state, created_at)
            VALUES ('{id}', 't', 1, 'blocked', 'e{id}', 'pending', {at});"
     )

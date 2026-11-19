@@ -13,13 +13,13 @@ fn store() -> Result<(tempfile::TempDir, Store, i64)> {
          INSERT INTO conversation (runtime, native_id, resumable, reported_at)
            VALUES ('claude', 'owner', 1, 1);
          INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
-           created_at, meta)
-           VALUES ('old', 'x', 'claude', 'owner', 'b1', 0, 1, '{}'),
-             ('kept', 'y', 'claude', 'owner', 'b2', 1, 1, '{\"eval\": \"e1\"}');
+           created_at, meta, released_at)
+           VALUES ('old', 'x', 'claude', 'owner', 'b1', 0, 1, '{}', 1),
+             ('kept', 'y', 'claude', 'owner', 'b2', 1, 1, '{\"eval\": \"e1\"}', NULL);
          INSERT INTO task_round (task_id, round, state, finished_at, acked_at, created_at)
            VALUES ('old', 1, 'cancelled', 1, 1, 1), ('kept', 1, 'blocked', NULL, NULL, 1);
-         INSERT INTO blocked_episode (id, task_id, round, kind, message, started_at)
-           VALUES ('e', 'kept', 1, 'permission', 'Edit?', 1);",
+         INSERT INTO blocked_episode (id, task_id, kind, message, started_at)
+           VALUES ('e', 'kept', 'permission', 'Edit?', 1);",
     )?;
     let archived_at = now_ms();
     archive::sweep(&mut store, "i2", archived_at)?;
@@ -30,7 +30,8 @@ fn finish_kept(store: &Store) -> Result<()> {
     store.conn().execute_batch(
         "UPDATE task_round SET state = 'cancelled', finished_at = 1, acked_at = 1
          WHERE task_id = 'kept';
-         UPDATE blocked_episode SET ended_at = 1, end_reason = 'round_finished';",
+         UPDATE task SET released_at = 1 WHERE id = 'kept';
+         UPDATE blocked_episode SET ended_at = 1, end_reason = 'task_released';",
     )?;
     Ok(())
 }

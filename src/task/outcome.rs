@@ -3,8 +3,7 @@ use std::sync::LazyLock;
 use anyhow::{Result, bail};
 use rusqlite::{OptionalExtension, Transaction, params};
 
-use super::blocked::{self, EndReason};
-use super::evidence::{Evidence, Pane, Reading, RunProcess, Take};
+use super::evidence::{Evidence, Reading, RunProcess, Take};
 use super::notice::{self, Kind};
 use super::queue::{self, Queued};
 use super::{OPEN, request};
@@ -13,76 +12,28 @@ use crate::store::now_ms;
 
 pub(super) static ROUND: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "SELECT t.worker_lineage, t.worker_pid, t.result_file, t.worker_runtime, t.worker_native_id,
-           t.pane_state = 'closed', t.worker_instance_id, r.state = 'blocked'
+        "SELECT t.worker_pid, t.result_file, t.pane_state = 'closed', t.worker_instance_id
          FROM task t JOIN task_round r ON r.task_id = t.id
          WHERE t.id = ?1 AND r.round = ?2 AND {OPEN}"
     )
 });
 
-pub(super) fn evaluate(
-    tx: &Transaction,
-    id: &str,
-    round: i64,
-    evidence: Evidence,
-) -> Result<Option<i64>> {
-    type Row = (
-        String,
-        Option<i64>,
-        Option<String>,
-        Option<(String, String)>,
-        bool,
-        Option<String>,
-        bool,
-    );
+pub(super) fn evaluate(tx: &Transaction, id: &str, round: i64, evidence: Evidence) -> Result<()> {
+    type Row = (Option<i64>, Option<String>, bool, Option<String>);
     let row: Option<Row> = tx
         .prepare_cached(&ROUND)?
         .query_row(params![id, round], |row| {
-            let runtime: Option<String> = row.get(3)?;
-            let native_id: Option<String> = row.get(4)?;
-            Ok((
-                row.get(0)?,
-                row.get(1)?,
-                row.get(2)?,
-                runtime.zip(native_id),
-                row.get(5)?,
-                row.get(6)?,
-                row.get(7)?,
-            ))
+            Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
         })
         .optional()?;
-    let Some((worker, worker_pid, result_file, bound, closed, worker_instance, blocked)) = row
-    else {
-        return Ok(None);
+    let Some((worker_pid, result_file, closed, worker_instance)) = row else {
+        return Ok(());
     };
     match evidence {
         Evidence::Turn(Err(note)) => {
-            finish(tx, id, round, "failed", None, Some(&note), Queued::End)?;
-            Ok(None)
+            finish(tx, id, round, "failed", None, Some(&note), Queued::End)
         }
-        Evidence::Turn(Ok(reading)) => {
-            let pane = Pane::read(tx, &worker)?;
-            let process = match bound {
-                Some((runtime, native_id)) => tx
-                    .prepare_cached(
-                        "SELECT pid FROM occupant
-                         WHERE block_lineage = ?1 AND runtime = ?2 AND native_id = ?3
-                           AND (instance_id IS NULL OR instance_id = ?4)",
-                    )?
-                    .query_row(
-                        params![worker, runtime, native_id, pane.instance_id],
-                        |row| row.get(0),
-                    )
-                    .optional()?,
-                None => None,
-            };
-            let worker = Worker {
-                closed,
-                pane,
-                process,
-            };
-            interactive_outcome(tx, id, round, blocked, &worker, reading)
-        }
+        Evidence::Turn(Ok(reading)) => interactive_outcome(tx, id, round, closed, reading),
         Evidence::Run { pane, file } => {
             let ended = match file {
                 Some(Ok(result)) => {
@@ -106,28 +57,23 @@ pub(super) fn evaluate(
                     }
                 }
             };
-            if let Some((state, done, note)) = ended {
-                finish(tx, id, round, state, done, note.as_deref(), Queued::End)?;
+            match ended {
+                Some((state, done, note)) => {
+                    finish(tx, id, round, state, done, note.as_deref(), Queued::End)
+                }
+                None => Ok(()),
             }
-            Ok(None)
         }
     }
-}
-
-struct Worker {
-    closed: bool,
-    pane: Pane,
-    process: Option<i64>,
 }
 
 fn interactive_outcome(
     tx: &Transaction,
     id: &str,
     round: i64,
-    blocked: bool,
-    worker: &Worker,
+    closed: bool,
     reading: Reading,
-) -> Result<Option<i64>> {
+) -> Result<()> {
     if reading.received {
         tx.prepare_cached(
             "UPDATE request SET state = 'delivered', delivered_at = ?3
@@ -138,14 +84,12 @@ fn interactive_outcome(
     if reading.replaced {
         let note = "the worker's record was replaced or cut, so its turns after the task's \
                     position can no longer be told apart";
-        finish(tx, id, round, "failed", None, Some(note), Queued::End)?;
-        return Ok(None);
+        return finish(tx, id, round, "failed", None, Some(note), Queued::End);
     }
     if let Some(take) = reading.chosen {
-        take_turn(tx, id, round, take)?;
-        return Ok(None);
+        return take_turn(tx, id, round, take);
     }
-    if worker.closed {
+    if closed {
         let note = "the worker's pane closed before it finished";
         finish(
             tx,
@@ -156,9 +100,8 @@ fn interactive_outcome(
             Some(note),
             Queued::End,
         )?;
-        return Ok(None);
     }
-    blocked::follow(tx, id, round, blocked, &worker.pane, worker.process)
+    Ok(())
 }
 
 fn take_turn(tx: &Transaction, id: &str, round: i64, take: Take) -> Result<()> {
@@ -241,8 +184,7 @@ pub(super) fn end(
             state, result, reference, now, instance, status_at, fg_changes, note, id, round
         ],
     )?;
-    notice::write(tx, Kind::Finished, id, round, now, None)?;
-    blocked::end(tx, id, round, now, EndReason::RoundFinished)?;
+    notice::write(tx, Kind::Finished, id, Some(round), now, None)?;
     tx.execute(
         "UPDATE request SET state = 'superseded', note = ?3
          WHERE task_id = ?1 AND round = ?2 AND state = 'pending'",

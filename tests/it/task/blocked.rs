@@ -102,3 +102,64 @@ fn a_blocked_worker_is_reported_once_per_episode_and_its_result_still_arrives() 
         ]
     );
 }
+
+#[test]
+#[ignore = "needs a Rex server"]
+fn a_worker_between_rounds_is_watched_until_its_task_is_released() {
+    let world = Orchestration::start();
+    let Orchestration {
+        server,
+        state,
+        owner,
+        id,
+        listener,
+        ..
+    } = &world;
+    claude::turn(
+        state,
+        "worker",
+        "p1",
+        "Review the diff",
+        Some("Looks good."),
+    );
+    let text = message(listener, "the finished notice");
+    assert!(text.contains("task release"), "{text}");
+    task(server, state, owner, &["ack", id]);
+
+    report(&world, "state=blocked:kind=question");
+    let text = message(listener, "the blocked notice");
+    assert!(
+        text.contains("is blocked") && text.contains("with no round open"),
+        "{text}"
+    );
+    let shown = task(server, state, owner, &["show", id]);
+    assert_eq!(shown["worker_blocked"]["kind"], "question");
+    assert_eq!(shown["blocked"], Value::Null);
+
+    report(&world, "state=working");
+    claude::turn(state, "worker", "p2", "What changed?", Some("Two files."));
+    let text = message(listener, "the unread notice");
+    assert!(text.contains("has 1 unread turn"), "{text}");
+    let listed = task(server, state, owner, &["list"]);
+    assert_eq!(listed["version"], 2);
+
+    report(&world, "state=blocked:kind=permission");
+    let text = message(listener, "the second blocked notice");
+    assert!(text.contains("The worker has 1 unread turn"), "{text}");
+    let next = task(server, state, owner, &["next", id]);
+    assert_eq!(
+        next["state"], "blocked",
+        "a round started during an episode"
+    );
+    let waited = task(server, state, owner, &["wait", id, "--timeout", "20"]);
+    assert_eq!(waited["result"], "Two files.", "{waited}");
+    task(server, state, owner, &["ack", id]);
+    task(server, state, owner, &["release", id]);
+    let reason = wait_until("the episode to end", WAIT, || {
+        query::<String>(
+            state,
+            "SELECT end_reason FROM blocked_episode WHERE ended_at IS NOT NULL AND kind = 'permission'",
+        )
+    });
+    assert_eq!(reason, "task_released");
+}

@@ -229,8 +229,7 @@ fn open_upgrades_versions_3_and_4_and_keeps_rounds_notices_and_requests() -> Res
             .conn()
             .prepare(
                 "SELECT r.round, r.state,
-                   (SELECT COUNT(*) FROM blocked_episode e
-                    WHERE e.task_id = r.task_id AND e.round = r.round),
+                   (SELECT COUNT(*) FROM blocked_episode e WHERE e.task_id = r.task_id),
                    r.turn_start, r.result
                  FROM task_round r ORDER BY r.round",
             )?

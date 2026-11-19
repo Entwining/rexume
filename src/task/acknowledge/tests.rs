@@ -11,7 +11,7 @@ fn abandoning_a_round_ends_and_acknowledges_it_and_drops_what_was_not_sent() -> 
     let mut store = task_world(dir.path(), transcript.path(), None)?;
     store.conn().execute_batch(
         "UPDATE task_round SET state = 'blocked';
-         INSERT INTO blocked_episode (id, task_id, round, started_at) VALUES ('e', 't', 1, 5);
+         INSERT INTO blocked_episode (id, task_id, started_at) VALUES ('e', 't', 5);
          INSERT INTO request (id, task_id, round, text) VALUES ('q', 't', 1, 'go');
          INSERT INTO notice (id, task_id, round, kind, blocked_episode_id, state, created_at)
            VALUES ('nb', 't', 1, 'blocked', 'e', 'pending', 5);",
@@ -19,11 +19,10 @@ fn abandoning_a_round_ends_and_acknowledges_it_and_drops_what_was_not_sent() -> 
     let tx = store.write()?;
     assert_eq!(abandon_round(&tx, "t", None)?, 1);
     tx.commit()?;
-    let round: (String, Option<String>, bool, bool, Option<String>) = store.conn().query_row(
-        "SELECT r.state, r.note, r.finished_at IS NOT NULL, r.acked_at IS NOT NULL, e.end_reason
-         FROM task_round r JOIN blocked_episode e ON e.task_id = r.task_id AND e.round = r.round
-           AND e.ended_at = r.finished_at
-         WHERE r.task_id = 't' AND r.round = 1",
+    let round: (String, Option<String>, bool, bool, bool) = store.conn().query_row(
+        "SELECT r.state, r.note, r.finished_at IS NOT NULL, r.acked_at IS NOT NULL,
+           EXISTS (SELECT 1 FROM blocked_episode e WHERE e.task_id = r.task_id AND e.ended_at IS NULL)
+         FROM task_round r WHERE r.task_id = 't' AND r.round = 1",
         [],
         |row| {
             Ok((
@@ -42,8 +41,9 @@ fn abandoning_a_round_ends_and_acknowledges_it_and_drops_what_was_not_sent() -> 
             Some("the owner abandoned the round".into()),
             true,
             true,
-            Some("round_finished".into())
-        )
+            true
+        ),
+        "the worker still waits, so its episode goes on"
     );
     let unsent: Vec<(String, String, Option<String>)> = store
         .conn()
@@ -63,7 +63,7 @@ fn abandoning_a_round_ends_and_acknowledges_it_and_drops_what_was_not_sent() -> 
     assert_eq!(
         unsent,
         [
-            superseded("blocked", "the block ended before it was sent"),
+            ("blocked".to_owned(), "pending".to_owned(), None),
             superseded("finished", "taken by task abandon"),
             superseded("request", "the round ended before it was sent"),
         ]

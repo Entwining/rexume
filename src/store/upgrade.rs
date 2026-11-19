@@ -29,10 +29,11 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
     if version < 7 {
         to_v7(tx, version)?;
     }
-    // Version 11 changed only `occupant`; rebuilding `task_round` there would cascade into the
-    // episodes version 10 records.
-    let changed: &[&str] = if version < 10 {
-        &[
+    // From version 10 on, rebuilding `task_round` would cascade into the episodes version 10 and
+    // 11 record. Version 11 changed `occupant`, and version 12 `notice` and `blocked_episode`,
+    // dropping the episode's `round`, which its notice also records.
+    let changed: &[&str] = match version {
+        ..10 => &[
             "notice",
             "request",
             "task_round",
@@ -40,9 +41,9 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
             "epoch",
             "block",
             "occupant",
-        ]
-    } else {
-        &["occupant"]
+        ],
+        10 => &["notice", "blocked_episode", "occupant"],
+        _ => &["notice", "blocked_episode"],
     };
     rebuild(tx, changed)?;
     for (task, round, started_at) in blocked {
@@ -204,8 +205,8 @@ fn open_episodes(tx: &Transaction) -> Result<Vec<(String, i64, i64)>> {
 fn carry_episode(tx: &Transaction, task: &str, round: i64, started_at: i64) -> Result<()> {
     let id = new_id();
     tx.execute(
-        "INSERT INTO blocked_episode (id, task_id, round, started_at) VALUES (?1, ?2, ?3, ?4)",
-        params![id, task, round, started_at],
+        "INSERT INTO blocked_episode (id, task_id, started_at) VALUES (?1, ?2, ?3)",
+        params![id, task, started_at],
     )?;
     tx.execute(
         "UPDATE notice SET blocked_episode_id = ?1

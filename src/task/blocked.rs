@@ -13,18 +13,20 @@ const GRACE_MS: i64 = 1000;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EndReason {
     StatusChanged,
-    RoundFinished,
     ServerGone,
     OccupantChanged,
+    TaskReleased,
+    PaneClosed,
 }
 
 impl EndReason {
     fn as_str(self) -> &'static str {
         match self {
             Self::StatusChanged => "status_changed",
-            Self::RoundFinished => "round_finished",
             Self::ServerGone => "server_gone",
             Self::OccupantChanged => "occupant_changed",
+            Self::TaskReleased => "task_released",
+            Self::PaneClosed => "pane_closed",
         }
     }
 }
@@ -32,57 +34,75 @@ impl EndReason {
 /// The predicate of the partial index `blocked_episode_open`.
 pub(super) const OPEN_EPISODE: &str = "e.ended_at IS NULL";
 
-pub(super) const BEGIN: &str =
-    "UPDATE task_round SET state = 'blocked' WHERE task_id = ?1 AND round = ?2";
+/// The state a round of task `?1` starts in.
+pub(super) static START_STATE: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "CASE WHEN EXISTS (SELECT 1 FROM blocked_episode e WHERE e.task_id = ?1 AND {OPEN_EPISODE})
+           THEN 'blocked' ELSE 'running' END"
+    )
+});
 
-pub(super) const RESUME: &str =
-    "UPDATE task_round SET state = 'running' WHERE task_id = ?1 AND round = ?2";
+pub(super) static BEGIN: LazyLock<String> = LazyLock::new(|| {
+    format!("UPDATE task_round AS r SET state = 'blocked' WHERE r.task_id = ?1 AND {OPEN}")
+});
 
 pub(super) static END: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "UPDATE blocked_episode AS e SET ended_at = ?3, end_reason = ?4
-         WHERE e.task_id = ?1 AND e.round = ?2 AND {OPEN_EPISODE}"
+        "UPDATE blocked_episode AS e SET ended_at = ?2, end_reason = ?3
+         WHERE e.task_id = ?1 AND {OPEN_EPISODE}"
     )
+});
+
+pub(super) static RESUME: LazyLock<String> = LazyLock::new(|| {
+    format!("UPDATE task_round AS r SET state = 'running' WHERE r.task_id = ?1 AND {OPEN}")
 });
 
 pub(super) static ON_PANE: LazyLock<String> = LazyLock::new(|| {
     format!(
-        "SELECT r.task_id, r.round FROM task t JOIN task_round r ON r.task_id = t.id
-         WHERE t.worker_lineage = ?1 AND {OPEN} AND r.state = 'blocked'"
+        "SELECT t.id FROM task t JOIN blocked_episode e ON e.task_id = t.id
+         WHERE t.worker_lineage = ?1 AND {OPEN_EPISODE}"
     )
 });
 
 pub fn end_blocked_episodes(tx: &Transaction, lineage: &str, reason: EndReason) -> Result<()> {
-    let rounds: Vec<(String, i64)> = tx
+    let tasks: Vec<String> = tx
         .prepare_cached(&ON_PANE)?
-        .query_map(params![lineage], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .query_map(params![lineage], |row| row.get(0))?
         .collect::<rusqlite::Result<_>>()?;
-    for (id, round) in rounds {
-        resume(tx, &id, round, reason)?;
+    for id in tasks {
+        end(tx, &id, now_ms(), reason)?;
     }
     Ok(())
 }
 
+/// Whether the task's conversation, `process`, reports `blocked` from `pane` on the observed
+/// instance.
+pub(super) fn reported(pane: &Pane, process: Option<i64>) -> bool {
+    pane.current
+        && pane.status.as_deref() == Some("blocked")
+        && process.is_some_and(|pid| pane.status_pid == Some(pid))
+}
+
+/// `blocked`: the task has an episode that has not ended; `round`: its open round; `process`: the
+/// task's conversation's process in `pane`. Returns when a status's grace passes.
 pub(super) fn follow(
     tx: &Transaction,
     id: &str,
-    round: i64,
+    round: Option<i64>,
     blocked: bool,
     pane: &Pane,
     process: Option<i64>,
 ) -> Result<Option<i64>> {
-    let still = pane.status.as_deref() == Some("blocked");
-    let reported = pane.current && still && process.is_some_and(|pid| pane.status_pid == Some(pid));
-    match (blocked, reported) {
+    match (blocked, reported(pane, process)) {
         (true, false) => {
             let reason = if !pane.current {
                 EndReason::ServerGone
-            } else if still {
+            } else if pane.status.as_deref() == Some("blocked") {
                 EndReason::OccupantChanged
             } else {
                 EndReason::StatusChanged
             };
-            resume(tx, id, round, reason)?;
+            end(tx, id, now_ms(), reason)?;
         }
         (false, true) => {
             let now = now_ms();
@@ -91,17 +111,15 @@ pub(super) fn follow(
             {
                 return Ok(Some(due));
             }
-            tx.prepare_cached(BEGIN)?.execute(params![id, round])?;
+            tx.prepare_cached(&BEGIN)?.execute(params![id])?;
             let episode = new_id();
             tx.prepare_cached(
-                "INSERT INTO blocked_episode (id, task_id, round, kind, message, status_at,
-                   started_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+                "INSERT INTO blocked_episode (id, task_id, kind, message, status_at, started_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             )?
             .execute(params![
                 episode,
                 id,
-                round,
                 pane.status_kind,
                 pane.status_message,
                 pane.status_at,
@@ -114,23 +132,18 @@ pub(super) fn follow(
     Ok(None)
 }
 
-fn resume(tx: &Transaction, id: &str, round: i64, reason: EndReason) -> Result<()> {
-    tx.prepare_cached(RESUME)?.execute(params![id, round])?;
-    end(tx, id, round, now_ms(), reason)
-}
-
 pub(super) const ENDED: &str = "the block ended before it was sent";
 
-pub(super) fn end(
-    tx: &Transaction,
-    id: &str,
-    round: i64,
-    now: i64,
-    reason: EndReason,
-) -> Result<()> {
-    tx.prepare_cached(&END)?
-        .execute(params![id, round, now, reason.as_str()])?;
-    notice::supersede(tx, Kind::Blocked, id, round, ENDED, now)?;
+pub(super) fn end(tx: &Transaction, id: &str, now: i64, reason: EndReason) -> Result<()> {
+    if tx
+        .prepare_cached(&END)?
+        .execute(params![id, now, reason.as_str()])?
+        == 0
+    {
+        return Ok(());
+    }
+    tx.prepare_cached(&RESUME)?.execute(params![id])?;
+    notice::supersede_blocked(tx, id, ENDED, now)?;
     Ok(())
 }
 

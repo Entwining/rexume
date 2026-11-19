@@ -14,6 +14,7 @@ mod snapshot;
 #[cfg(test)]
 pub(crate) mod tests;
 mod wait;
+mod watch;
 
 use std::path::Path;
 use std::sync::LazyLock;
@@ -40,6 +41,7 @@ pub use snapshot::sweep as sweep_snapshots;
 pub use wait::{Returned, wait};
 
 pub const VERSION: u32 = 1;
+const LIST_VERSION: u32 = 2;
 static CURRENT_ROUND: LazyLock<String> = LazyLock::new(|| {
     format!(
         "COALESCE(
@@ -56,8 +58,7 @@ const COLUMNS: &str = "t.id, t.title, r.round, r.state, t.result_file IS NULL, t
 static ROUND_REQUEST: LazyLock<String> = LazyLock::new(|| {
     format!(
         "LEFT JOIN request q ON q.task_id = r.task_id AND q.round = r.round
-         LEFT JOIN blocked_episode e ON e.task_id = r.task_id AND e.round = r.round
-           AND {}",
+         LEFT JOIN blocked_episode e ON e.task_id = r.task_id AND {}",
         blocked::OPEN_EPISODE
     )
 });
@@ -82,12 +83,13 @@ struct Task {
     unread: Option<usize>,
     queued: Vec<i64>,
     blocked: Option<Blocked>,
+    worker_blocked: Option<Blocked>,
     request: Option<Request>,
     pane: Pane,
     snapshot: snapshot::Snapshots,
 }
 
-#[derive(Serialize)]
+#[derive(Clone, Serialize)]
 struct Blocked {
     kind: Option<String>,
     message: Option<String>,
@@ -111,11 +113,25 @@ struct Pane {
 impl Task {
     fn from_row(row: &rusqlite::Row) -> rusqlite::Result<Self> {
         let interactive: bool = row.get(4)?;
+        let state: String = row.get(3)?;
+        let worker_blocked = row
+            .get::<_, Option<i64>>(18)?
+            .map(|started_at| -> rusqlite::Result<Blocked> {
+                Ok(Blocked {
+                    kind: row.get(19)?,
+                    message: row.get(20)?,
+                    started_at,
+                })
+            })
+            .transpose()?;
         Ok(Self {
             id: row.get(0)?,
             title: row.get(1)?,
             round: row.get(2)?,
-            state: row.get(3)?,
+            // An open round is blocked exactly while its task's worker is.
+            blocked: worker_blocked.clone().filter(|_| state == "blocked"),
+            worker_blocked,
+            state,
             mode: if interactive {
                 "interactive"
             } else {
@@ -130,16 +146,6 @@ impl Task {
             released_at: row.get(14)?,
             unread: None,
             queued: Vec::new(),
-            blocked: row
-                .get::<_, Option<i64>>(18)?
-                .map(|started_at| -> rusqlite::Result<Blocked> {
-                    Ok(Blocked {
-                        kind: row.get(19)?,
-                        message: row.get(20)?,
-                        started_at,
-                    })
-                })
-                .transpose()?,
             request: row
                 .get::<_, Option<String>>(15)?
                 .map(|id| -> rusqlite::Result<Request> {
@@ -161,6 +167,12 @@ impl Task {
 }
 
 fn unread(conn: &Connection, state_dir: &Path, id: &str) -> Result<Option<usize>> {
+    Ok(turns(conn, state_dir, id)?.map(|turns| turns.unread()))
+}
+
+/// The worker's turns after the task's position, read whole, while the task is interactive and not
+/// released and its record can still be read as it was.
+fn turns(conn: &Connection, state_dir: &Path, id: &str) -> Result<Option<Tracker>> {
     let found: Option<(Runtime, String, Option<String>, i64)> = conn
         .query_row(
             "SELECT t.worker_runtime, t.worker_native_id, c.transcript, t.position FROM task t
@@ -183,7 +195,7 @@ fn unread(conn: &Connection, state_dir: &Path, id: &str) -> Result<Option<usize>
         log::debug!("task {id}: the worker's record could not be read: {e:#}");
         return Ok(None);
     }
-    Ok((!tracker.replaced()).then(|| tracker.unread()))
+    Ok((!tracker.replaced()).then_some(tracker))
 }
 
 #[derive(Serialize)]
@@ -218,7 +230,7 @@ pub fn list(state_dir: &Path) -> Result<Value> {
         task.snapshot = snapshot::shown(store.conn(), store.dir(), &task.id, task.round)?;
     }
     let notices = notice::undelivered(store.conn(), Some((caller.runtime, &caller.native_id)))?;
-    Ok(json!({ "version": VERSION, "tasks": tasks, "undelivered_notices": notices }))
+    Ok(json!({ "version": LIST_VERSION, "tasks": tasks, "undelivered_notices": notices }))
 }
 
 fn shown(

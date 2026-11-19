@@ -1,16 +1,17 @@
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
 use std::sync::LazyLock;
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
 use super::evidence::{self, Evidence, Pane, Reading, RunProcess};
+use super::watch::Watch;
 use super::{OPEN, cleanup, gone, notice, outcome, request};
 use crate::rex::Rex;
 use crate::runtime::{Receipt, Runtime, Taken, Tracker};
-use crate::store::{Store, now_ms};
+use crate::store::Store;
 
 #[derive(Default)]
 pub struct Interest {
@@ -23,7 +24,7 @@ pub struct Follow {
     trackers: HashMap<(String, i64), Tracker>,
     receipts: HashMap<PathBuf, Receipt>,
     next_notice: Option<Instant>,
-    next_round: Option<Instant>,
+    watch: Watch,
     tried: HashSet<String>,
 }
 
@@ -58,7 +59,10 @@ struct OpenRound {
 
 impl Follow {
     pub fn deadline(&self) -> Option<Instant> {
-        self.next_notice.into_iter().chain(self.next_round).min()
+        self.next_notice
+            .into_iter()
+            .chain(self.watch.deadline())
+            .min()
     }
 
     pub fn view_changed(&mut self) {
@@ -72,6 +76,7 @@ impl Follow {
     ) -> Result<Interest> {
         let mut interest = Interest::default();
         self.evaluate_open(store, &mut interest)?;
+        self.watch.pass(store, &mut interest)?;
         request::send_due(store, &mut interest)?;
         self.next_notice = notice::send_due(store, &mut interest)?;
         notice::receipt::settle(store, &mut self.receipts, &mut interest)?;
@@ -178,22 +183,13 @@ impl Follow {
         }
         self.trackers.retain(|key, _| kept.contains(key));
         if evidence.is_empty() {
-            self.next_round = None;
             return Ok(());
         }
-        let mut recheck: Option<i64> = None;
         let tx = store.write()?;
         for (task, round, shown) in evidence {
-            if let Some(at) = outcome::evaluate(&tx, &task, round, shown)? {
-                recheck = Some(recheck.map_or(at, |r| r.min(at)));
-            }
+            outcome::evaluate(&tx, &task, round, shown)?;
         }
         tx.commit()?;
-        self.next_round = recheck
-            .map(|at| -> Result<Instant> {
-                Ok(Instant::now() + Duration::from_millis(u64::try_from((at - now_ms()).max(0))?))
-            })
-            .transpose()?;
         Ok(())
     }
 }

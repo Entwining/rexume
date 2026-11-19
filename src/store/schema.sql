@@ -284,12 +284,14 @@ CREATE INDEX IF NOT EXISTS task_worker_conversation ON task (worker_runtime, wor
 -- 8 names no turn in the record its turn hooks write, which starts after it. A round with a
 -- `request` row takes the turn that took its request in; any other takes the earliest turn after
 -- the task's `position` that no round took. A request round sent while the task has an open round
--- is 'queued' behind it: it starts as 'running' in the transaction that finishes the open round,
--- or ends there as 'dropped' when the worker can take no further request, as it does when its owner
--- abandons it; a dropped round never ran, so it never stands for the task's latest result.
--- `waiter_pid`: the `task wait` process that takes the round's notices itself while it runs; a
--- wait takes its place whenever it is empty or names a process that is gone.
--- A round is 'blocked' exactly while it has a `blocked_episode` that has not ended. A round is
+-- is 'queued' behind it: it starts in the transaction that finishes the open round, or ends there
+-- as 'dropped' when the worker can take no further request, as it does when its owner abandons it;
+-- a dropped round never ran, so it never stands for the task's latest result.
+-- `waiter_pid`: the `task wait` process that takes the round's finished notice, and while the round
+-- is open its task's blocked notice, itself while it runs; a wait takes its place whenever it is
+-- empty or names a process that is gone.
+-- An open round is 'blocked' exactly while its task has a `blocked_episode` that has not ended,
+-- so a round that starts during an episode starts as 'blocked'. A round is
 -- 'completed' exactly when its result is saved here, in the transaction that also writes its
 -- finished notice; every final state sets `finished_at`. A round is 'abandoned' when its owner
 -- stopped waiting for it with `task abandon`, which acknowledges it in the same transaction and
@@ -334,36 +336,37 @@ CREATE TABLE IF NOT EXISTS task_round (
 CREATE UNIQUE INDEX IF NOT EXISTS task_round_open ON task_round (task_id) WHERE state IN ('running', 'blocked');
 CREATE UNIQUE INDEX IF NOT EXISTS task_round_turn ON task_round (task_id, turn_start);
 
--- One blocked episode of an interactive round: the task's own conversation reported `blocked`, a
--- dialog or a question waiting for an answer, from the worker's pane on the observed server
--- instance without a break for a grace. The row is inserted in the transaction that makes the round
--- 'blocked' and writes the episode's notice. `kind`, `message`, and `status_at` are the pane's
--- `status_kind`, `status_message`, and `status_at` at that moment and stay as they are when a
--- later status, still `blocked`, says otherwise. `started_at` is that transaction's time, which is
--- also the notice's `created_at`; `status_at` is when Rex says the worker began to wait. The
--- episode ends once, in the transaction that ends it: 'status_changed' when the pane's status was
--- replaced by one that is not `blocked` or was removed; 'round_finished' when the round finished,
--- with the round's `finished_at` as `ended_at`; 'server_gone' when the pane was first recorded on a
--- later server instance or a pass found its record on an earlier one; 'occupant_changed' when a
--- pass found the status no longer reported by the task's conversation in the pane. A later block
--- in the same round is another row.
+-- One blocked episode of an interactive task's worker, from `task add` until the task is released:
+-- the task's own conversation reported `blocked`, a dialog or a question waiting for an answer, from
+-- the worker's pane on the observed server instance without a break for a grace, whether or not a
+-- round is open. The row is inserted in the transaction that makes the open round, if any,
+-- 'blocked' and writes the episode's notice, whose `round` says which round was open. `kind`,
+-- `message`, and `status_at` are the pane's `status_kind`, `status_message`, and `status_at` at that
+-- moment and stay as they are when a later status, still `blocked`, says otherwise. `started_at` is
+-- that transaction's time, which is also the notice's `created_at`; `status_at` is when Rex says the
+-- worker began to wait. A round finishing does not end the episode. It ends once, in the
+-- transaction that ends it: 'status_changed' when the pane's status was replaced by one that is not
+-- `blocked` or was removed; 'server_gone' when the pane was first recorded on a later server
+-- instance or a pass found its record on an earlier one; 'occupant_changed' when a pass found the
+-- status no longer reported by the task's conversation in the pane; 'task_released' when the owner
+-- released the task; 'pane_closed' when the worker's pane closed, which also removes its status.
+-- 'round_finished', the round's end, is in episodes ended before version 12. A later block is
+-- another row.
 CREATE TABLE IF NOT EXISTS blocked_episode (
   id         TEXT    PRIMARY KEY,
-  task_id    TEXT    NOT NULL,
-  round      INTEGER NOT NULL,
+  task_id    TEXT    NOT NULL REFERENCES task (id) ON DELETE CASCADE,
   kind       TEXT,
   message    TEXT,
   status_at  INTEGER,
   started_at INTEGER NOT NULL,
   ended_at   INTEGER,
   end_reason TEXT    CHECK (end_reason IN ('status_changed', 'round_finished', 'server_gone',
-                                           'occupant_changed')),
-  CHECK ((ended_at IS NULL) = (end_reason IS NULL)),
-  FOREIGN KEY (task_id, round) REFERENCES task_round (task_id, round) ON DELETE CASCADE
+                                           'occupant_changed', 'task_released', 'pane_closed')),
+  CHECK ((ended_at IS NULL) = (end_reason IS NULL))
 ) STRICT;
-CREATE INDEX IF NOT EXISTS blocked_episode_round ON blocked_episode (task_id, round);
--- A round has at most one episode that has not ended.
-CREATE UNIQUE INDEX IF NOT EXISTS blocked_episode_open ON blocked_episode (task_id, round)
+CREATE INDEX IF NOT EXISTS blocked_episode_task ON blocked_episode (task_id);
+-- A task has at most one episode that has not ended.
+CREATE UNIQUE INDEX IF NOT EXISTS blocked_episode_open ON blocked_episode (task_id)
   WHERE ended_at IS NULL;
 
 -- The prompt a request round hands to the worker, which the daemon, the only sender, delivers to
@@ -398,35 +401,44 @@ CREATE TABLE IF NOT EXISTS request (
   FOREIGN KEY (task_id, round) REFERENCES task_round (task_id, round) ON DELETE CASCADE
 ) STRICT;
 
--- What a task's owner is told about one of its rounds. `kind` 'finished': the round finished; one
--- per round, written in the transaction that finishes it. 'blocked': the round began a blocked
--- episode; one per episode, written in the transaction that inserts the episode, which
--- `blocked_episode_id` names; NULL for a blocked notice from before version 10 whose episode had
--- ended. `created_at`: when the notice was written, the time that transaction gives the round's
--- `finished_at` or the episode's `started_at`, and what the notice is due from. Exactly one
--- claimant, the daemon or the owner's own `task wait` or acknowledgement, moves a notice out of
--- 'pending'. 'sending' is the running daemon's claim and every state after it is the daemon's.
+-- What a task's owner is told about its worker. `kind` 'finished': a round finished; one per round,
+-- written in the transaction that finishes it. 'blocked': the worker began a blocked episode; one
+-- per episode, written in the transaction that inserts the episode, which `blocked_episode_id`
+-- names; NULL for a blocked notice from before version 10 whose episode had ended. 'unread': while
+-- the task had no open round and was not released, the worker finished a turn no round took after
+-- the turns the task's notices had reported; the daemon writes it, and a task has at most one
+-- 'pending'. `round`: for 'finished', the round that finished; for 'blocked', the round open when
+-- the episode began, NULL when none was; NULL for 'unread'. `created_at`: when the notice was
+-- written, the time that transaction gives the round's `finished_at` or the episode's
+-- `started_at`, and what the notice is due from. Exactly one claimant, the daemon or the owner's
+-- own `task wait` or acknowledgement, moves a notice out of 'pending'. 'sending' is the running
+-- daemon's claim and every state after it is the daemon's.
 -- 'unknown': the send may have happened, so only the owner's own record settles it, never a resend.
 -- 'superseded': the notice is never sent, because before anything was sent the owner took it
--- through `task wait`, acknowledged the round, or the blocked episode ended (`note` says which). A
--- 'pending' notice with a `note` is one whose send failed before anything left. `id` is the token
+-- through `task wait`, acknowledged the round, the blocked episode ended, or, for 'unread', a round
+-- started, the task was released, or an earlier notice had reported its turns (`note` says which).
+-- A 'pending' notice with a `note` is one whose send failed before anything left. `id` is the token
 -- the notice text carries and the owner's record is searched for. `sent_at`: when the daemon
 -- claimed the notice for a send that may have left, kept through every state after 'sending'. A
 -- send that failed before anything left clears `sent_at` and returns the notice to 'pending', or to
--- 'superseded' if the round was acknowledged or the episode ended during the send. A 'pending' or
--- 'superseded' notice therefore has no `sent_at`; neither does one sent before version 5. An owner
--- gets its next notice only once none is still on its way ('sending', 'sent', or 'accepted') that
--- was sent after the owner's pane last reported a status (`block.status_at`). `attempts`: as a
--- request's. `delivered_at`: when the daemon saw the owner's record show it received;
--- `superseded_at`: when it became 'superseded', which for one `task wait` took is when the owner's
--- wait returned with it; both NULL before version 10. The foreign key `blocked_episode_id` has no
--- index of its own: an episode is deleted only with its round, by the retention sweep, in the
--- statement that deletes the round's notices.
+-- 'superseded' if it was no longer needed by then. A 'pending' or 'superseded' notice therefore has
+-- no `sent_at`; neither does one sent before version 5. `unread_end`: the offset into the worker's
+-- record of turns just after the last unread turn the notice's text reports, counted as
+-- `task.position` is, set by the claim that fixes the text and cleared with `sent_at`; NULL when
+-- the text reports none and for a notice claimed before version 12. The owner has been told of
+-- every turn before the largest `unread_end` among the task's notices. An owner gets its next
+-- notice only once none is still on its way ('sending', 'sent', or 'accepted') that was sent after
+-- the owner's pane last reported a status (`block.status_at`). `attempts`: as a request's.
+-- `delivered_at`: when the daemon saw the owner's record show it received; `superseded_at`: when it
+-- became 'superseded', which for one `task wait` took is when the owner's wait returned with it;
+-- both NULL before version 10. The foreign key `blocked_episode_id` has no index of its own: an
+-- episode is deleted only with its task, by the retention sweep, in the statement that deletes the
+-- task's notices.
 CREATE TABLE IF NOT EXISTS notice (
   id                 TEXT    PRIMARY KEY,
-  task_id            TEXT    NOT NULL,
-  round              INTEGER NOT NULL,
-  kind               TEXT    NOT NULL CHECK (kind IN ('finished', 'blocked')),
+  task_id            TEXT    NOT NULL REFERENCES task (id) ON DELETE CASCADE,
+  round              INTEGER,
+  kind               TEXT    NOT NULL CHECK (kind IN ('finished', 'blocked', 'unread')),
   blocked_episode_id TEXT    REFERENCES blocked_episode (id),
   state              TEXT    NOT NULL CHECK (state IN ('pending', 'sending', 'sent', 'accepted',
                                                        'delivered', 'unknown', 'superseded')),
@@ -436,20 +448,30 @@ CREATE TABLE IF NOT EXISTS notice (
   sent_at            INTEGER,
   delivered_at       INTEGER,
   superseded_at      INTEGER,
+  unread_end         INTEGER,
+  CHECK (kind != 'finished' OR round IS NOT NULL),
+  CHECK (kind != 'unread' OR round IS NULL),
   CHECK (blocked_episode_id IS NULL OR kind = 'blocked'),
   CHECK (sent_at IS NULL OR state NOT IN ('pending', 'superseded')),
+  CHECK (unread_end IS NULL OR state NOT IN ('pending', 'superseded')),
+  CHECK (kind != 'unread' OR state IN ('pending', 'superseded') OR unread_end IS NOT NULL),
   CHECK (delivered_at IS NULL OR state = 'delivered'),
   CHECK (superseded_at IS NULL OR state = 'superseded'),
   FOREIGN KEY (task_id, round) REFERENCES task_round (task_id, round) ON DELETE CASCADE
 ) STRICT;
 CREATE INDEX IF NOT EXISTS notice_round ON notice (task_id, round);
--- One finished notice per round, and at most one blocked notice per round that may still be sent.
--- The second holds because only the daemon begins an episode, ending the earlier one first, and it
--- sends a claimed notice within the same pass, while a stopped daemon's 'sending' rows become
--- 'unknown' when the next one starts: no blocked notice is 'sending' when an episode begins.
+-- Every daemon pass reads the pending notices, and a task that is not released keeps its notices.
+CREATE INDEX IF NOT EXISTS notice_pending ON notice (created_at, id) WHERE state = 'pending';
+-- One finished notice per round, at most one blocked notice per task that may still be sent, and
+-- at most one unread notice per task that is not claimed. The second holds because only the daemon
+-- begins an episode, ending the earlier one first, and it sends a claimed notice within the same
+-- pass, while a stopped daemon's 'sending' rows become 'unknown' when the next one starts: no
+-- blocked notice is 'sending' when an episode begins.
 CREATE UNIQUE INDEX IF NOT EXISTS notice_finished ON notice (task_id, round) WHERE kind = 'finished';
-CREATE UNIQUE INDEX IF NOT EXISTS notice_blocked_unsent ON notice (task_id, round)
+CREATE UNIQUE INDEX IF NOT EXISTS notice_blocked_unsent ON notice (task_id)
   WHERE kind = 'blocked' AND state IN ('pending', 'sending');
+CREATE UNIQUE INDEX IF NOT EXISTS notice_unread_pending ON notice (task_id)
+  WHERE kind = 'unread' AND state = 'pending';
 
 -- The worker's tree at one side of a round: what `git add -A` would stage in the task's
 -- `worktree`, as the ID of the Git tree object that holds it. 'before' is taken by the command that
@@ -524,4 +546,4 @@ CREATE TABLE IF NOT EXISTS archive (
 
 -- 'rexu' in ASCII, which Store::open checks before it uses a database.
 PRAGMA application_id = 0x72657875;
-PRAGMA user_version = 11;
+PRAGMA user_version = 12;

@@ -4,6 +4,7 @@ use anyhow::{Result, bail};
 use rusqlite::{Transaction, params};
 use serde_json::Value;
 
+use super::blocked::{self, EndReason};
 use super::queue::Queued;
 use super::register::latest_finished;
 use super::{caller, finished, notice, outcome, owned, round_state, shown, snapshot, unread};
@@ -60,14 +61,22 @@ pub fn release(state_dir: &Path, id: &str) -> Result<Value> {
     if let Some(count @ 1..) = unread {
         bail!("task {id} has unread turns ({count}); take them with `task next` first");
     }
-    tx.execute(
-        "UPDATE task SET released_at = COALESCE(released_at, ?1) WHERE id = ?2",
-        params![now_ms(), id],
-    )?;
-    acknowledge_all(&tx, id, "taken by task release")?;
+    release_task(&tx, id)?;
     tx.commit()?;
     snapshot::after(&mut store, id)?;
     shown(store.conn(), store.dir(), &caller.instance, id, Some(round))
+}
+
+pub(super) fn release_task(tx: &Transaction, id: &str) -> Result<()> {
+    let now = now_ms();
+    tx.execute(
+        "UPDATE task SET released_at = COALESCE(released_at, ?1) WHERE id = ?2",
+        params![now, id],
+    )?;
+    let by = "taken by task release";
+    acknowledge_all(tx, id, by)?;
+    blocked::end(tx, id, now, EndReason::TaskReleased)?;
+    notice::supersede_unread(tx, id, by, now)
 }
 
 pub(super) fn acknowledge(tx: &Transaction, id: &str, round: i64, by: &str) -> Result<()> {
@@ -76,7 +85,7 @@ pub(super) fn acknowledge(tx: &Transaction, id: &str, round: i64, by: &str) -> R
         "UPDATE task_round SET acked_at = COALESCE(acked_at, ?1) WHERE task_id = ?2 AND round = ?3",
         params![now, id, round],
     )?;
-    notice::supersede(tx, notice::Kind::Finished, id, round, by, now)?;
+    notice::supersede_finished(tx, id, round, by, now)?;
     Ok(())
 }
 

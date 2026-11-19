@@ -6,6 +6,7 @@ use std::sync::LazyLock;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 
+use super::blocked::START_STATE;
 use super::{OPEN, outcome};
 use crate::store::{new_id, now_ms};
 
@@ -22,10 +23,15 @@ pub(super) static STANDING: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-pub(super) const START_NEXT: &str = "UPDATE task_round SET state = 'running'
-  WHERE task_id = ?1 AND round = (SELECT MIN(round) FROM task_round
-                                  WHERE task_id = ?1 AND state = 'queued')
-  RETURNING round";
+pub(super) static START_NEXT: LazyLock<String> = LazyLock::new(|| {
+    format!(
+        "UPDATE task_round SET state = {start}
+         WHERE task_id = ?1 AND round = (SELECT MIN(round) FROM task_round
+                                         WHERE task_id = ?1 AND state = 'queued')
+         RETURNING round",
+        start = *START_STATE
+    )
+});
 
 pub(super) const QUEUED_ROUNDS: &str =
     "SELECT round FROM task_round WHERE task_id = ?1 AND state = 'queued' ORDER BY round";
@@ -74,7 +80,7 @@ pub(super) fn advance(
 
 fn start_next(tx: &Transaction, id: &str) -> Result<()> {
     let started: Option<i64> = tx
-        .prepare_cached(START_NEXT)?
+        .prepare_cached(&START_NEXT)?
         .query_row(params![id], |row| row.get(0))
         .optional()?;
     if let Some(started) = started {

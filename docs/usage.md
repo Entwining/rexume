@@ -34,7 +34,7 @@ rexume status
 
 This lists restored panes whose conversation Rexume tried to reopen but has not reopened. Successful restores appear in the [daemon's log](setup.md#check-the-installation).
 
-It also lists notices whose delivery is unconfirmed and whose round still needs them. These include notices sent or that failed to send. A finished round needs its notice until the orchestrator acknowledges it. A blocked episode needs its notice until the episode ends.
+It also lists notices whose delivery is unconfirmed and that are still needed. These include notices sent or that failed to send. A finished round needs its notice until the orchestrator acknowledges it. A blocked episode needs its notice until the episode ends. Unread turns need their notice until a round starts or the task is released.
 
 When the daemon's latest observation of the server ended with an error, `epoch_error` gives it. The daemon records nothing until it connects again without an error.
 
@@ -75,6 +75,8 @@ rexume task ack ID
 Once you are done with the worker, run `rexume task release ID`. The daemon can then close a disposable worker's pane, but only if nothing has happened in it since the result. After a restart, it closes a released worker's restored pane once it shows its shell with nothing typed. Otherwise it keeps the pane.
 
 To wait for the result in the orchestrator's own turn instead, run `rexume task wait ID`. When the worker stops on a question or permission dialog, Rexume sends one notice for that stop too. That notice needs no acknowledgement. `task wait` returns for it with exit status 3.
+
+Until the task is released, Rexume keeps watching the worker after its result is acknowledged. A dialog it stops on later gets the same notice. A turn it finishes on its own gets a notice that the turn is unread, which `rexume task next ID` takes. Such a dialog or turn may come from you working in the worker's pane, so the notice asks the orchestrator to read the pane first.
 
 ### More work for the same worker
 

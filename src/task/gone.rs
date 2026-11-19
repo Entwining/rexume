@@ -4,6 +4,7 @@ use anyhow::Result;
 use rusqlite::{Params, Transaction, params};
 
 use super::OPEN;
+use super::blocked::{EndReason, end_blocked_episodes};
 use super::outcome::finish;
 use super::queue::Queued;
 use crate::store::{self, now_ms};
@@ -59,6 +60,7 @@ pub fn end_left_to_server(tx: &Transaction, instance: &str, block: &str) -> Resu
 }
 
 fn on_worker_closed(tx: &Transaction, lineage: &str) -> Result<()> {
+    end_blocked_episodes(tx, lineage, EndReason::PaneClosed)?;
     finish_each(
         tx,
         &WORKER_ROUNDS,

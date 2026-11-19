@@ -132,8 +132,7 @@ fn an_episode_that_ends_drops_only_an_unsent_notice_and_the_next_tells_again() -
     report(&store, "blocked", long_ago())?;
     follow.pass(&mut store, None)?;
     assert_eq!(notices(&store)?, [ended(), pending("blocked")]);
-    let another =
-        "INSERT INTO blocked_episode (id, task_id, round, started_at) VALUES ('x', 't', 1, 0)";
+    let another = "INSERT INTO blocked_episode (id, task_id, started_at) VALUES ('x', 't', 0)";
     assert!(
         store.conn().execute(another, []).is_err(),
         "two open episodes"
@@ -225,7 +224,7 @@ fn an_episode_does_not_outlive_its_server_instance() -> Result<()> {
 }
 
 #[test]
-fn a_round_that_finishes_while_blocked_ends_its_episode() -> Result<()> {
+fn a_finished_round_leaves_the_episode_and_a_closed_pane_ends_it() -> Result<()> {
     for closes in [false, true] {
         let dir = tempfile::tempdir()?;
         let mut transcript = record(&[PROMPT])?;
@@ -242,17 +241,15 @@ fn a_round_that_finishes_while_blocked_ends_its_episode() -> Result<()> {
             transcript.flush()?;
         }
         follow.pass(&mut store, None)?;
-        let state = if closes { "worker_closed" } else { "completed" };
-        assert_eq!(round(&store)?.0, state);
-        assert_eq!(ends(&store)?, [ended_by("round_finished")], "{state}");
-        let (finished_at, ended_at): (i64, i64) = store.conn().query_row(
-            "SELECT finished_at, ended_at FROM task_round JOIN blocked_episode USING (task_id, round)",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )?;
-        assert_eq!(written_at(&store, "finished")?, finished_at);
-        assert_eq!(ended_at, finished_at);
-        assert_eq!(notices(&store)?, [ended(), pending("finished")], "{state}");
+        if closes {
+            assert_eq!(round(&store)?.0, "worker_closed");
+            assert_eq!(ends(&store)?, [ended_by("pane_closed")]);
+            assert_eq!(notices(&store)?, [ended(), pending("finished")]);
+        } else {
+            assert_eq!(round(&store)?.0, "completed");
+            assert_eq!(ends(&store)?, [None]);
+            assert_eq!(notices(&store)?, [pending("blocked"), pending("finished")]);
+        }
         assert!(stamped(&store)?);
     }
     Ok(())

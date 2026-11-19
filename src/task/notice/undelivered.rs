@@ -11,7 +11,7 @@ static UNDELIVERED: LazyLock<String> = LazyLock::new(|| {
     format!(
         "SELECT n.id, n.kind, n.task_id, n.round, r.state, n.state, n.note
          FROM notice n JOIN task t ON t.id = n.task_id
-         JOIN task_round r ON r.task_id = n.task_id AND r.round = n.round
+         LEFT JOIN task_round r ON r.task_id = n.task_id AND r.round = n.round
          WHERE {}
            AND (n.state IN ('unknown', 'sending', 'sent', 'accepted')
                 OR (n.state = 'pending' AND n.note IS NOT NULL))",
@@ -25,8 +25,8 @@ pub fn undelivered(conn: &Connection, owner: Option<(Runtime, &str)>) -> Result<
             "id": row.get::<_, String>(0)?,
             "kind": row.get::<_, String>(1)?,
             "task_id": row.get::<_, String>(2)?,
-            "round": row.get::<_, i64>(3)?,
-            "round_state": row.get::<_, String>(4)?,
+            "round": row.get::<_, Option<i64>>(3)?,
+            "round_state": row.get::<_, Option<String>>(4)?,
             "state": row.get::<_, String>(5)?,
             "note": row.get::<_, Option<String>>(6)?,
         }))
