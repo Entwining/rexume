@@ -13,7 +13,7 @@ build:
 	mkdir -p "$(OUT)/bin" "$(OUT)/brand/logo"
 	install -m 755 "$(release_dir)/rexume" "$(OUT)/bin/rexume"
 	install -m 644 LICENSE README.md "$(OUT)/"
-	install -m 644 brand/logo/rexume-mark-color.svg "$(OUT)/brand/logo/"
+	install -m 644 brand/logo/rexume-mark-color.svg brand/logo/rexume-mark-readme.png "$(OUT)/brand/logo/"
 # The package does not ship the docs README.md links to, so each relative link to a file the package lacks points at that file in the release's tag.
 	base=$$($(CARGO) metadata --locked --no-deps --format-version 1 | jq -er '.packages[0] | "\(.repository)/blob/v\(.version)/"') && \
 	OUT="$(OUT)" BASE="$$base" perl -i -pe 's{\]\((?![a-z]+:|#)([^)#]+)}{-e "$$ENV{OUT}/$$1" ? "]($$1" : "]($$ENV{BASE}$$1"}ge' "$(OUT)/README.md"
