@@ -165,9 +165,6 @@ enum Command {
         /// The daemon's socket
         #[arg(value_name = "SOCKET")]
         socket: PathBuf,
-        /// The line sent first, which the daemon checks
-        #[arg(value_name = "TOKEN")]
-        token: String,
     },
 }
 
@@ -271,7 +268,7 @@ fn run(command: Command) -> Result<Option<(Value, u8)>> {
             command: SkillCommand::Status,
         } => skill::status().map(|value| Some((value, 0))),
         Command::Task { command, state } => task::run(command, &state.resolve()?).map(Some),
-        Command::Relay { socket, token } => rex::relay::run(&socket, &token).map(|()| None),
+        Command::Relay { socket } => rex::relay::run(&socket).map(|()| None),
         Command::Report { .. }
         | Command::Gate { .. }
         | Command::Skill {

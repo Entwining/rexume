@@ -166,13 +166,24 @@ impl Cli {
         Err(classify(&String::from_utf8_lossy(&output.stderr)))
     }
 
+    /// The arguments go on stdin, because every process listing shows argv; see AGENTS.md.
     pub fn adapter(&self, relay: &[String], token: &str) -> std::io::Result<Child> {
         let args = json!({ "relay": relay, "token": token });
-        self.command()
-            .args(["do", "--all", "--args", &args.to_string(), "-e", ADAPTER])
-            .stdin(Stdio::null())
+        let mut child = self
+            .command()
+            .args(["do", "--all", "--args", "-", "-e", ADAPTER])
+            .stdin(Stdio::piped())
             .stdout(Stdio::null())
-            .spawn()
+            .spawn()?;
+        let written = child.stdin.take().map_or(Ok(()), |mut stdin| {
+            stdin.write_all(args.to_string().as_bytes())
+        });
+        if let Err(e) = written {
+            let _ = child.kill();
+            let _ = child.wait();
+            return Err(e);
+        }
+        Ok(child)
     }
 }
 
@@ -217,60 +228,4 @@ pub fn is_root(record: &Value) -> bool {
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn classifies_server_answers_apart_from_lost_calls() {
-        let rejected = classify(
-            "Error: stream response \"control-2\" failed: block not found: block:x (status=404 code=not_found)\n",
-        );
-        assert!(matches!(rejected, CallError::Rejected { ref code, .. } if code == "not_found"));
-        assert!(rejected.not_found());
-        let gone = classify(
-            "Error: stream response \"control-1\" failed: session session:x not found (status=404 code=session_not_found)\n",
-        );
-        assert!(gone.not_found());
-        let unknown = classify("Error: server went away: reading API control: EOF\n");
-        assert!(matches!(unknown, CallError::Unknown(_)));
-    }
-
-    #[test]
-    fn decodes_the_socket_path() {
-        let cli = Cli {
-            bin: "rex".into(),
-            endpoint: "unix:///Users/me/Library/Application%20Support/rex/server.sock".into(),
-        };
-        assert_eq!(
-            cli.socket_path().unwrap(),
-            PathBuf::from("/Users/me/Library/Application Support/rex/server.sock")
-        );
-    }
-
-    #[test]
-    fn an_ambiguous_pane_is_refused_with_its_reason_and_an_unknown_status_is_not_found() {
-        let ambiguous = json!({ "results": [{
-            "query": " ", "status": "ambiguous", "reason": "multiple sessions are available",
-            "candidates": [{ "kind": "session", "session_id": "session:s" }],
-        }] });
-        let blank = resolved_session(&ambiguous, " ").unwrap_err().to_string();
-        assert!(
-            blank.contains("ambiguous: multiple sessions are available"),
-            "{blank}"
-        );
-        let unknown =
-            json!({ "results": [{ "status": "pending", "target": { "session_id": "s" } }] });
-        assert_eq!(resolved_session(&unknown, "block:b").unwrap(), None);
-    }
-
-    #[test]
-    fn reads_lua_lists_leniently() {
-        let reply = json!({ "windows": {}, "sessions": [{ "session_id": "s" }] });
-        assert!(items(&reply, "/windows").is_empty());
-        assert!(items(&reply, "/absent").is_empty());
-        assert_eq!(items(&reply, "/sessions").len(), 1);
-        assert!(listed_blocks(&json!({ "blocks": {} })).is_empty());
-        let list = json!({ "blocks": [{ "block_id": "block:a", "placement": "detached" }, {}] });
-        assert_eq!(listed_blocks(&list), ["block:a"]);
-    }
-}
+mod tests;

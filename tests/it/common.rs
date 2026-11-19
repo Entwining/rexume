@@ -161,6 +161,22 @@ impl Drop for Daemon {
     }
 }
 
+pub fn children(pid: u32) -> Vec<(u32, String)> {
+    let output = Command::new("ps")
+        .args(["-axo", "pid=,ppid=,comm="])
+        .output()
+        .unwrap();
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split_whitespace();
+            let child: u32 = fields.next()?.parse().ok()?;
+            let parent: u32 = fields.next()?.parse().ok()?;
+            (parent == pid).then(|| (child, fields.collect::<Vec<_>>().join(" ")))
+        })
+        .collect()
+}
+
 pub fn alive(pid: u32) -> bool {
     Command::new("kill")
         .args(["-0", &pid.to_string()])

@@ -12,14 +12,10 @@ local function to_daemon(message)
   end
 end
 
-local argv = {}
-for i, arg in ipairs(rex.args.relay) do argv[i] = arg end
-argv[#argv + 1] = rex.args.token
-
 -- Without detach, Rex stops the command when the script's top level finishes. The relay still
 -- ends with this script: its standard input closes when `rex do` exits.
 local err
-relay, err = rex.exec.start(argv, {
+relay, err = rex.exec.start(rex.args.relay, {
   stdin = true,
   detach = true,
   stdout = function(data)
@@ -36,6 +32,10 @@ relay, err = rex.exec.start(argv, {
   stderr = function(data) io.stderr:write(data) end,
 })
 if not relay then error(err, 0) end
+-- The token is the first line the daemon reads. Nothing else writes to the relay before it: the
+-- daemon sends no call until it has read the token, and no event handler is registered yet.
+local ok, failure = relay:write(rex.args.token .. "\n")
+if not ok then error(failure, 0) end
 
 local function forward(ctx, ev)
   to_daemon({

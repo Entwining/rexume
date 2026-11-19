@@ -8,10 +8,9 @@ use std::path::Path;
 
 use anyhow::{Context, Result};
 
-pub fn run(socket: &Path, token: &str) -> Result<()> {
+pub fn run(socket: &Path) -> Result<()> {
     let mut stream = UnixStream::connect(socket)
         .with_context(|| format!("failed to connect to `{}`", socket.display()))?;
-    writeln!(stream, "{token}")?;
     let mut up = stream.try_clone()?;
     std::thread::spawn(move || {
         let _ = std::io::copy(&mut std::io::stdin().lock(), &mut up);
