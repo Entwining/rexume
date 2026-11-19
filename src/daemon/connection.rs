@@ -8,7 +8,7 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, bail};
 use serde_json::json;
 
-use super::{ADAPTER, Daemon, EXE, Exit, FIRST_FILE, SERVER_DIR, STOP, WAL};
+use super::{ADAPTER, Daemon, EXE, Exit, FIRST_FILE, LISTEN, SERVER_DIR, STOP, WAL};
 use crate::event::Fired;
 use crate::rex::{Pipe, require_str, str_at};
 use crate::store::new_id;
@@ -40,7 +40,23 @@ impl Daemon<'_> {
         }
     }
 
+    /// Also closes every connection waiting on the socket, since only `accept` takes one and a
+    /// pending connection would end every wait at once.
     pub(super) fn wait(&mut self, timeout: Option<Duration>) -> Result<Vec<Fired>> {
+        let fired = self.wait_keeping_connections(timeout)?;
+        if fired.iter().any(|f| f.token == LISTEN) {
+            loop {
+                match self.listener.accept() {
+                    Ok(_) => log::warn!("refused a connection the daemon was not waiting for"),
+                    Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => break,
+                    Err(e) => return Err(e.into()),
+                }
+            }
+        }
+        Ok(fired)
+    }
+
+    fn wait_keeping_connections(&mut self, timeout: Option<Duration>) -> Result<Vec<Fired>> {
         let fired = self.queue.wait(timeout)?;
         if fired.iter().any(|f| f.token == STOP) {
             return Err(Exit::Stopped.into());
@@ -145,12 +161,11 @@ impl Daemon<'_> {
         }
         loop {
             match self.listener.accept() {
-                Ok((stream, _)) => {
-                    if first_line(&stream)? == token {
-                        return Ok(Pipe::new(stream)?);
-                    }
-                    log::warn!("refused a connection without this adapter's token");
-                }
+                Ok((stream, _)) => match first_line(&stream) {
+                    Ok(line) if line == token => return Ok(Pipe::new(stream)?),
+                    Ok(_) => log::warn!("refused a connection without this adapter's token"),
+                    Err(e) => log::warn!("refused a connection: {e:#}"),
+                },
                 Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {}
                 Err(e) => return Err(e.into()),
             }
@@ -161,7 +176,11 @@ impl Daemon<'_> {
                     CONNECT_WAIT.as_secs()
                 );
             }
-            if self.wait(Some(left))?.iter().any(|f| f.token == ADAPTER) {
+            if self
+                .wait_keeping_connections(Some(left))?
+                .iter()
+                .any(|f| f.token == ADAPTER)
+            {
                 bail!("`rex do` exited before connecting");
             }
         }

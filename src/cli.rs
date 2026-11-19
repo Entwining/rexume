@@ -165,6 +165,9 @@ enum Command {
         /// The daemon's socket
         #[arg(value_name = "SOCKET")]
         socket: PathBuf,
+        /// The token that only daemons up to 0.1.25 pass; its value is never used
+        #[arg(value_name = "TOKEN", hide = true)]
+        legacy_token: Option<String>,
     },
 }
 
@@ -268,7 +271,14 @@ fn run(command: Command) -> Result<Option<(Value, u8)>> {
             command: SkillCommand::Status,
         } => skill::status().map(|value| Some((value, 0))),
         Command::Task { command, state } => task::run(command, &state.resolve()?).map(Some),
-        Command::Relay { socket } => rex::relay::run(&socket).map(|()| None),
+        Command::Relay {
+            socket,
+            legacy_token: None,
+        } => rex::relay::run(&socket).map(|()| None),
+        Command::Relay {
+            socket,
+            legacy_token: Some(_),
+        } => rex::relay::hand_over(&socket).map(|()| None),
         Command::Report { .. }
         | Command::Gate { .. }
         | Command::Skill {
