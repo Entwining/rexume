@@ -28,18 +28,19 @@ pub(super) fn caller(store: &Store) -> Result<Caller> {
     let instance = require_str(&status, "/instance_id")?;
     let host = str_at(&status, "/host_id").map(str::to_owned);
     let conn = store.conn();
-    let recorded = match lineage_of(conn, &instance, &block)? {
-        Some(lineage) => conn
+    let unrecorded = || format!("no conversation recorded for pane {block}");
+    let lineage = lineage_of(conn, &instance, &block)?.with_context(unrecorded)?;
+    let (runtime, native_id) = match std::env::var("OPENCODE_SESSION_ID") {
+        Ok(session) => (Runtime::OpenCode, recorded_session(conn, session)?),
+        Err(_) => conn
             .query_row(
                 "SELECT runtime, native_id FROM occupant WHERE block_lineage = ?1",
                 params![lineage],
-                |row| Ok((lineage.clone(), row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
-            .optional()?,
-        None => None,
+            .optional()?
+            .with_context(unrecorded)?,
     };
-    let (lineage, runtime, native_id) =
-        recorded.with_context(|| format!("no conversation recorded for pane {block}"))?;
     Ok(Caller {
         rex,
         instance,
@@ -92,30 +93,25 @@ pub(super) fn owned(conn: &Connection, id: &str, caller: &Caller) -> Result<()> 
     }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn a_worker_is_local_only_when_its_host_equals_the_servers() {
-        let list = json!({ "blocks": [
-            { "block_id": "block:here", "host_id": "h1" },
-            { "block_id": "block:there", "host_id": "h2" },
-            { "block_id": "block:unknown" },
-        ] });
-        assert!(on_host(&list, "block:here", Some("h1")).is_ok());
-        assert!(on_host(&list, "block:unknown", None).is_ok());
-        for (worker, host) in [
-            ("block:there", Some("h1")),
-            ("block:unknown", Some("h1")),
-            ("block:here", None),
-        ] {
-            let refused = on_host(&list, worker, host).unwrap_err().to_string();
-            assert!(refused.contains("another machine"), "{worker}: {refused}");
-        }
-        let missing = on_host(&list, "block:gone", Some("h1"))
-            .unwrap_err()
-            .to_string();
-        assert_eq!(missing, "pane block:gone is not on the server");
+/// OpenCode's service goes on running every session a TUI showed, after the TUI moved on or
+/// exited, so the session that runs a command, which OpenCode's shell tool names in
+/// `OPENCODE_SESSION_ID`, may not be the pane's conversation. Only a recorded session can own a
+/// task; a subagent's never is.
+fn recorded_session(conn: &Connection, session: String) -> Result<String> {
+    let recorded = conn
+        .query_row(
+            "SELECT 1 FROM conversation WHERE runtime = 'opencode' AND native_id = ?1",
+            params![session],
+            |_| Ok(()),
+        )
+        .optional()?;
+    if recorded.is_none() {
+        bail!(
+            "no conversation recorded for OpenCode session {session}; run task commands from a session a Rex pane shows"
+        );
     }
+    Ok(session)
 }
+
+#[cfg(test)]
+mod tests;

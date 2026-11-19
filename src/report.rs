@@ -24,8 +24,9 @@ pub struct Report {
     pub resumable: bool,
     /// A JSON merge patch (RFC 7396) over the recorded settings.
     pub settings: Map<String, Value>,
-    /// Measured by the Pi and omp extensions, whose session goes on while the report runs; a Claude
-    /// Code or Codex hook holds the session until the report ends, so the report measures it.
+    /// Measured by the Pi and omp extensions and the OpenCode plugin, whose session goes on while the
+    /// report runs; a Claude Code or Codex hook holds the session until the report ends, so the
+    /// report measures it.
     pub record_length: Option<u64>,
 }
 
@@ -43,7 +44,8 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
     // conversation, and none of its guardian reviews or side conversations, nor an ephemeral
     // `codex exec` run. Pi runs the pane's interactive session in `tui` mode, and an SDK session an
     // extension creates starts in `print` mode, as `pi -p` does. omp runs its extensions in each
-    // subagent session too, and its extension reports only the session omp was started for.
+    // subagent session too, and its extension reports only the session omp was started for. The
+    // OpenCode plugin runs only in the TUI, and reports the session it shows.
     let role = match runtime {
         Runtime::Claude if input.get("agent_id").is_some_and(|v| !v.is_null()) => Role::Inner,
         Runtime::Codex if text("transcript_path").is_none() => Role::Unmarked,
@@ -95,6 +97,15 @@ pub fn parse(runtime: Runtime, input: &Value) -> Result<Report> {
                 record_length: input.get("record_length").and_then(Value::as_u64),
             }
         }
+        // OpenCode takes the agent and model from the session it reopens.
+        Runtime::OpenCode => Report {
+            native_id: text("session_id").context("hook input without session_id")?,
+            role,
+            resumable: true,
+            transcript: None,
+            settings: Map::new(),
+            record_length: input.get("record_length").and_then(Value::as_u64),
+        },
     })
 }
 

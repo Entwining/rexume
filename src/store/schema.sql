@@ -95,8 +95,9 @@ CREATE UNIQUE INDEX IF NOT EXISTS live_lineage ON live (instance_id, lineage);
 -- a resumed session's start omits is kept and one the report sets to null is removed.
 -- `transcript` is the runtime's own file of the conversation, from which the runtime reopens it,
 -- and which a later report without one leaves in place. Codex's and Pi's turns are read from that
--- file; Claude Code's and omp's from a record in the state directory, written by Claude Code's
--- turn hooks or the omp extension and named by `runtime` and `native_id` (Runtime::record).
+-- file; Claude Code's, omp's, and OpenCode's from a record in the state directory, written by
+-- Claude Code's turn hooks, the omp extension, or the OpenCode plugin and named by `runtime` and
+-- `native_id` (Runtime::record). OpenCode's sessions have no file.
 -- `resumable` is 0 for a conversation its runtime cannot reopen, such as a run its runtime keeps
 -- no record of or a Pi or omp session without a session file.
 -- `reported_at` is when the conversation was last reported.
@@ -118,11 +119,11 @@ CREATE TABLE IF NOT EXISTS conversation (
 -- pane, so there is no reference to `block`; store::forget_block deletes the occupant with the
 -- block, and the sweep an earlier instance's occupant whose pane it forgot. `transport` is a
 -- JSON object owned by the runtime's module: how a notice reaches this process (Claude Code's
--- messaging socket, known only from its report; nothing for Codex, Pi, and omp). `pid` and
--- `pid_name` are the process and the name Rex reported for it, which tell whether a pane's later
--- status came from the same process; a process the gate recorded has no name until it reports, and
--- matches any name. `instance_id` is the server instance they are from, NULL for a report before
--- version 3 that no epoch dates. `own_program`: the process was the
+-- messaging socket, known only from its report; nothing for Codex, Pi, omp, and OpenCode). `pid`
+-- and `pid_name` are the process and the name Rex reported for it, which tell whether a pane's
+-- later status came from the same process; a process the gate recorded has no name until it
+-- reports, and matches any name. `instance_id` is the server instance they are from, NULL for a
+-- report before version 3 that no epoch dates. `own_program`: the process was the
 -- terminal's own program rather than one started from its shell, so its exit is the terminal's,
 -- as a conversation an earlier version's restore started was; NULL, unknown, before version 3.
 -- `keeps_session_env`: the process ran with `REX_SESSION`, so its reopened conversation gets it
@@ -305,9 +306,9 @@ CREATE INDEX IF NOT EXISTS task_worker_conversation ON task (worker_runtime, wor
 -- a program ran there is unknown.
 -- `acked_at`: when the owner acknowledged the result. `result_ref` is the record ID of an
 -- interactive worker's answer (for Claude Code and omp, the ID of the `stop` or `end` line that
--- ends its turn in their record), or a non-interactive run's result file; `note` says why a round
--- ended without a result. `result` is last: the one large column, so reads of the others never
--- cross its overflow pages.
+-- ends its turn in their record; for OpenCode, its message ID), or a non-interactive run's result
+-- file; `note` says why a round ended without a result. `result` is last: the one large column, so
+-- reads of the others never cross its overflow pages.
 CREATE TABLE IF NOT EXISTS task_round (
   task_id              TEXT    NOT NULL REFERENCES task (id) ON DELETE CASCADE,
   round                INTEGER NOT NULL,

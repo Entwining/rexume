@@ -4,7 +4,7 @@ use anyhow::Context as _;
 
 use super::*;
 use crate::runtime::pi;
-use crate::runtime::tests::{answer_line, append_to_record, receipt_line};
+use crate::runtime::tests::{answer_lines, append_to_record, receipt_line};
 use crate::task::follow::Follow;
 use crate::task::gone::block_gone;
 use crate::task::notice::orphaned_sends;
@@ -111,9 +111,10 @@ fn request_lifecycle(runtime: Runtime) -> Result<()> {
         "w",
         transcript.path(),
         &[
-            receipt_line(runtime, &runtime::token(&id)),
-            answer_line(runtime, "a1", "Here."),
-        ],
+            vec![receipt_line(runtime, &runtime::token(&id))],
+            answer_lines(runtime, "a1", "Here."),
+        ]
+        .concat(),
     )?;
     Follow::default().pass(&mut store, None)?;
     assert_eq!(request(&store)?.0, "delivered");
@@ -132,7 +133,7 @@ fn request_lifecycle(runtime: Runtime) -> Result<()> {
 
 #[test]
 fn a_request_is_sent_once_its_worker_is_idle_in_its_pane_and_settled_by_its_record() -> Result<()> {
-    for runtime in [Runtime::Pi, Runtime::Omp] {
+    for runtime in [Runtime::Pi, Runtime::Omp, Runtime::OpenCode] {
         request_lifecycle(runtime)?;
     }
     Ok(())

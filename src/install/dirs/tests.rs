@@ -197,3 +197,27 @@ fn install_skips_a_runtime_whose_directory_it_cannot_resolve() -> anyhow::Result
     assert!(!home.path().join(".agents").exists());
     Ok(())
 }
+
+#[test]
+fn opencode_reads_its_own_variable_before_the_xdg_configuration_directory() {
+    let home = Path::new("/home/u");
+    let opencode =
+        |vars: &[(&str, &str)]| resolve(home, vars).opencode.usable().map(Path::to_owned);
+    assert_eq!(opencode(&[]), Ok(home.join(".config/opencode")));
+    assert_eq!(
+        opencode(&[("XDG_CONFIG_HOME", "/xdg")]),
+        Ok(PathBuf::from("/xdg/opencode"))
+    );
+    assert_eq!(
+        opencode(&[("XDG_CONFIG_HOME", "/xdg"), ("OPENCODE_CONFIG_DIR", "/oc")]),
+        Ok(PathBuf::from("/oc"))
+    );
+    assert_eq!(
+        opencode(&[("XDG_CONFIG_HOME", "/xdg"), ("OPENCODE_CONFIG_DIR", "")]),
+        Ok(PathBuf::from("/xdg/opencode"))
+    );
+    assert_eq!(
+        opencode(&[("XDG_CONFIG_HOME", "xdg")]),
+        Err("`XDG_CONFIG_HOME` is `xdg`, not an absolute path".to_owned())
+    );
+}

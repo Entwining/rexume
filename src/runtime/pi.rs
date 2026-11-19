@@ -1,9 +1,7 @@
 use std::path::{Path, PathBuf};
 
-use anyhow::Result;
 use serde_json::Value;
 
-use super::lines::last_record;
 use super::{Conversation, Sealed, Span, Turn, content_texts, inbox, text_at};
 
 pub const EXTENSION: &str = include_str!("pi/extension.ts");
@@ -53,15 +51,6 @@ pub fn settings(transcript: &Path, conversation: &mut Conversation) {
             conversation.settings.remove(key);
         }
     }
-}
-
-/// Another Pi may have the same session open, so only the end of the process the pane ran counts.
-pub fn killed_at(exits: &Path, pid: i64) -> Result<Option<i64>> {
-    last_record(exits, "\"pid\"", |exit| {
-        (exit.get("pid").and_then(Value::as_i64) == Some(pid))
-            .then(|| exit.get("at").and_then(Value::as_i64))
-            .flatten()
-    })
 }
 
 pub fn received(record: &Value) -> bool {

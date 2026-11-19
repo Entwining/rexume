@@ -21,8 +21,8 @@ use systemd_unit as job;
 pub use claude_plugin::refresh as refresh_claude_plugin;
 pub use dirs::Dirs;
 pub use extension::refresh_extensions;
-use extension::{OMP_EXTENSION, PI_EXTENSION};
-use file::{read_json, refresh_file, remove_file, write, write_json};
+use extension::{OMP_EXTENSION, OPENCODE_PLUGIN, PI_EXTENSION};
+use file::{read_json, refresh_file, remove_file, remove_file_and_dir, write, write_json};
 pub use skill::refresh_skills;
 
 pub struct Install {
@@ -105,6 +105,7 @@ pub fn install(dirs: &Dirs, install: &Install) -> Result<Value> {
     )?;
     let pi = PI_EXTENSION.install(dirs)?;
     let omp = OMP_EXTENSION.install(dirs)?;
+    let opencode = OPENCODE_PLUGIN.install(dirs)?;
     let daemon = job::install(install, home)?;
     // After the job, so that a stub that cannot be written does not keep the daemon from running.
     let [agents_skill, claude_skill] = skill::install(dirs)?;
@@ -117,6 +118,7 @@ pub fn install(dirs: &Dirs, install: &Install) -> Result<Value> {
         ("codex_hook", codex),
         ("pi_extension", pi),
         ("omp_extension", omp),
+        ("opencode_plugin", opencode),
         agents_skill,
         claude_skill,
         (job::KEY, (daemon, None)),
@@ -135,6 +137,7 @@ pub fn uninstall(dirs: &Dirs, path: &str) -> Result<Value> {
     let codex = remove_hook(&targets.codex, "codex", &CODEX_EVENTS)?;
     let pi = PI_EXTENSION.uninstall(dirs)?;
     let omp = OMP_EXTENSION.uninstall(dirs)?;
+    let opencode = OPENCODE_PLUGIN.uninstall(dirs)?;
     let daemon = job::remove(home)?;
     let [agents_skill, claude_skill] = skill::uninstall(dirs)?;
     // Last, so that a missing or failing `claude` leaves only the plugin for the next uninstall.
@@ -145,6 +148,7 @@ pub fn uninstall(dirs: &Dirs, path: &str) -> Result<Value> {
         ("codex_hook", codex),
         ("pi_extension", pi),
         ("omp_extension", omp),
+        ("opencode_plugin", opencode),
         agents_skill,
         claude_skill,
         (job::KEY, daemon),

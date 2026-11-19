@@ -19,6 +19,30 @@ pub(super) fn remove_file(path: &Path, ours: impl Fn(&str) -> bool) -> Result<Ou
     }
 }
 
+/// Also removes the directory the file was in once that is empty, for a file install keeps in a
+/// directory of its own.
+pub(super) fn remove_file_and_dir(path: &Path, ours: impl Fn(&str) -> bool) -> Result<Outcome> {
+    let outcome = remove_file(path, ours)?;
+    if outcome.0 == "removed"
+        && let Some(dir) = path.parent()
+    {
+        match std::fs::remove_dir(dir) {
+            Ok(()) => {}
+            // A directory that is a link fails with `NotADirectory`; the link is the user's and
+            // stays.
+            Err(e)
+                if matches!(
+                    e.kind(),
+                    ErrorKind::DirectoryNotEmpty | ErrorKind::NotADirectory
+                ) => {}
+            Err(e) => {
+                return Err(e).with_context(|| format!("failed to remove `{}`", dir.display()));
+            }
+        }
+    }
+    Ok(outcome)
+}
+
 pub(super) fn refresh_file(
     path: &Path,
     bytes: &[u8],

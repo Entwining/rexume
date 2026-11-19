@@ -140,11 +140,11 @@ pub fn run(options: &Options) -> Result<()> {
 /// A daemon starts after every upgrade, so this is where an upgrade's integration files reach
 /// each runtime. A runtime missing one is no reason to stop restoring the others.
 fn refresh_integrations(dirs: &install::Dirs) {
-    for (runtime, refreshed) in install::refresh_extensions(dirs) {
+    for (extension, refreshed) in install::refresh_extensions(dirs) {
         match refreshed {
-            Ok("updated") => log::info!("updated the {runtime} extension"),
+            Ok("updated") => log::info!("updated the {extension}"),
             Ok(_) => {}
-            Err(e) => log::warn!("failed to refresh the {runtime} extension: {e:#}"),
+            Err(e) => log::warn!("failed to refresh the {extension}: {e:#}"),
         }
     }
     match install::refresh_claude_plugin(dirs) {

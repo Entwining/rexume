@@ -3,7 +3,7 @@ use std::os::unix::fs::PermissionsExt;
 use anyhow::Result;
 
 use super::super::tests::{node, settings, transcript};
-use super::super::{Runtime, last_turn};
+use super::super::{Runtime, exit_of, last_turn};
 use super::*;
 
 #[test]
@@ -155,7 +155,7 @@ fn the_extension_records_a_signals_end_of_an_interactive_session_in_a_rex_pane()
         let pid: i64 = String::from_utf8(out.stdout)?.trim().parse()?;
         let exits = exits(&state_dir, id);
         assert_eq!(exits.parent(), Some(records(&state_dir).as_path()));
-        let at = killed_at(&exits, pid)?;
+        let at = exit_of(&exits, pid)?;
         assert_eq!(
             at.is_some_and(|at| (before..=crate::store::now_ms()).contains(&at)),
             recorded,

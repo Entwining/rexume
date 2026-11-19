@@ -6,4 +6,6 @@ A blocked episode now belongs to the task instead of a round: a round that finis
 
 The daemon no longer puts the token that ties its connection to `rex do` on any command line. `rex do` and `rexume relay` used to take it as an argument, so every process listing showed it, and tools that scan command output for secrets, such as an agent's output filter, withheld or redacted whole listings because of it.
 
+Rexume now supports OpenCode 2.3 and later. `rexume install` writes an OpenCode plugin to `~/.config/opencode/plugins/rexume/tui.ts` when OpenCode's configuration directory exists, and installs the skill stub for OpenCode too; run `rexume install` again to add it to an existing installation. A restored pane that ran OpenCode reopens its session with `opencode --session`, and OpenCode workers and orchestrators get notices and requests like the other runtimes. OpenCode runs its turns in a background service of its own, which goes on with a turn the Rex server's end cut off, so Rexume never sends it the continuation prompt.
+
 The Pi and omp extensions no longer end their agent when watching the inbox fails, as when the process has run out of file descriptors: they warn that they stopped watching instead.

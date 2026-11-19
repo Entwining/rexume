@@ -23,6 +23,15 @@ fn an_omp_report_names_its_session_file_and_no_settings() -> Result<()> {
 }
 
 #[test]
+fn an_opencode_report_carries_the_length_its_plugin_measured() -> Result<()> {
+    let input = json!({"session_id": "ses_a", "record_length": 7});
+    let report = parse(Runtime::OpenCode, &input)?;
+    assert!(report.resumable && report.role == Role::Own && report.transcript.is_none());
+    assert_eq!(report.record_length, Some(7));
+    Ok(())
+}
+
+#[test]
 fn a_resumed_claude_conversation_keeps_its_launch_model() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let mut store = Store::open(dir.path())?;

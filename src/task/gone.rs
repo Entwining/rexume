@@ -16,7 +16,7 @@ pub(super) static WORKER_ROUNDS: LazyLock<String> = LazyLock::new(|| {
          WHERE t.worker_lineage = ?1 AND {OPEN}
            AND (t.result_file IS NOT NULL
                 OR (c.transcript IS NULL
-                    AND (t.worker_runtime IS NULL OR t.worker_runtime NOT IN ('claude', 'omp'))))"
+                    AND (t.worker_runtime IS NULL OR t.worker_runtime NOT IN ('claude', 'omp', 'opencode'))))"
     )
 });
 

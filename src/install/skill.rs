@@ -5,7 +5,7 @@ use anyhow::{Context, Result};
 
 use super::dirs::Dir;
 use super::file::physical;
-use super::{Dirs, Outcome, refresh_file, remove_file, write};
+use super::{Dirs, Outcome, refresh_file, remove_file_and_dir, write};
 use crate::skill::STUB;
 
 const WRITTEN_BY: &str = "<!-- Written by `rexume install`";
@@ -22,7 +22,7 @@ const TARGETS: [Target; 2] = [
     Target {
         key: "agents_skill",
         skills: |dirs| Ok(dirs.home.join(".agents/skills")),
-        runtimes: |dirs| vec![&dirs.codex, &dirs.pi],
+        runtimes: |dirs| vec![&dirs.codex, &dirs.pi, &dirs.opencode],
     },
     Target {
         key: "claude_skill",
@@ -101,27 +101,7 @@ pub(super) fn install(dirs: &Dirs) -> Result<[(&'static str, Outcome); 2]> {
 }
 
 pub(super) fn uninstall(dirs: &Dirs) -> Result<[(&'static str, Outcome); 2]> {
-    each(dirs, skipped, |_, path| {
-        let outcome = remove_file(path, is_ours)?;
-        if outcome.0 == "removed"
-            && let Some(dir) = path.parent()
-        {
-            match std::fs::remove_dir(dir) {
-                Ok(()) => {}
-                // A `rexume` that links to a directory fails with `NotADirectory`; the link is the
-                // user's and stays.
-                Err(e)
-                    if matches!(
-                        e.kind(),
-                        ErrorKind::DirectoryNotEmpty | ErrorKind::NotADirectory
-                    ) => {}
-                Err(e) => {
-                    return Err(e).with_context(|| format!("failed to remove `{}`", dir.display()));
-                }
-            }
-        }
-        Ok(outcome)
-    })
+    each(dirs, skipped, |_, path| remove_file_and_dir(path, is_ours))
 }
 
 pub fn refresh_skills(dirs: &Dirs) -> Result<[(&'static str, &'static str); 2]> {
@@ -235,7 +215,10 @@ mod tests {
         let (outcome, note) = install(&Dirs::new(home))?[0].1.clone();
         assert_eq!(
             (outcome, note.as_deref()),
-            ("skipped", Some("no `~/.codex` or `~/.pi/agent`"))
+            (
+                "skipped",
+                Some("no `~/.codex` or `~/.pi/agent` or `~/.config/opencode`")
+            )
         );
         assert!(!agents.exists());
 

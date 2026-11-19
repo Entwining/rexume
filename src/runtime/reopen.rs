@@ -3,7 +3,7 @@ use std::path::Path;
 use anyhow::Result;
 use serde_json::{Map, Value};
 
-use super::{Conversation, Runtime, claude, codex, omp, pi};
+use super::{Conversation, Runtime, claude, codex, omp, opencode, pi};
 use crate::proc;
 
 const TASK_META: &str = "REXUME_TASK_META";
@@ -15,13 +15,14 @@ impl Runtime {
             Self::Codex => codex::resume_argv(conversation),
             Self::Pi => pi::resume_argv(conversation),
             Self::Omp => omp::resume_argv(conversation),
+            Self::OpenCode => opencode::resume_argv(conversation),
         }
     }
 
     pub fn resume_env(self, conversation: &Conversation) -> Vec<(String, String)> {
         let mut env = match self {
             Self::Claude => claude::resume_env(conversation),
-            Self::Codex | Self::Pi | Self::Omp => Vec::new(),
+            Self::Codex | Self::Pi | Self::Omp | Self::OpenCode => Vec::new(),
         };
         let meta = conversation.setting("task_meta").unwrap_or_default();
         env.push((TASK_META.to_owned(), meta.to_owned()));
@@ -44,7 +45,7 @@ impl Runtime {
     fn launch_patch(self, launch: &proc::Launch, pid: u32) -> Map<String, Value> {
         let mut settings = match self {
             Self::Claude => claude::launch::patch(launch, pid),
-            Self::Codex | Self::Pi | Self::Omp => Map::new(),
+            Self::Codex | Self::Pi | Self::Omp | Self::OpenCode => Map::new(),
         };
         let meta = launch.var(TASK_META).filter(|meta| !meta.is_empty());
         settings.insert(
@@ -57,20 +58,20 @@ impl Runtime {
     pub fn launch_error(self, conversation: &Conversation) -> Option<&str> {
         match self {
             Self::Claude => conversation.setting("launch_error"),
-            Self::Codex | Self::Pi | Self::Omp => None,
+            Self::Codex | Self::Pi | Self::Omp | Self::OpenCode => None,
         }
     }
 
     /// Claude Code, Codex, and omp refuse to resume a conversation whose file does not exist yet,
     /// which Claude Code and Codex write only with its first prompt; Pi opens a missing session
-    /// file as a new session.
+    /// file as a new session, and OpenCode's sessions have no file.
     pub fn can_reopen(self, conversation: &Conversation) -> bool {
         match self {
             Self::Claude | Self::Codex | Self::Omp => conversation
                 .transcript
                 .as_deref()
                 .is_none_or(|transcript| Path::new(transcript).exists()),
-            Self::Pi => true,
+            Self::Pi | Self::OpenCode => true,
         }
     }
 
@@ -86,13 +87,15 @@ impl Runtime {
                 Ok(())
             }
             // omp restores them from the session file it reopens.
-            Self::Omp => Ok(()),
+            Self::Omp | Self::OpenCode => Ok(()),
         }
     }
 }
 
 #[cfg(test)]
 mod tests {
+    use clap::ValueEnum as _;
+
     use super::*;
 
     fn launch(env: &[String]) -> proc::Launch {
@@ -112,7 +115,7 @@ mod tests {
             r#"REXUME_LAUNCH=["claude"]"#.to_owned(),
             "AWS_REGION=x".to_owned(),
         ];
-        for runtime in [Runtime::Claude, Runtime::Codex, Runtime::Pi, Runtime::Omp] {
+        for &runtime in Runtime::value_variants() {
             for env in [&[given.clone()][..], &declared] {
                 let settings = runtime.launch_patch(&launch(env), 7);
                 assert_eq!(settings["task_meta"], meta, "{runtime}");

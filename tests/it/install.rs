@@ -20,7 +20,8 @@ impl Home {
     fn new() -> Self {
         let dir = tempfile::tempdir().unwrap();
         let home = dir.path().join("home");
-        for sub in [".claude", ".codex", ".pi/agent", ".omp/agent", "bin"] {
+        let agents = [".claude", ".codex", ".pi/agent", ".omp/agent"];
+        for sub in agents.into_iter().chain([".config/opencode", "bin"]) {
             std::fs::create_dir_all(home.join(sub)).unwrap();
         }
         let rex_hook =
@@ -108,6 +109,7 @@ while :; do sleep 60 & sleeper=$!; wait $sleeper; done
             ".codex/hooks.json",
             ".pi/agent/extensions/rexume.ts",
             ".omp/agent/extensions/rexume.ts",
+            ".config/opencode/plugins/rexume/tui.ts",
         ]
         .iter()
         .map(|p| home.join(p))
@@ -151,12 +153,13 @@ fn session_start(path: &Path) -> Vec<String> {
         .collect()
 }
 
-fn outcomes(out: &Value) -> [(&str, Option<&str>); 5] {
+fn outcomes(out: &Value) -> [(&str, Option<&str>); 6] {
     let keys = [
         "claude_hook",
         "codex_hook",
         "pi_extension",
         "omp_extension",
+        "opencode_plugin",
         manager::KEY,
     ];
     keys.map(|key| {
@@ -187,7 +190,7 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
         session_start(&home.home().join(".claude/settings.json")),
         ["rex-hook", "rexume report claude"]
     );
-    let job = String::from_utf8(installed[4].1.clone().unwrap()).unwrap();
+    let job = String::from_utf8(installed[5].1.clone().unwrap()).unwrap();
     assert!(job.contains(&manager::quoted("daemon")) && job.contains("/opt/rex/bin/rex"));
     let path = format!("{}:/usr/bin:/bin", home.home().join("bin").display());
     assert!(job.contains(&path), "the daemon runs with install's PATH");
@@ -228,7 +231,7 @@ fn install_converges_and_uninstall_removes_only_its_own_entries() {
             .unwrap();
     assert_eq!(settings["model"], "opus");
     let left = home.targets();
-    assert!(left[2].1.is_none() && left[3].1.is_none() && left[4].1.is_none());
+    assert!(left[2..].iter().all(|(_, bytes)| bytes.is_none()));
     assert_eq!(home.starts_and_stops(), (2, 2));
     let twice = home.run(&["uninstall"]);
     assert!(outcomes(&twice).iter().all(|o| *o == ("absent", None)));

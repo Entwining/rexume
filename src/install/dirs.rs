@@ -24,6 +24,16 @@ const PI: Location = Location {
     default: ".pi/agent",
     tilde: true,
 };
+const OPENCODE: Location = Location {
+    var: "OPENCODE_CONFIG_DIR",
+    default: ".config/opencode",
+    tilde: false,
+};
+const XDG_CONFIG: Location = Location {
+    var: "XDG_CONFIG_HOME",
+    default: ".config",
+    tilde: false,
+};
 
 /// Where one runtime reads its configuration, and whether install may write there.
 pub struct Dir {
@@ -73,6 +83,8 @@ pub struct Dirs {
     /// omp reads `~/.omp/agent` unless a profile or a variable it shares with Pi moves it; install
     /// writes only the default (`docs/setup.md`).
     pub omp: Dir,
+    /// `OPENCODE_CONFIG_DIR`, else `opencode` in the XDG configuration directory.
+    pub opencode: Dir,
     vars: Vec<(&'static str, OsString)>,
 }
 
@@ -107,6 +119,15 @@ impl Dirs {
             }
         };
         let (claude, codex, mut pi) = (dir(CLAUDE), dir(CODEX), dir(PI));
+        let opencode = if var(OPENCODE.var).is_some_and(|value| !value.is_empty()) {
+            dir(OPENCODE)
+        } else {
+            let config = dir(XDG_CONFIG);
+            Dir {
+                path: config.path.map(|path| path.join("opencode")),
+                ..config
+            }
+        };
         let pi_moved = vars.iter().any(|(name, _)| *name == PI.var);
         if pi_moved && omp_installed(home, var("PATH")) {
             pi.blocked.get_or_insert_with(|| {
@@ -122,6 +143,7 @@ impl Dirs {
             codex,
             pi,
             omp: Dir::at(home.join(".omp/agent")),
+            opencode,
             vars,
         }
     }

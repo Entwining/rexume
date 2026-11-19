@@ -4,11 +4,11 @@
 
 Rex restores its own sessions after its server stops. Tabs, panes, and labels come back under the same IDs. Each pane starts a new login shell. Rexume needs [a Rex version that saves sessions](setup.md) to reopen their conversations.
 
-In each restored pane that ran Claude Code, Codex, Pi, or omp, Rexume waits for the shell to be ready with nothing typed at its prompt.
+In each restored pane that ran Claude Code, Codex, Pi, omp, or OpenCode, Rexume waits for the shell to be ready with nothing typed at its prompt.
 
-An interrupted conversation continues once. Its last status must have been working, and its own record must show a turn that had not ended. Rexume reopens it with one prompt to continue.
+An interrupted conversation continues once. Its last status must have been working, and its own record must show a turn that had not ended. Rexume reopens it with one prompt to continue. OpenCode runs its turns in a background service of its own, which goes on with a cut-off turn by itself, so an OpenCode conversation reopens without that prompt.
 
-A conversation otherwise reopens without a new turn when it was still the pane's program. It also reopens when the pane was created to run it and it had exited. A conversation a shutdown, a logout, or another signal ended also reopens, as long as Rex saw no other program in its pane afterwards: the system ends the pane's programs before the Rex server stops. That needs Rex to have seen the conversation's program leave the pane, and no pane to have run the conversation since. Pi and omp record such an end; Claude Code and Codex do not, so their panes keep the shell. Finished, cancelled, or waiting conversations get no new turn, and neither does one a signal ended. Panes you closed stay closed. The same conversation never reopens in two panes.
+A conversation otherwise reopens without a new turn when it was still the pane's program. It also reopens when the pane was created to run it and it had exited. A conversation a shutdown, a logout, or another signal ended also reopens, as long as Rex saw no other program in its pane afterwards: the system ends the pane's programs before the Rex server stops. That needs Rex to have seen the conversation's program leave the pane, and no pane to have run the conversation since. Pi, omp, and OpenCode record such an end; Claude Code and Codex do not, so their panes keep the shell. Finished, cancelled, or waiting conversations get no new turn, and neither does one a signal ended. Panes you closed stay closed. The same conversation never reopens in two panes.
 
 The shell stays in every other pane. That includes a pane whose conversation you quit, or whose conversation another pane reopens. It includes a Claude Code, Codex, or omp conversation that had no session record yet. Runs with no record to reopen also leave the shell, such as an ephemeral `codex exec`, `pi -p`, or `omp -p`. Other programs are not restarted.
 
@@ -22,9 +22,9 @@ Rex does not bring back a pane's earlier output yet. A restored pane starts with
 
 Conversations reopen with the model and effort they last used. Claude Code also keeps its supported [launch flags](cli.md#report), such as `--remote-control`. It keeps the variables that chose its provider, or the command of a launcher that [declares its provider or account choice](cli.md#a-launchers-command).
 
-A Claude Code conversation reopens in the permission mode its record last shows, including bypass mode. Claude Code's own resume does not bring that mode back. Codex restores its approval policy and permissions itself. Pi has no permission modes.
+A Claude Code conversation reopens in the permission mode its record last shows, including bypass mode. Claude Code's own resume does not bring that mode back. Codex restores its approval policy and permissions itself. Pi has no permission modes. OpenCode keeps a session's agent, model, and permission rules in the session.
 
-omp takes its approval mode from launch flags and settings rather than its session. A conversation started with `--approval-mode` or `--yolo` therefore reopens in the mode its settings give.
+omp takes its approval mode from launch flags and settings rather than its session. A conversation started with `--approval-mode` or `--yolo` therefore reopens in the mode its settings give. OpenCode likewise takes `--auto` from its command line, so a conversation started with it reopens in the permission mode its TUI settings give, which asks by default.
 
 ## Check a restore
 
@@ -155,3 +155,11 @@ A launcher that chooses the provider or account without [declaring its command](
 Codex holds queued messages while a conversation's last turn was interrupted and no turn has run since. A notice or request waits until someone gives it input. This was observed on Codex 0.164.0. [openai/codex#56914](https://github.com/openai/codex/issues/56914) asks Codex to show when it holds them.
 
 Codex 0.167.1 passes over a `SKILL.md` that is a symbolic link when it looks for skills. It does not load Rexume's skill if the stub links elsewhere, such as to a file in a dotfiles repository.
+
+### OpenCode turns
+
+OpenCode's background service runs a session's turns whether or not a pane shows it. Closing a worker's pane ends its open round as `worker_closed`, but the turn that round waited for goes on.
+
+A task belongs to the OpenCode session that registered it, even when the TUI shows another session or its home screen by then. Its notices wait until a pane shows that session again. Task commands from a session Rexume has not recorded, such as a subagent's, are refused.
+
+A pane reopens the OpenCode session it showed last, also after the TUI went back to its home screen, as `/clear` and `/new` do.

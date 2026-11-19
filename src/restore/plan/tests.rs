@@ -94,30 +94,32 @@ fn only_a_turn_the_servers_end_cut_off_continues() -> Result<()> {
 }
 
 #[test]
-fn a_codex_answer_wins_over_a_working_status() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let transcript = dir.path().join("t.jsonl");
-    std::fs::write(
-        &transcript,
-        concat!(
-            r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
-            "\n",
-            r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"u1","last_agent_message":"Done."}}"#,
-            "\n"
-        ),
-    )?;
-    let store = Store::open(dir.path())?;
-    conversation(&store, "b", "codex", &transcript)?;
-    store.conn().execute(
-        "INSERT INTO block (lineage, instance_id, fg_pid, status, status_pid, status_name)
-         VALUES ('b', 'i1', 10, 'working', 10, 'codex')",
-        [],
-    )?;
-    ended(&store, "server_gone")?;
-    assert_eq!(
-        candidate(store.conn(), store.dir(), "i2", "b")?.start,
-        Start::Agent
-    );
+fn a_working_status_continues_neither_a_codex_answer_nor_an_opencode_turn() -> Result<()> {
+    let codex = [
+        r#"{"type":"event_msg","payload":{"type":"task_started"}}"#,
+        r#"{"type":"event_msg","payload":{"type":"task_complete","turn_id":"u1","last_agent_message":"Done."}}"#,
+    ];
+    // OpenCode's service goes on with the turn itself.
+    let opencode = [r#"{"id":"u","type":"user"}"#];
+    for (name, lines) in [("codex", &codex[..]), ("opencode", &opencode[..])] {
+        let dir = tempfile::tempdir()?;
+        let store = Store::open(dir.path())?;
+        let transcript = match name {
+            "opencode" => crate::runtime::opencode::record(store.dir(), "b-conversation"),
+            _ => dir.path().join("t.jsonl"),
+        };
+        std::fs::create_dir_all(transcript.parent().unwrap())?;
+        std::fs::write(&transcript, lines.join("\n") + "\n")?;
+        conversation(&store, "b", name, &transcript)?;
+        store.conn().execute(
+            "INSERT INTO block (lineage, instance_id, fg_pid, status, status_pid, status_name)
+             VALUES ('b', 'i1', 10, 'working', 10, ?1)",
+            params![name],
+        )?;
+        ended(&store, "server_gone")?;
+        let planned = candidate(store.conn(), store.dir(), "i2", "b")?;
+        assert_eq!(planned.start, Start::Agent, "{name}");
+    }
     Ok(())
 }
 

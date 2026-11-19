@@ -2,11 +2,11 @@ use anyhow::Context as _;
 
 use super::*;
 use crate::runtime::Runtime;
-use crate::runtime::tests::{answer_line, append_to_record, receipt_line};
+use crate::runtime::tests::{answer_lines, append_to_record, receipt_line};
 
 #[test]
 fn inbox_notices_are_accepted_once_and_delivered_only_from_the_owners_record() -> Result<()> {
-    for runtime in [Runtime::Pi, Runtime::Omp] {
+    for runtime in [Runtime::Pi, Runtime::Omp, Runtime::OpenCode] {
         let dir = tempfile::tempdir()?;
         let transcript = tempfile::NamedTempFile::new()?;
         let (mut store, _listener) = notice_world(dir.path(), transcript.path(), "pending")?;
@@ -40,21 +40,21 @@ fn inbox_notices_are_accepted_once_and_delivered_only_from_the_owners_record() -
         assert!(!pending.exists(), "accepted notices must not be sent twice");
         let token = runtime::token("d");
         let (mention, receipt) = (
-            answer_line(runtime, "a1", &token),
+            answer_lines(runtime, "a1", &token),
             receipt_line(runtime, &token),
         );
         let state = store.dir().to_owned();
-        let append = |line: Value| {
-            append_to_record(runtime, &state, "inbox-owner", transcript.path(), &[line])
+        let append = |lines: &[Value]| {
+            append_to_record(runtime, &state, "inbox-owner", transcript.path(), lines)
         };
-        append(mention)?;
+        append(&mention)?;
         settle(&mut store, &mut receipts, &mut interest)?;
         assert_eq!(
             notice(&store)?.0,
             "accepted",
             "mentioning a token is no receipt"
         );
-        append(receipt)?;
+        append(&[receipt])?;
         settle(&mut store, &mut receipts, &mut interest)?;
         assert_eq!(notice(&store)?.0, "delivered");
     }

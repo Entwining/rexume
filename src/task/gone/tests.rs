@@ -81,6 +81,7 @@ fn a_closed_worker_pane_ends_only_the_rounds_no_record_finishes() -> Result<()> 
         ("claude", true, true),
         ("codex", false, true),
         ("omp", false, false),
+        ("opencode", false, false),
         ("claude", false, false),
     ] {
         let dir = tempfile::tempdir()?;

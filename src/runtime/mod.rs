@@ -3,6 +3,7 @@ mod codex;
 pub mod inbox;
 mod lines;
 pub mod omp;
+pub mod opencode;
 pub mod pi;
 mod receipt;
 mod reopen;
@@ -31,6 +32,9 @@ pub enum Runtime {
     Pi,
     /// oh-my-pi
     Omp,
+    /// OpenCode
+    #[value(name = "opencode")]
+    OpenCode,
 }
 
 impl Runtime {
@@ -40,6 +44,7 @@ impl Runtime {
             Self::Codex => "codex",
             Self::Pi => "pi",
             Self::Omp => "omp",
+            Self::OpenCode => "opencode",
         }
     }
 
@@ -52,6 +57,7 @@ impl Runtime {
         match self {
             Self::Claude => Some(claude::record(state_dir, native_id)),
             Self::Omp => Some(omp::record(state_dir, native_id)),
+            Self::OpenCode => Some(opencode::record(state_dir, native_id)),
             Self::Codex | Self::Pi => transcript.map(PathBuf::from),
         }
     }
@@ -61,6 +67,7 @@ impl Runtime {
             Self::Claude => Some(claude::records(state_dir)),
             Self::Pi => Some(pi::records(state_dir)),
             Self::Omp => Some(omp::records(state_dir)),
+            Self::OpenCode => Some(opencode::records(state_dir)),
             Self::Codex => None,
         }
     }
@@ -69,6 +76,7 @@ impl Runtime {
         match self {
             Self::Pi => Some(pi::inbox(state_dir, native_id)),
             Self::Omp => Some(omp::inbox(state_dir, native_id)),
+            Self::OpenCode => Some(opencode::inbox(state_dir, native_id)),
             Self::Claude | Self::Codex => None,
         }
     }
@@ -80,6 +88,7 @@ impl Runtime {
             Self::Codex => codex::send(target, text),
             Self::Pi => inbox::send(&pi::inbox(state_dir, target.native_id), id, text),
             Self::Omp => inbox::send(&omp::inbox(state_dir, target.native_id), id, text),
+            Self::OpenCode => inbox::send(&opencode::inbox(state_dir, target.native_id), id, text),
         }
     }
 
@@ -91,6 +100,7 @@ impl Runtime {
             Self::Codex => codex::received(record),
             Self::Pi => pi::received(record),
             Self::Omp => omp::received(record),
+            Self::OpenCode => opencode::received(record),
         }
     }
 
@@ -100,7 +110,8 @@ impl Runtime {
     /// names no process, so its last end stands for `pid`'s.
     pub fn killed_at(self, state_dir: &Path, c: &Conversation, pid: i64) -> Result<Option<i64>> {
         match self {
-            Self::Pi => pi::killed_at(&pi::exits(state_dir, &c.native_id), pid),
+            Self::Pi => exit_of(&pi::exits(state_dir, &c.native_id), pid),
+            Self::OpenCode => exit_of(&opencode::record(state_dir, &c.native_id), pid),
             Self::Omp => c
                 .transcript
                 .as_deref()
@@ -115,12 +126,20 @@ impl Runtime {
         self == Self::Claude
     }
 
+    /// Whether the runtime goes on with a turn the server's end cut off without being prompted.
+    /// OpenCode's turns run in its own service, which a TUI's end does not stop, and the service
+    /// prompts the turn on itself after its own restart.
+    pub fn resumes_turns(self) -> bool {
+        self == Self::OpenCode
+    }
+
     fn parser(self) -> Parser {
         match self {
             Self::Claude => Parser::Claude(claude::Parser::default()),
             Self::Codex => Parser::Codex(codex::Parser::default()),
             Self::Pi => Parser::Pi(pi::Parser::default()),
             Self::Omp => Parser::Omp(omp::Parser::default()),
+            Self::OpenCode => Parser::OpenCode(opencode::Parser::default()),
         }
     }
 }
@@ -134,6 +153,7 @@ impl FromStr for Runtime {
             "codex" => Self::Codex,
             "pi" => Self::Pi,
             "omp" => Self::Omp,
+            "opencode" => Self::OpenCode,
             _ => bail!("unknown runtime {name}"),
         })
     }
@@ -250,6 +270,7 @@ enum Parser {
     Codex(codex::Parser),
     Pi(pi::Parser),
     Omp(omp::Parser),
+    OpenCode(opencode::Parser),
 }
 
 impl Parser {
@@ -259,6 +280,7 @@ impl Parser {
             Self::Codex(p) => p.feed(record, span, sealed),
             Self::Pi(p) => p.feed(record, span, sealed),
             Self::Omp(p) => p.feed(record, span, sealed),
+            Self::OpenCode(p) => p.feed(record, span, sealed),
         }
     }
 
@@ -268,8 +290,19 @@ impl Parser {
             Self::Codex(p) => p.turn(),
             Self::Pi(p) => p.turn(),
             Self::Omp(p) => p.turn(),
+            Self::OpenCode(p) => p.turn(),
         }
     }
+}
+
+/// When a signal ended process `pid`, by the lines the Pi extension or the OpenCode plugin wrote.
+/// Another process may have the same session open, so only the end of the one the pane ran counts.
+fn exit_of(exits: &Path, pid: i64) -> Result<Option<i64>> {
+    lines::last_record(exits, "\"pid\"", |exit| {
+        (exit.get("pid").and_then(Value::as_i64) == Some(pid))
+            .then(|| exit.get("at").and_then(Value::as_i64))
+            .flatten()
+    })
 }
 
 fn mentions(record: &Value, needle: &str) -> bool {

@@ -4,6 +4,8 @@ Rexume runs on the machine that runs the Rex server. On macOS, it needs macOS 15
 
 Rexume needs Rex's own session restore: the Rex app 0.1.0-preview.23 or later on macOS, or the Rex server 0.1.0-preview.11 or later on Linux. The first restart after upgrading Rex brings nothing back. The earlier server saved nothing.
 
+OpenCode conversations need OpenCode 2.3 or later.
+
 ## Install the program
 
 ### macOS
@@ -51,13 +53,14 @@ rexume install
 | Codex `SessionStart` hook | `~/.codex/hooks.json` |
 | Pi extension | `~/.pi/agent/extensions/rexume.ts` |
 | omp extension | `~/.omp/agent/extensions/rexume.ts` |
-| Rexume skill stub, which has the agent read the guide `rexume skill show` prints | `~/.claude/skills/rexume/SKILL.md` for Claude Code, `~/.agents/skills/rexume/SKILL.md` for Codex and Pi |
+| OpenCode plugin | `~/.config/opencode/plugins/rexume/tui.ts` |
+| Rexume skill stub, which has the agent read the guide `rexume skill show` prints | `~/.claude/skills/rexume/SKILL.md` for Claude Code, `~/.agents/skills/rexume/SKILL.md` for Codex, Pi, and OpenCode |
 | On macOS, LaunchAgent `io.github.entwining.rexume`, which runs `rexume daemon` | `~/Library/LaunchAgents/io.github.entwining.rexume.plist` |
 | On Linux, systemd user service `rexume.service`, which runs `rexume daemon` | `$XDG_CONFIG_HOME/systemd/user/rexume.service`, or `~/.config/systemd/user/rexume.service` when the variable is unset or not absolute |
 
-A runtime whose directory does not exist is skipped. The JSON says so. Pi needs `~/.pi/agent` and omp needs `~/.omp/agent`; install creates neither.
+A runtime whose directory does not exist is skipped. The JSON says so. Pi needs `~/.pi/agent`, omp needs `~/.omp/agent`, and OpenCode needs `~/.config/opencode`; install creates none of them.
 
-The skill goes to `~/.claude/skills` when `~/.claude` exists. It goes to `~/.agents/skills` when `~/.codex` or `~/.pi/agent` exists. A `rexume` skill you wrote yourself there stays as it is.
+The skill goes to `~/.claude/skills` when `~/.claude` exists. It goes to `~/.agents/skills` when `~/.codex`, `~/.pi/agent`, or `~/.config/opencode` exists. A `rexume` skill you wrote yourself there stays as it is.
 
 ### Moved configuration directories
 
@@ -68,6 +71,7 @@ The paths above are each runtime's default. Install uses the directory a runtime
 | `CLAUDE_CONFIG_DIR` | `~/.claude` | `settings.json` with the Claude Code hooks, and `skills/rexume` |
 | `CODEX_HOME` | `~/.codex` | `hooks.json` with the Codex hook |
 | `PI_CODING_AGENT_DIR` | `~/.pi/agent` | `extensions/rexume.ts` |
+| `OPENCODE_CONFIG_DIR`, or else `XDG_CONFIG_HOME` with `opencode` in it | `~/.config/opencode` | `plugins/rexume/tui.ts` |
 
 Install runs `claude plugin` with the same `CLAUDE_CONFIG_DIR`, and writes every one of these variables that is set into the job, so the daemon resolves the same directories and refreshes the files there. `uninstall` and `status` read the variables too. If you change one, run `rexume uninstall` with its old value and `rexume install` with the new one. `~/.agents/skills` has no variable.
 
@@ -75,7 +79,7 @@ An empty variable leaves the default. A value must be an absolute path; for `PI_
 
 omp's default profile also loads extensions from the directory `PI_CODING_AGENT_DIR` names. While that variable is set and omp is installed (`~/.omp` exists or `omp` is on your `PATH`), install writes no Pi extension, since omp would load it and report its sessions as Pi's; the JSON says so. `uninstall` still removes an extension an earlier install wrote there. An omp profile's agent directory gets no extension, and neither does an omp directory that `PI_CODING_AGENT_DIR` or `PI_CONFIG_DIR` moves: omp sessions there report nothing and take no notices.
 
-If you install Claude Code, Codex, Pi, or omp later, run `rexume install` again once it is set up. Running it again leaves one copy of each entry and keeps your other hooks and settings. Install [recognizes its entries by their commands, names, and markers](cli.md#how-install-recognizes-its-entries).
+If you install Claude Code, Codex, Pi, omp, or OpenCode later, run `rexume install` again once it is set up. Running it again leaves one copy of each entry and keeps your other hooks and settings. Install [recognizes its entries by their commands, names, and markers](cli.md#how-install-recognizes-its-entries).
 
 Codex runs a new hook only after you approve it. Open `/hooks` in Codex and trust the `rexume report codex` entry.
 
@@ -99,11 +103,11 @@ Agents started before `install` are recorded from their next session start. Seei
 
 Upgrade the program with `brew upgrade` or by installing over it. The daemon notices that its executable was replaced, and its job starts the new one.
 
-The new daemon replaces the Pi and omp extensions `install` wrote when their content differs. It never creates a missing extension, so a removed one stays removed. It adds any Claude Code turn hooks the new version needs beside the `SessionStart` hook `install` wrote. Without that `SessionStart` hook, it creates no Claude Code hook. Removing it with a turn hook therefore keeps the turn hook removed too.
+The new daemon replaces the Pi and omp extensions and the OpenCode plugin `install` wrote when their content differs. It never creates a missing one, so a removed one stays removed. It adds any Claude Code turn hooks the new version needs beside the `SessionStart` hook `install` wrote. Without that `SessionStart` hook, it creates no Claude Code hook. Removing it with a turn hook therefore keeps the turn hook removed too.
 
 The daemon rewrites skill stubs `install` wrote but never creates one. It also rewrites the Claude Code plugin's files but never creates their directory. An installation from before the plugin gets it only when you run `rexume install` again. A running Claude Code session picks up a new plugin when it starts again or on `/reload-plugins`.
 
-An installation from before omp support gets the omp extension only when you run `rexume install` again.
+An installation from before omp or OpenCode support gets the omp extension or the OpenCode plugin only when you run `rexume install` again.
 
 ## Uninstall
 
@@ -111,6 +115,6 @@ An installation from before omp support gets the omp extension only when you run
 rexume uninstall
 ```
 
-This removes Rexume's hooks and any hook group left empty. It removes the Claude Code plugin through the `claude` on your `PATH`. It removes the Pi and omp extensions and skill stubs if `install` wrote them. It also removes the LaunchAgent or systemd service, which stops the daemon.
+This removes Rexume's hooks and any hook group left empty. It removes the Claude Code plugin through the `claude` on your `PATH`. It removes the Pi and omp extensions, the OpenCode plugin, and skill stubs if `install` wrote them. It also removes the LaunchAgent or systemd service, which stops the daemon.
 
 It keeps `~/.local/state/rexume`. That directory holds recorded panes, conversations, and task results. Delete it to remove them too. Then remove the program with `brew uninstall rexume`, or delete `~/.local/bin/rexume`.

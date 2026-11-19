@@ -28,15 +28,24 @@ pub(crate) fn receipt_line(runtime: Runtime, token: &str) -> Value {
         Runtime::Pi => json!({"type": "custom_message", "id": "n1", "customType": "rexume",
                               "content": format!("{token} go"), "display": true}),
         Runtime::Omp => json!({"event": "received", "token": token}),
+        Runtime::OpenCode => json!({"id": "msg_n1", "type": "user", "received": token}),
         _ => unimplemented!("{runtime} takes no notice through an inbox"),
     }
 }
 
-pub(crate) fn answer_line(runtime: Runtime, id: &str, text: &str) -> Value {
+pub(crate) fn answer_lines(runtime: Runtime, id: &str, text: &str) -> Vec<Value> {
     match runtime {
-        Runtime::Pi => json!({"type": "message", "id": id, "message": {"role": "assistant",
+        Runtime::Pi => vec![
+            json!({"type": "message", "id": id, "message": {"role": "assistant",
                               "stopReason": "stop", "content": [{"type": "text", "text": text}]}}),
-        Runtime::Omp => json!({"event": "end", "id": id, "stop_reason": "stop", "answer": text}),
+        ],
+        Runtime::Omp => {
+            vec![json!({"event": "end", "id": id, "stop_reason": "stop", "answer": text})]
+        }
+        Runtime::OpenCode => vec![
+            json!({"id": id, "type": "assistant", "finish": "stop", "text": text}),
+            json!({"id": format!("{id}-idle"), "type": "idle", "outcome": "succeeded"}),
+        ],
         _ => unimplemented!("{runtime} takes no notice through an inbox"),
     }
 }
@@ -51,6 +60,7 @@ pub(crate) fn append_to_record(
     let path = match runtime {
         Runtime::Pi => transcript.to_owned(),
         Runtime::Omp => omp::record(state_dir, native_id),
+        Runtime::OpenCode => opencode::record(state_dir, native_id),
         _ => unimplemented!("{runtime} takes no notice through an inbox"),
     };
     std::fs::create_dir_all(path.parent().context("no directory")?)?;

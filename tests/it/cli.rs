@@ -11,7 +11,7 @@ fn a_usage_error_exits_2() {
     for (args, says) in [
         (
             &["report", "foo"][..],
-            "[possible values: claude, codex, pi, omp]",
+            "[possible values: claude, codex, pi, omp, opencode]",
         ),
         (
             &[
