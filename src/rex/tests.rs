@@ -50,7 +50,6 @@ fn quoted(path: &Path) -> String {
         .into_owned()
 }
 
-/// A `rex` that runs `body`, a shell script.
 fn fake_rex(dir: &Path, body: &str) -> Cli {
     use std::os::unix::fs::PermissionsExt;
     let bin = dir.join("rex");

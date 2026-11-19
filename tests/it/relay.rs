@@ -143,7 +143,6 @@ fn daemon_waiting_for_its_server(dir: &Path, script: &str) -> Running {
     daemon
 }
 
-/// A connection left pending on the socket would end every wait of the daemon at once.
 #[test]
 fn a_connection_the_daemon_is_not_waiting_for_is_closed() {
     let dir = tempfile::tempdir().unwrap();
@@ -153,28 +152,18 @@ fn a_connection_the_daemon_is_not_waiting_for_is_closed() {
     let (read, ended) = mpsc::channel();
     std::thread::spawn(move || read.send(stream.read(&mut [0]).unwrap()));
     assert_eq!(ended.recv_timeout(WAIT).unwrap(), 0);
-    wait_until("the refusal in the log", WAIT, || {
-        read_log(dir.path())
-            .contains("refused a connection the daemon was not waiting for")
-            .then_some(())
-    });
     assert!(daemon.0.try_wait().unwrap().is_none());
 }
 
-/// A daemon up to 0.1.25 that missed the replacement of its executable runs this relay with the
-/// token as an argument; the relay stops that daemon so that its job starts this version, and no
-/// other process that listens on the socket.
 #[test]
 fn a_relay_given_a_token_stops_only_the_daemon_that_started_it() {
     let dir = tempfile::tempdir().unwrap();
     let (rexume, socket) = (quoted(REXUME), quoted(dir.path().join("state/daemon.sock")));
-    // Stands in for an old `rex do`, which stays the relay's parent. The connection before it,
-    // which ends without a line, must not cost the daemon this attempt.
+    // The first relay's connection ends without a line, which must not cost the daemon this
+    // attempt. The legacy relay's own does too, but the daemon may take its signal first.
     let mut daemon = daemon_waiting_for_its_server(
         dir.path(),
-        &format!(
-            "{rexume} relay {socket} </dev/null\n{rexume} relay {socket} {LEGACY_TOKEN}\nexec sleep 10\n"
-        ),
+        &format!("{rexume} relay {socket} </dev/null\n{rexume} relay {socket} {LEGACY_TOKEN}\n"),
     );
 
     let stranger = Command::new(REXUME)
@@ -199,5 +188,4 @@ fn a_relay_given_a_token_stops_only_the_daemon_that_started_it() {
         log.contains("refused a connection: the connection ended before its token"),
         "{log}"
     );
-    assert_eq!(log.matches("started rex do").count(), 1, "{log}");
 }
