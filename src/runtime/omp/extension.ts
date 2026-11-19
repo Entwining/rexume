@@ -101,7 +101,10 @@ export default function (omp: ExtensionAPI) {
     };
     try {
       mkdirSync(inbox, { recursive: true, mode: 0o700 });
-      watcher = watch(inbox, drain);
+      // An `error` event nothing handles would end the process.
+      watcher = watch(inbox, drain).on("error", (error) => {
+        if (ctx.hasUI) ctx.ui.notify(`rexume stopped watching its inbox for messages: ${error}`, "warning");
+      });
     } catch (error) {
       if (ctx.hasUI) ctx.ui.notify(`rexume cannot watch its inbox for messages: ${error}`, "warning");
       return;

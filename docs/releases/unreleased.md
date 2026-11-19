@@ -5,3 +5,5 @@ A blocked episode now belongs to the task instead of a round: a round that finis
 `task list` moves to JSON version 2 and `status` to version 3, since a notice's `round` and `round_state` can now be `null`. The state database moves to schema version 12, which earlier versions of Rexume refuse to open.
 
 The daemon no longer puts the token that ties its connection to `rex do` on any command line. `rex do` and `rexume relay` used to take it as an argument, so every process listing showed it, and tools that scan command output for secrets, such as an agent's output filter, withheld or redacted whole listings because of it.
+
+The Pi and omp extensions no longer end their agent when watching the inbox fails, as when the process has run out of file descriptors: they warn that they stopped watching instead.
