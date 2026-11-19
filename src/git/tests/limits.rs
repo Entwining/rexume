@@ -1,9 +1,11 @@
+use std::io::{ErrorKind, Read};
+use std::os::unix::fs::OpenOptionsExt;
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
 
-use super::{fake_lfs, left, lfs_repository, repository, write};
+use super::{fake_lfs, left, lfs_repository, objects, repository, write};
 use crate::git::run::Git;
 use crate::git::{BUDGET, Capture, PATH_LIMIT, worktree};
 
@@ -14,8 +16,19 @@ fn a_snapshot_ends_with_its_processes_at_its_deadline() -> Result<()> {
         tempfile::tempdir()?,
         tempfile::tempdir()?,
     );
-    let pid = tools.path().join("pid");
-    let body = format!("echo $$ > '{}'\nsleep 30", pid.display());
+    // Git dies with the filter, so another process reaps it, and until then `kill(pid, 0)` still
+    // finds it. The FIFO's write end closes once the filter and its child have exited; the child
+    // says `started`, so that every pass covers ending a filter's child.
+    let fifo = tools.path().join("filter");
+    nix::unistd::mkfifo(&fifo, nix::sys::stat::Mode::S_IRWXU)?;
+    let mut filter = std::fs::OpenOptions::new()
+        .read(true)
+        .custom_flags(nix::fcntl::OFlag::O_NONBLOCK.bits())
+        .open(&fifo)?;
+    let body = format!(
+        "exec 3> '{}'\n(echo started >&3; exec sleep 30) &\nwait",
+        fifo.display()
+    );
     let repo = lfs_repository(root.path(), &fake_lfs(tools.path(), &body)?)?;
     write(&repo.join("big.bin"), "slow\n")?;
     let budget = Duration::from_secs(2);
@@ -26,10 +39,23 @@ fn a_snapshot_ends_with_its_processes_at_its_deadline() -> Result<()> {
     let took = began.elapsed();
     assert_eq!(note, "the snapshot took longer than 2 seconds");
     assert!(took < budget + Duration::from_secs(1), "{took:?}");
-    let pid: i32 = std::fs::read_to_string(&pid)?.trim().parse()?;
-    let alive = nix::sys::signal::kill(nix::unistd::Pid::from_raw(pid), None).is_ok();
-    assert!(!alive, "the filter outlived the deadline");
+    let mut said = Vec::new();
+    let until = Instant::now() + Duration::from_secs(5);
+    loop {
+        let mut chunk = [0; 64];
+        match filter.read(&mut chunk) {
+            Ok(0) => break,
+            Ok(n) => said.extend_from_slice(&chunk[..n]),
+            Err(e) if e.kind() == ErrorKind::WouldBlock => {
+                assert!(Instant::now() < until, "the filter outlived the deadline");
+                std::thread::sleep(Duration::from_millis(10));
+            }
+            Err(e) => return Err(e.into()),
+        }
+    }
+    assert_eq!(said, b"started\n", "the filter never started");
     assert!(left(state.path())?.is_empty());
+    assert!(objects(state.path())?.is_empty());
     Ok(())
 }
 
