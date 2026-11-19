@@ -35,6 +35,7 @@ struct Occupant {
     pid_name: Option<String>,
     own_program: Option<bool>,
     reported_at: i64,
+    left_fg_changes: Option<i64>,
     record: Option<PathBuf>,
 }
 
@@ -42,7 +43,8 @@ fn occupant(conn: &Connection, state_dir: &Path, block: &str) -> Result<Option<O
     Ok(conn
         .query_row(
             "SELECT o.runtime, o.native_id, c.transcript, c.settings, c.resumable,
-               o.keeps_session_env, o.instance_id, o.pid, o.pid_name, o.own_program, o.reported_at
+               o.keeps_session_env, o.instance_id, o.pid, o.pid_name, o.own_program, o.reported_at,
+               o.left_fg_changes
              FROM occupant o JOIN conversation c USING (runtime, native_id)
              WHERE o.block_lineage = ?1",
             params![block],
@@ -72,6 +74,7 @@ fn occupant(conn: &Connection, state_dir: &Path, block: &str) -> Result<Option<O
                     pid_name: row.get(8)?,
                     own_program: row.get(9)?,
                     reported_at: row.get(10)?,
+                    left_fg_changes: row.get(11)?,
                 })
             },
         )
@@ -81,6 +84,7 @@ fn occupant(conn: &Connection, state_dir: &Path, block: &str) -> Result<Option<O
 struct LastSeen {
     instance_id: String,
     fg_pid: Option<i64>,
+    fg_changes: i64,
     last_exit: Option<i64>,
     status: Option<String>,
     status_pid: Option<i64>,
@@ -95,17 +99,18 @@ pub(super) fn candidate(
 ) -> Result<Candidate> {
     let seen: Option<LastSeen> = conn
         .query_row(
-            "SELECT instance_id, fg_pid, last_exit, status, status_pid, status_name FROM block
-             WHERE lineage = ?1",
+            "SELECT instance_id, fg_pid, fg_changes, last_exit, status, status_pid, status_name
+             FROM block WHERE lineage = ?1",
             params![block],
             |row| {
                 Ok(LastSeen {
                     instance_id: row.get(0)?,
                     fg_pid: row.get(1)?,
-                    last_exit: row.get(2)?,
-                    status: row.get(3)?,
-                    status_pid: row.get(4)?,
-                    status_name: row.get(5)?,
+                    fg_changes: row.get(2)?,
+                    last_exit: row.get(3)?,
+                    status: row.get(4)?,
+                    status_pid: row.get(5)?,
+                    status_name: row.get(6)?,
                 })
             },
         )
@@ -121,45 +126,95 @@ pub(super) fn candidate(
             .as_deref()
             .is_none_or(|i| i == seen.instance_id)
     });
-    // Rex starts nothing in a terminal after its own program exits.
-    if seen.last_exit.is_some() {
-        return match occupant.filter(|o| o.own_program != Some(false)) {
-            Some(mut o) if !ran_elsewhere(conn, block, &o)? => {
-                reopen(conn, instance, block, &mut o, None)
-            }
-            _ => Ok(shell("the pane's program had exited")),
-        };
-    }
     let Some(mut occupant) = occupant else {
-        return Ok(shell("no conversation recorded"));
+        return Ok(shell(if seen.last_exit.is_some() {
+            "the pane's program had exited"
+        } else {
+            "no conversation recorded"
+        }));
     };
-    if seen.fg_pid != Some(occupant.pid) {
-        return Ok(shell("the conversation had already left the pane"));
-    }
-    let ended: Option<String> = conn
-        .query_row(
-            "SELECT end_reason FROM epoch WHERE instance_id = ?1 ORDER BY id DESC LIMIT 1",
+    if seen.last_exit.is_none() && seen.fg_pid == Some(occupant.pid) {
+        let server_gone: bool = conn.query_row(
+            "SELECT COALESCE((SELECT end_reason = 'server_gone' FROM epoch WHERE instance_id = ?1
+                              ORDER BY id DESC LIMIT 1), 0)",
             params![seen.instance_id],
             |row| row.get(0),
-        )
-        .optional()?
-        .flatten();
-    let server_gone = ended.as_deref() == Some("server_gone");
-    reopen(
-        conn,
-        instance,
-        block,
-        &mut occupant,
-        Some((&seen, server_gone)),
-    )
+        )?;
+        return reopen(
+            conn,
+            instance,
+            block,
+            &mut occupant,
+            Stood::Foreground(&seen, server_gone),
+        );
+    }
+    // Rex starts nothing in a terminal after its own program exits.
+    let exited = if seen.last_exit.is_some() && occupant.own_program != Some(false) {
+        "the conversation's program had exited"
+    } else {
+        match killed(state_dir, &seen, &occupant) {
+            Ok(true) => {
+                "a signal ended the conversation's program and no other process took the pane since"
+            }
+            Ok(false) if seen.last_exit.is_some() => {
+                return Ok(shell("the pane's program had exited"));
+            }
+            Ok(false) => {
+                return Ok(shell(&format!(
+                    "the conversation had already left the pane (its process {}, the foreground {})",
+                    occupant.pid,
+                    seen.fg_pid.map_or("none".to_owned(), |pid| pid.to_string())
+                )));
+            }
+            Err(e) => {
+                return Ok(shell(&format!(
+                    "the conversation had already left the pane, and its record could not be read: \
+                     {e:#}"
+                )));
+            }
+        }
+    };
+    if ran_elsewhere(conn, block, &occupant)? {
+        return Ok(shell("the conversation ran in another pane since"));
+    }
+    reopen(conn, instance, block, &mut occupant, Stood::Ended(exited))
 }
 
+/// A shutdown or logout ends the pane's programs before the server stops, and the server reports
+/// each foreground change on the way: the conversation's record shows its process ended on a
+/// signal after it reported, and the pane's foreground has not moved since it left that process,
+/// except to nothing when the pane's own program ended too.
+fn killed(state_dir: &Path, seen: &LastSeen, occupant: &Occupant) -> Result<bool> {
+    let Some(left) = occupant.left_fg_changes else {
+        return Ok(false);
+    };
+    let unused = seen.fg_changes == left
+        || (seen.last_exit.is_some() && seen.fg_pid.is_none() && seen.fg_changes == left + 1);
+    if !unused {
+        return Ok(false);
+    }
+    Ok(occupant
+        .runtime
+        .killed_at(state_dir, &occupant.conversation, occupant.pid)?
+        .is_some_and(|at| at >= occupant.reported_at))
+}
+
+/// How the conversation stood when the server's instance ended: still the pane's foreground, with
+/// whether the server's end was observed, or ended for the reason given.
+enum Stood<'a> {
+    Foreground(&'a LastSeen, bool),
+    Ended(&'a str),
+}
+
+/// A report from another pane moves the conversation's `reported_at` past this occupant's, and
+/// that stays after the other pane closes; one from before may still be that pane's foreground.
 fn ran_elsewhere(conn: &Connection, block: &str, occupant: &Occupant) -> Result<bool> {
     Ok(conn.query_row(
-        "SELECT EXISTS (SELECT 1 FROM occupant o LEFT JOIN block b ON b.lineage = o.block_lineage
-           WHERE o.runtime = ?1 AND o.native_id = ?2 AND o.block_lineage != ?3
-             AND (o.reported_at > ?4 OR (b.fg_pid = o.pid AND b.last_exit IS NULL
-                  AND (o.instance_id IS NULL OR o.instance_id = b.instance_id))))",
+        "SELECT (SELECT reported_at FROM conversation WHERE runtime = ?1 AND native_id = ?2) > ?4
+           OR EXISTS (SELECT 1 FROM occupant o JOIN block b ON b.lineage = o.block_lineage
+             WHERE o.runtime = ?1 AND o.native_id = ?2 AND o.block_lineage != ?3
+               AND b.fg_pid = o.pid AND b.last_exit IS NULL
+               AND (o.instance_id IS NULL OR o.instance_id = b.instance_id))",
         params![
             occupant.runtime.as_str(),
             occupant.conversation.native_id,
@@ -175,7 +230,7 @@ fn reopen(
     instance: &str,
     block: &str,
     occupant: &mut Occupant,
-    running: Option<(&LastSeen, bool)>,
+    stood: Stood,
 ) -> Result<Candidate> {
     if !occupant.resumable {
         return Ok(shell("the recorded program cannot be reopened"));
@@ -195,13 +250,11 @@ fn reopen(
         Ok(()) => occupant.conversation = read,
         Err(e) => log::warn!("pane {block}: reopens with the settings it reported: {e:#}"),
     }
-    let (start, reason, record_length) = match running {
-        Some((seen, server_gone)) => continuation(conn, block, occupant, seen, server_gone)?,
-        None => (
-            Start::Agent,
-            "the conversation's program had exited".to_owned(),
-            None,
-        ),
+    let (start, reason, record_length) = match stood {
+        Stood::Foreground(seen, server_gone) => {
+            continuation(conn, block, occupant, seen, server_gone)?
+        }
+        Stood::Ended(why) => (Start::Agent, why.to_owned(), None),
     };
     let prompt = (start == Start::Continue)
         .then(|| -> Result<String> {

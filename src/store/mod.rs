@@ -17,7 +17,7 @@ use rusqlite::{
 use crate::runtime::Runtime;
 
 const SCHEMA: &str = include_str!("schema.sql");
-pub const SCHEMA_VERSION: i64 = 10;
+pub const SCHEMA_VERSION: i64 = 11;
 const APPLICATION_ID: i64 = 0x7265_7875;
 pub(crate) const RETENTION: Duration = Duration::from_secs(30 * 24 * 60 * 60);
 

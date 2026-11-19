@@ -40,15 +40,13 @@ pub(super) fn set_foreground(
     generation: Option<i64>,
     parent: Option<i64>,
 ) -> Result<()> {
-    if let Some(generation) = generation {
-        let stored: Option<i64> = tx.query_row(
-            "SELECT fg_generation FROM block WHERE lineage = ?1",
-            params![lineage],
-            |row| row.get(0),
-        )?;
-        if stored.is_some_and(|s| s >= generation) {
-            return Ok(());
-        }
+    let (previous, stored): (Option<i64>, Option<i64>) = tx.query_row(
+        "SELECT fg_pid, fg_generation FROM block WHERE lineage = ?1",
+        params![lineage],
+        |row| Ok((row.get(0)?, row.get(1)?)),
+    )?;
+    if generation.is_some_and(|generation| stored.is_some_and(|s| s >= generation)) {
+        return Ok(());
     }
     let pid = foreground_pid(foreground);
     tx.execute(
@@ -57,11 +55,20 @@ pub(super) fn set_foreground(
          WHERE lineage = ?3",
         params![pid, generation, lineage],
     )?;
+    if let Some(previous) = previous.filter(|&previous| Some(previous) != pid) {
+        tx.execute(
+            "UPDATE occupant SET left_fg_changes = (SELECT fg_changes FROM block WHERE lineage = ?1)
+             WHERE block_lineage = ?1 AND pid = ?2
+               AND (instance_id IS NULL
+                    OR instance_id = (SELECT instance_id FROM block WHERE lineage = ?1))",
+            params![lineage, previous],
+        )?;
+    }
     // Requests and notices wait for the occupant's PID to be the foreground, and Codex reports
     // itself only once its first turn starts.
     if let (Some(pid), Some(parent)) = (pid, parent) {
         tx.execute(
-            "UPDATE occupant SET pid = ?1
+            "UPDATE occupant SET pid = ?1, left_fg_changes = CASE WHEN pid = ?1 THEN left_fg_changes END
              WHERE block_lineage = ?2 AND pid_name IS NULL
                AND EXISTS (SELECT 1 FROM restore r JOIN block b
                              ON b.lineage = r.block_lineage AND b.instance_id = r.instance_id

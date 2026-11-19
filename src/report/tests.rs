@@ -76,12 +76,15 @@ fn process(pid: i64) -> Process {
     }
 }
 
+/// The start and the foreground count at which the process left the pane describe one process's
+/// conversation, which each report finds left at count 5.
 #[test]
-fn a_new_process_or_conversation_moves_the_start_and_the_same_one_keeps_it() -> Result<()> {
+fn a_new_process_or_conversation_resets_its_place_and_the_same_one_keeps_it() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let mut store = Store::open(dir.path())?;
-    let mut start = |native_id: &str, instance: &str, pid: i64, at: u64| -> Result<i64> {
+    let mut start = |native_id: &str, instance: &str, pid: i64, at: u64| {
         let tx = store.write()?;
+        tx.execute("UPDATE occupant SET left_fg_changes = 5", [])?;
         let report = parse(Runtime::Claude, &json!({ "session_id": native_id }))?;
         let process = Process {
             instance: instance.into(),
@@ -89,15 +92,19 @@ fn a_new_process_or_conversation_moves_the_start_and_the_same_one_keeps_it() -> 
             ..process(pid)
         };
         record(&tx, "b", Runtime::Claude, &report, &process)?;
-        let start = tx.query_row("SELECT start_position FROM occupant", [], |row| row.get(0))?;
+        let place: (i64, Option<i64>) = tx.query_row(
+            "SELECT start_position, left_fg_changes FROM occupant",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?;
         tx.commit()?;
-        Ok(start)
+        anyhow::Ok(place)
     };
-    assert_eq!(start("s", "i1", 100, 10)?, 10);
-    assert_eq!(start("s", "i1", 100, 50)?, 10);
-    assert_eq!(start("t", "i1", 100, 60)?, 60);
-    assert_eq!(start("t", "i1", 200, 70)?, 70);
-    assert_eq!(start("t", "i2", 200, 80)?, 80);
+    assert_eq!(start("s", "i1", 100, 10)?, (10, None));
+    assert_eq!(start("s", "i1", 100, 50)?, (10, Some(5)));
+    assert_eq!(start("t", "i1", 100, 60)?, (60, None));
+    assert_eq!(start("t", "i1", 200, 70)?, (70, None));
+    assert_eq!(start("t", "i2", 200, 80)?, (80, None));
     Ok(())
 }
 

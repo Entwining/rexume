@@ -37,13 +37,14 @@ CREATE TABLE IF NOT EXISTS epoch (
 CREATE INDEX IF NOT EXISTS epoch_instance ON epoch (instance_id, id);
 
 -- What the server last said about each pane: a cache of the live server while its instance
--- runs, and after 'server_gone' the only record of how the pane stood when the server stopped
+-- runs, and after 'server_gone' the only record of what the server last said about the pane
 -- (foreground and status for the decision to reopen and continue, status time and foreground
--- changes for the cleanup). `instance_id` is the server instance the row describes; a row on the
--- current instance was seen in that instance's open epoch. A pane the server restored itself keeps
--- its row, which moves to the new instance once the daemon reads the pane there, and its
--- foreground, status, and exit, which describe processes of one instance, start empty. The row goes
--- when the pane closes. Program states are Rex's vocabulary and are not constrained here.
+-- changes for the cleanup), which, when the system ends every process at once, can come after the
+-- pane's programs already ended. `instance_id` is the server instance the row describes; a row on
+-- the current instance was seen in that instance's open epoch. A pane the server restored itself
+-- keeps its row, which moves to the new instance once the daemon reads the pane there, and its
+-- foreground, status, and exit, which describe processes of one instance, start empty. The row
+-- goes when the pane closes. Program states are Rex's vocabulary and are not constrained here.
 -- `status_kind` and `status_message` are what a `blocked` status says the program waits for (Rex's
 -- `kind`) and its one line of text (Rex's `msg`), as reported and unconstrained like the state;
 -- NULL when the status gives none. `status_pid` and `status_name` are the process that reported the
@@ -130,7 +131,10 @@ CREATE TABLE IF NOT EXISTS conversation (
 -- already held, as a resumed conversation's does, never belong to a task; 0 before version 4, and
 -- for Claude Code before version 8. A later report of the same conversation from the same
 -- process, such as Claude Code's after a compaction or its first after the gate started it, keeps
--- it.
+-- it. `left_fg_changes`: the pane's `fg_changes` when the daemon last found the foreground move
+-- off `pid`, so that a count that has not moved since shows that no other process took the pane's
+-- foreground after it; NULL while the process has not left the foreground since it was recorded,
+-- and before version 11.
 CREATE TABLE IF NOT EXISTS occupant (
   block_lineage     TEXT    PRIMARY KEY,
   runtime           TEXT    NOT NULL,
@@ -142,6 +146,7 @@ CREATE TABLE IF NOT EXISTS occupant (
   keeps_session_env INTEGER NOT NULL CHECK (keeps_session_env IN (0, 1)),
   transport         TEXT    CHECK (transport IS NULL OR json_type(transport) = 'object'),
   start_position    INTEGER NOT NULL DEFAULT 0,
+  left_fg_changes   INTEGER,
   reported_at       INTEGER NOT NULL,
   FOREIGN KEY (runtime, native_id) REFERENCES conversation (runtime, native_id)
 ) STRICT, WITHOUT ROWID;
@@ -519,4 +524,4 @@ CREATE TABLE IF NOT EXISTS archive (
 
 -- 'rexu' in ASCII, which Store::open checks before it uses a database.
 PRAGMA application_id = 0x72657875;
-PRAGMA user_version = 10;
+PRAGMA user_version = 11;

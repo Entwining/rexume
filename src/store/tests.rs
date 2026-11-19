@@ -231,19 +231,21 @@ fn sweep_records_deletes_only_old_records_of_forgotten_conversations() -> Result
         left.sort();
         Ok(left)
     };
-    for runtime in [Runtime::Claude, Runtime::Omp] {
-        std::fs::create_dir_all(runtime.records(dir.path()).context("no records")?)?;
+    for runtime in [Runtime::Claude, Runtime::Omp, Runtime::Pi] {
+        let records = runtime.records(dir.path()).context("no records")?;
+        std::fs::create_dir_all(&records)?;
         for (native_id, modified) in [
             ("known", old),
             ("forgotten", old),
             ("recent", SystemTime::now()),
         ] {
-            let record = runtime.record(dir.path(), native_id, None);
-            std::fs::File::create(record.context("no record")?)?.set_modified(modified)?;
+            std::fs::File::create(records.join(format!("{native_id}.jsonl")))?
+                .set_modified(modified)?;
         }
     }
     sweep_records(&store)?;
     assert_eq!(left(Runtime::Claude)?, ["known.jsonl", "recent.jsonl"]);
     assert_eq!(left(Runtime::Omp)?, ["recent.jsonl"]);
+    assert_eq!(left(Runtime::Pi)?, ["recent.jsonl"]);
     Ok(())
 }

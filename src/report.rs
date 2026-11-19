@@ -246,6 +246,9 @@ pub fn record(
              WHEN (runtime, native_id, pid) = (excluded.runtime, excluded.native_id, excluded.pid)
                AND instance_id IS excluded.instance_id THEN start_position
              ELSE excluded.start_position END,
+           left_fg_changes = CASE
+             WHEN (runtime, native_id, pid) = (excluded.runtime, excluded.native_id, excluded.pid)
+               AND instance_id IS excluded.instance_id THEN left_fg_changes END,
            runtime = excluded.runtime, native_id = excluded.native_id,
            instance_id = excluded.instance_id, pid = excluded.pid, pid_name = excluded.pid_name,
            own_program = excluded.own_program, keeps_session_env = excluded.keeps_session_env,

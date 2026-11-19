@@ -259,3 +259,27 @@ fn the_exit_of_the_panes_program_counts_as_a_foreground_change() -> Result<()> {
     assert_eq!(pane(&store)?, (None, Some(0), 1));
     Ok(())
 }
+
+#[test]
+fn the_occupant_keeps_the_count_at_which_its_process_last_left_the_foreground() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let transcript = record(&[PROMPT])?;
+    let mut store = task_world(dir.path(), transcript.path(), None)?;
+    let left = |store: &Store| -> Result<Option<i64>> {
+        Ok(store.conn().query_row(
+            "SELECT left_fg_changes FROM occupant WHERE block_lineage = 'b'",
+            [],
+            |row| row.get(0),
+        )?)
+    };
+    foreground(&mut store, Some(100), 6)?;
+    assert_eq!(left(&store)?, None);
+    foreground(&mut store, Some(200), 7)?;
+    assert_eq!(left(&store)?, Some(1));
+    foreground(&mut store, Some(300), 8)?;
+    assert_eq!(left(&store)?, Some(1));
+    foreground(&mut store, Some(100), 9)?;
+    foreground(&mut store, None, 10)?;
+    assert_eq!(left(&store)?, Some(4));
+    Ok(())
+}

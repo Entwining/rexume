@@ -80,7 +80,7 @@ impl Daemon<'_> {
             log::warn!("failed to archive finished records: {e:#}");
         }
         if let Err(e) = store::sweep_records(&self.store) {
-            log::warn!("failed to sweep the turn records: {e:#}");
+            log::warn!("failed to sweep the runtimes' records: {e:#}");
         }
         if let Err(e) = task::sweep_snapshots(&mut self.store) {
             log::warn!("failed to sweep the snapshots: {e:#}");

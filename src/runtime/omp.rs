@@ -1,8 +1,11 @@
 use std::path::{Path, PathBuf};
 
+use anyhow::Result;
 use serde_json::Value;
 
+use super::lines::last_record;
 use super::{Conversation, Sealed, Span, Turn, inbox, text_at};
+use crate::rex::{str_at, time_at};
 
 pub const EXTENSION: &str = include_str!("omp/extension.ts");
 
@@ -30,6 +33,21 @@ pub fn inbox(state_dir: &Path, native_id: &str) -> PathBuf {
 /// extension appends here instead.
 pub fn record(state_dir: &Path, native_id: &str) -> PathBuf {
     records(state_dir).join(format!("{native_id}.jsonl"))
+}
+
+/// omp records how each process that wrote to a session ended in the session file itself, a
+/// signal's end with `kind` `signal`.
+pub fn killed_at(transcript: &Path) -> Result<Option<i64>> {
+    const EXIT: &str = "session_exit";
+    Ok(last_record(transcript, EXIT, |record| {
+        (str_at(record, "/type") == Some("custom") && str_at(record, "/customType") == Some(EXIT))
+            .then(|| {
+                (str_at(record, "/data/kind") == Some("signal"))
+                    .then(|| time_at(record, "/data/recordedAt"))
+                    .flatten()
+            })
+    })?
+    .flatten())
 }
 
 pub fn received(record: &Value) -> bool {

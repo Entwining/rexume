@@ -188,3 +188,40 @@ fn open_upgrades_a_version_9_round_to_a_count_only_where_its_pane_was_not_report
     assert_eq!(counts, [0, 0, 0]);
     Ok(())
 }
+
+#[test]
+fn open_upgrades_a_version_10_database_and_keeps_its_occupants() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let conn = Connection::open(dir.path().join("state.db"))?;
+    conn.execute_batch(include_str!("../../../../tests/fixtures/schema-v10.sql"))?;
+    conn.execute_batch(
+        "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+           VALUES ('pi', 'p', 1, 0);
+         INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid,
+           keeps_session_env, start_position, reported_at)
+           VALUES ('b', 'pi', 'p', 'i1', 7, 0, 42, 5);
+         INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+           VALUES ('claude', 'owner', 1, 0);
+         INSERT INTO task (id, title, owner_runtime, owner_native_id, worker_lineage, keep_pane,
+           created_at) VALUES ('t', 'x', 'claude', 'owner', 'b', 0, 0);
+         INSERT INTO task_round (task_id, round, state, finished_at, finished_fg_changes,
+           created_at) VALUES ('t', 1, 'cancelled', 1, 3, 0);",
+    )?;
+    drop(conn);
+    let store = Store::open(dir.path())?;
+    assert_eq!(definitions(store.conn())?, fresh()?);
+    let occupant: (i64, i64, Option<i64>) = store.conn().query_row(
+        "SELECT pid, start_position, left_fg_changes FROM occupant",
+        [],
+        |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+    )?;
+    assert_eq!(occupant, (7, 42, None));
+    let finished: Option<i64> =
+        store
+            .conn()
+            .query_row("SELECT finished_fg_changes FROM task_round", [], |row| {
+                row.get(0)
+            })?;
+    assert_eq!(finished, Some(3));
+    Ok(())
+}

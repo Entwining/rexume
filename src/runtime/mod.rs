@@ -59,8 +59,9 @@ impl Runtime {
     pub fn records(self, state_dir: &Path) -> Option<PathBuf> {
         match self {
             Self::Claude => Some(claude::records(state_dir)),
+            Self::Pi => Some(pi::records(state_dir)),
             Self::Omp => Some(omp::records(state_dir)),
-            Self::Codex | Self::Pi => None,
+            Self::Codex => None,
         }
     }
 
@@ -90,6 +91,21 @@ impl Runtime {
             Self::Codex => codex::received(record),
             Self::Pi => pi::received(record),
             Self::Omp => omp::received(record),
+        }
+    }
+
+    /// When a signal ended process `pid`, which ran the conversation, as when a system's shutdown or
+    /// logout ends every process before the Rex server stops. `None` when the records show no such
+    /// end, or do not tell one from the user's, as Claude Code's and Codex's do not. omp's record
+    /// names no process, so its last end stands for `pid`'s.
+    pub fn killed_at(self, state_dir: &Path, c: &Conversation, pid: i64) -> Result<Option<i64>> {
+        match self {
+            Self::Pi => pi::killed_at(&pi::exits(state_dir, &c.native_id), pid),
+            Self::Omp => c
+                .transcript
+                .as_deref()
+                .map_or(Ok(None), |t| omp::killed_at(Path::new(t))),
+            Self::Claude | Self::Codex => Ok(None),
         }
     }
 

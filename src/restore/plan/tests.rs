@@ -164,6 +164,10 @@ fn planned(pane: &Pane) -> Result<Start> {
             params![reported_at],
         )?;
         conn.execute(
+            "UPDATE conversation SET reported_at = MAX(reported_at, ?1)",
+            params![reported_at],
+        )?;
+        conn.execute(
             "INSERT INTO block (lineage, instance_id, fg_pid) VALUES ('c', 'i1', ?1)",
             params![running.then_some(20)],
         )?;
@@ -283,6 +287,7 @@ fn a_conversation_with_an_unusable_launch_declaration_keeps_the_shell() -> Resul
     Ok(())
 }
 
+mod killed;
 mod mode;
 mod model;
 mod two_panes;

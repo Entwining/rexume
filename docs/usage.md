@@ -8,9 +8,9 @@ In each restored pane that ran Claude Code, Codex, Pi, or omp, Rexume waits for 
 
 An interrupted conversation continues once. Its last status must have been working, and its own record must show a turn that had not ended. Rexume reopens it with one prompt to continue.
 
-A conversation otherwise reopens without a new turn when it was still the pane's program. It also reopens when the pane was created to run it and it had exited. Finished, cancelled, or waiting conversations get no new turn. Panes you closed stay closed. The same conversation never reopens in two panes.
+A conversation otherwise reopens without a new turn when it was still the pane's program. It also reopens when the pane was created to run it and it had exited. A conversation a shutdown, a logout, or another signal ended also reopens, as long as Rex saw no other program in its pane afterwards: the system ends the pane's programs before the Rex server stops. That needs Rex to have seen the conversation's program leave the pane, and no pane to have run the conversation since. Pi and omp record such an end; Claude Code and Codex do not, so their panes keep the shell. Finished, cancelled, or waiting conversations get no new turn, and neither does one a signal ended. Panes you closed stay closed. The same conversation never reopens in two panes.
 
-The shell stays in every other pane. That includes a pane its conversation already left, or whose conversation another pane reopens. It includes a Claude Code, Codex, or omp conversation that had no session record yet. Runs with no record to reopen also leave the shell, such as an ephemeral `codex exec`, `pi -p`, or `omp -p`. Other programs are not restarted.
+The shell stays in every other pane. That includes a pane whose conversation you quit, or whose conversation another pane reopens. It includes a Claude Code, Codex, or omp conversation that had no session record yet. Runs with no record to reopen also leave the shell, such as an ephemeral `codex exec`, `pi -p`, or `omp -p`. Other programs are not restarted.
 
 Rexume types a short `rexume gate` line into the shell to reopen a conversation. The command runs through your alias or shell function for the agent's command, as it would when you start it yourself. The line starts with a space. A shell history that ignores such lines keeps it out.
 

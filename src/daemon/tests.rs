@@ -102,17 +102,17 @@ fn a_gate_recorded_occupant_becomes_the_foreground_its_process_started() -> Resu
         Some(1),
     )?;
     set_foreground(&tx, "gate", Some(&json!({ "pid": 500 })), Some(3), Some(1))?;
-    let pids: Vec<(String, i64)> = tx
-        .prepare("SELECT block_lineage, pid FROM occupant ORDER BY block_lineage")?
-        .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))?
+    let pids: Vec<(String, i64, Option<i64>)> = tx
+        .prepare("SELECT block_lineage, pid, left_fg_changes FROM occupant ORDER BY block_lineage")?
+        .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))?
         .collect::<rusqlite::Result<_>>()?;
     assert_eq!(
         pids,
         [
-            ("gate".to_owned(), 400),
-            ("in-place".to_owned(), 600),
-            ("named".to_owned(), 200),
-            ("old".to_owned(), 200)
+            ("gate".to_owned(), 400, Some(3)),
+            ("in-place".to_owned(), 600, None),
+            ("named".to_owned(), 200, None),
+            ("old".to_owned(), 200, None)
         ]
     );
     Ok(())

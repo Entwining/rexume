@@ -12,14 +12,16 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
     // since saw no report, so it takes the count the upgraded pane starts at; any other can take
     // none.
     // Added before any step copies `task_round`, which keeps only the columns both shapes have.
-    tx.execute_batch(
-        "ALTER TABLE task_round ADD COLUMN finished_fg_changes INTEGER;
-         UPDATE task_round SET finished_fg_changes = 0
-           WHERE EXISTS (SELECT 1 FROM task t JOIN block b ON b.lineage = t.worker_lineage
-                         WHERE t.id = task_round.task_id
-                           AND b.fg_generation = task_round.finished_generation);",
-    )?;
-    let blocked = if version >= 5 {
+    if version < 10 {
+        tx.execute_batch(
+            "ALTER TABLE task_round ADD COLUMN finished_fg_changes INTEGER;
+             UPDATE task_round SET finished_fg_changes = 0
+               WHERE EXISTS (SELECT 1 FROM task t JOIN block b ON b.lineage = t.worker_lineage
+                             WHERE t.id = task_round.task_id
+                               AND b.fg_generation = task_round.finished_generation);",
+        )?;
+    }
+    let blocked = if (5..10).contains(&version) {
         open_episodes(tx)?
     } else {
         Vec::new()
@@ -27,10 +29,22 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
     if version < 7 {
         to_v7(tx, version)?;
     }
-    rebuild(
-        tx,
-        &["notice", "request", "task_round", "task", "epoch", "block"],
-    )?;
+    // Version 11 changed only `occupant`; rebuilding `task_round` there would cascade into the
+    // episodes version 10 records.
+    let changed: &[&str] = if version < 10 {
+        &[
+            "notice",
+            "request",
+            "task_round",
+            "task",
+            "epoch",
+            "block",
+            "occupant",
+        ]
+    } else {
+        &["occupant"]
+    };
+    rebuild(tx, changed)?;
     for (task, round, started_at) in blocked {
         carry_episode(tx, &task, round, started_at)?;
     }
