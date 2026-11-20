@@ -1,28 +1,15 @@
 use std::collections::HashSet;
 use std::io::{BufRead, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
-use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use serde_json::{Value, json};
 
 use super::super::block::touch_block;
-use super::super::view::{View, next_read};
+use super::super::view::View;
 use crate::rex::{Pipe, Rex};
 use crate::store::Store;
 use crate::task::tests::{PROMPT, record, task_world};
-
-#[test]
-fn a_change_is_read_at_once_unless_a_read_was_just_made() {
-    let now = Instant::now();
-    assert_eq!(next_read(None, now), now);
-    assert_eq!(next_read(Some(now - Duration::from_secs(1)), now), now);
-    let read = now - Duration::from_millis(100);
-    assert_eq!(
-        next_read(Some(read), now),
-        read + Duration::from_millis(300)
-    );
-}
 
 #[test]
 fn listing_a_session_reads_only_its_unrecorded_panes() -> Result<()> {
@@ -135,37 +122,34 @@ fn a_worker_pane_a_new_instance_does_not_list_is_closed() -> Result<()> {
 }
 
 #[test]
-fn a_view_change_at_a_revision_already_reported_lists_nothing() -> Result<()> {
+fn a_view_change_wakes_the_task_pass_and_lists_nothing() -> Result<()> {
     let dir = tempfile::tempdir()?;
     let mut store = Store::open(dir.path())?;
     let (ours, theirs) = UnixStream::pair()?;
-    let server = std::thread::spawn(move || -> Result<()> {
+    let server = std::thread::spawn(move || -> Result<Vec<String>> {
         let mut out = &theirs;
+        let mut asked = Vec::new();
         for line in BufReader::new(theirs.try_clone()?).lines() {
             let request: Value = serde_json::from_str(&line?)?;
+            asked.push(request["method"].to_string());
             writeln!(
                 out,
                 "{}",
                 json!({ "id": request["id"], "result": { "blocks": [] } })
             )?;
         }
-        Ok(())
+        Ok(asked)
     });
     let mut rex = Rex::Pipe(Pipe::new(ours)?);
     let mut view = View::new("i1");
-    let changed = |revision: i64| {
-        json!({ "event": "session_view_changed", "session_id": "session:1",
-                "payload": { "revision": revision } })
-    };
-    view.handle(&mut store, &changed(2))?;
+    let changed = json!({ "event": "session_view_changed", "session_id": "session:1",
+                          "payload": { "revision": 1 } });
+    assert!(view.handle(&mut store, &changed)?);
     view.flush(&mut rex, &mut store)?;
-    assert_eq!(view.deadline(), None);
-    view.handle(&mut store, &changed(2))?;
-    view.handle(&mut store, &changed(1))?;
-    assert_eq!(view.deadline(), None);
-    view.handle(&mut store, &changed(3))?;
-    assert!(view.deadline().is_some());
     drop(rex);
-    server.join().expect("the fake server ran")?;
+    assert_eq!(
+        server.join().expect("the fake server ran")?,
+        Vec::<String>::new()
+    );
     Ok(())
 }

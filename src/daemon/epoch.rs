@@ -126,7 +126,7 @@ impl Daemon<'_> {
             if follow_due || pipe_of(rex).pending() {
                 continue;
             }
-            let deadline = [view.deadline(), restorer.deadline(), follow.deadline()]
+            let deadline = [restorer.deadline(), follow.deadline()]
                 .into_iter()
                 .flatten()
                 .min();

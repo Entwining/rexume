@@ -1,6 +1,3 @@
-use std::collections::HashMap;
-use std::time::{Duration, Instant};
-
 use anyhow::Result;
 use rusqlite::params;
 use serde_json::{Value, json};
@@ -10,13 +7,9 @@ use crate::rex::{CallError, Rex, is_root, items, listed_blocks, root_status, str
 use crate::store::{Store, ensure_lineage, lineage_of, now_ms};
 use crate::{proc, task};
 
-const COALESCE: Duration = Duration::from_millis(300);
-
 pub(super) struct View {
     instance: String,
-    dirty: HashMap<String, Instant>,
-    read_at: HashMap<String, Instant>,
-    revisions: HashMap<String, i64>,
+    new_sessions: Vec<String>,
 }
 
 enum Change<'a> {
@@ -29,9 +22,7 @@ impl View {
     pub(super) fn new(instance: &str) -> Self {
         Self {
             instance: instance.to_owned(),
-            dirty: HashMap::new(),
-            read_at: HashMap::new(),
-            revisions: HashMap::new(),
+            new_sessions: Vec::new(),
         }
     }
 
@@ -51,7 +42,6 @@ impl View {
                 Err(e) if e.not_found() => continue,
                 Err(e) => return Err(e.into()),
             };
-            self.read_at.insert(live.to_owned(), Instant::now());
             for block in listed_blocks(&list) {
                 self.read_block(rex, store, live, &block)?;
                 blocks.push(block);
@@ -112,39 +102,18 @@ impl View {
         Ok(())
     }
 
-    /// A change long after the last list is listed at once, so a crash right after a single change
-    /// loses nothing.
-    fn mark_dirty(&mut self, live: &str) {
-        let due = next_read(self.read_at.get(live).copied(), Instant::now());
-        self.dirty.entry(live.to_owned()).or_insert(due);
-    }
-
     pub(super) fn handle(&mut self, store: &mut Store, event: &Value) -> Result<bool> {
-        let session = str_at(event, "/session_id");
         let payload = event.get("payload").unwrap_or(&Value::Null);
         match str_at(event, "/event") {
             Some("session_created") => {
                 if let Some(live) = str_at(payload, "/session/session_id") {
-                    self.mark_dirty(live);
+                    self.new_sessions.push(live.to_owned());
                 }
                 Ok(false)
             }
-            Some("session_view_changed") => {
-                let Some(live) = session else {
-                    return Ok(false);
-                };
-                let revision = payload.get("revision").and_then(Value::as_i64);
-                // Rex can send these out of revision order. The pane list carries no revision but
-                // is read after the event, so it covers any revision already reported.
-                if revision.is_none_or(|r| self.revisions.get(live).is_none_or(|saved| r > *saved))
-                {
-                    if let Some(r) = revision {
-                        self.revisions.insert(live.to_owned(), r);
-                    }
-                    self.mark_dirty(live);
-                }
-                Ok(true)
-            }
+            // Focus may have left a worker's pane whose close waited for it
+            // (`Follow::view_changed`).
+            Some("session_view_changed") => Ok(true),
             // A server that stops ends the stream without closing its panes, so this close is real.
             Some("block_closed") => {
                 let Some(block) = str_at(payload, "/block_id").or(str_at(event, "/block_id"))
@@ -219,25 +188,13 @@ impl View {
         Ok(moves_task)
     }
 
-    pub(super) fn deadline(&self) -> Option<Instant> {
-        self.dirty.values().min().copied()
-    }
-
     pub(super) fn flush(&mut self, rex: &mut Rex, store: &mut Store) -> Result<()> {
-        let now = Instant::now();
-        let due: Vec<String> = self
-            .dirty
-            .iter()
-            .filter(|(_, due)| **due <= now)
-            .map(|(live, _)| live.clone())
-            .collect();
-        for live in due {
-            self.dirty.remove(&live);
+        for live in std::mem::take(&mut self.new_sessions) {
             match rex.call("session.list_blocks", &json!({ "session_id": live })) {
                 Ok(list) => {
-                    self.read_at.insert(live.clone(), Instant::now());
-                    // A new pane's first reports can come before the stream carries its session,
-                    // so a pane with nothing recorded on this instance is read once.
+                    // A pane in a session the stream carries reports itself as it starts, but the
+                    // panes a session is created with can report before the stream carries it, so
+                    // a pane with nothing recorded on this instance is read once.
                     for block in listed_blocks(&list) {
                         if !recorded(store.conn(), &self.instance, &block)? {
                             self.read_block(rex, store, &live, &block)?;
@@ -253,10 +210,6 @@ impl View {
         }
         Ok(())
     }
-}
-
-pub(super) fn next_read(read_at: Option<Instant>, now: Instant) -> Instant {
-    read_at.map_or(now, |read| (read + COALESCE).max(now))
 }
 
 fn removes_root(payload: &Value) -> bool {
