@@ -1,4 +1,4 @@
-<h1 align="center"><img src="brand/logo/rexume-mark-readme.png" width="72" height="72" alt=""><br>Rexume</h1>
+<h1 align="center"><a href="brand/logo/rexume-mark-color.svg"><img src="brand/logo/rexume-mark-readme.png" width="72" height="72" alt="View the Rexume logo as SVG"></a><br>Rexume</h1>
 
 Rexume reopens agent conversations in the panes [Rex](https://www.superlogical.com/rex) restores after a server restart and returns worker results to the orchestrator. It supports Claude Code, Codex, Pi, omp, and OpenCode on macOS and Linux.
 
