@@ -153,3 +153,28 @@ fn a_view_change_wakes_the_task_pass_and_lists_nothing() -> Result<()> {
     );
     Ok(())
 }
+
+#[test]
+fn a_new_session_whose_list_is_refused_ends_the_epoch() -> Result<()> {
+    let dir = tempfile::tempdir()?;
+    let mut store = Store::open(dir.path())?;
+    let (ours, theirs) = UnixStream::pair()?;
+    let server = std::thread::spawn(move || -> Result<()> {
+        let mut out = &theirs;
+        for line in BufReader::new(theirs.try_clone()?).lines() {
+            let request: Value = serde_json::from_str(&line?)?;
+            let error = "listing failed (status=500 code=internal)";
+            writeln!(out, "{}", json!({ "id": request["id"], "error": error }))?;
+        }
+        Ok(())
+    });
+    let mut rex = Rex::Pipe(Pipe::new(ours)?);
+    let mut view = View::new("i1");
+    let created = json!({ "event": "session_created",
+                          "payload": { "session": { "session_id": "session:1" } } });
+    view.handle(&mut store, &created)?;
+    assert!(view.flush(&mut rex, &mut store).is_err());
+    drop(rex);
+    server.join().expect("the fake server ran")?;
+    Ok(())
+}

@@ -28,8 +28,7 @@ fn placements(server: &Server, session: &str) -> Vec<(String, String)> {
     blocks
 }
 
-/// Creating a pane in no window changes no view, so the daemon records it from the pane's own
-/// events.
+/// The daemon records a pane added to a session it observes from the pane's own events.
 fn start_detached(server: &Server, state: &Path, session: &str, cwd: &Path) -> String {
     let worker = server.call(
         "session.new_block",

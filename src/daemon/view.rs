@@ -3,7 +3,7 @@ use rusqlite::params;
 use serde_json::{Value, json};
 
 use super::block::{foreground_pid, recorded, set_foreground, set_status, touch_block};
-use crate::rex::{CallError, Rex, is_root, items, listed_blocks, root_status, str_at};
+use crate::rex::{Rex, is_root, items, listed_blocks, root_status, str_at};
 use crate::store::{Store, ensure_lineage, lineage_of, now_ms};
 use crate::{proc, task};
 
@@ -202,9 +202,7 @@ impl View {
                     }
                 }
                 Err(e) if e.not_found() => {}
-                Err(e @ CallError::Rejected { .. }) => {
-                    log::error!("session {live}: failed to list its panes: {e}");
-                }
+                // Nothing lists the session again before the next connection's baseline.
                 Err(e) => return Err(e.into()),
             }
         }

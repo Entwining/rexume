@@ -68,7 +68,9 @@ fn the_adapters_token_stays_off_every_command_line() {
     wait_until("the daemon's first epoch", Duration::from_secs(20), || {
         query::<i64>(&state, "SELECT id FROM epoch")
     });
-    // The daemon records a pane's shell only from an event and a call that cross the relay.
+    // The daemon records a pane's shell only from events and calls that cross the relay: a new
+    // session's pane from the list it makes, and a pane added to the session later from the pane's
+    // own reports.
     let created = server.call(
         "session.create",
         &json!({ "label": "s", "initial_windows": [{ "layout": shell_block("a", dir.path()) }] }),
@@ -78,6 +80,24 @@ fn the_adapters_token_stays_off_every_command_line() {
         .as_str()
         .unwrap();
     shell_pids(&server, &state, session, &[block]);
+    let split = server.call(
+        "session.new_split",
+        &json!({ "session_id": session, "anchor_id": block, "direction": "horizontal",
+                 "side": "after", "layout": shell_block("b", dir.path()) }),
+    );
+    let window = server.call(
+        "session.new_window",
+        &json!({ "session_id": session, "focus": false, "layout": shell_block("c", dir.path()) }),
+    );
+    shell_pids(
+        &server,
+        &state,
+        session,
+        &[
+            split["block_ids"][0].as_str().unwrap(),
+            window["block_ids"][0].as_str().unwrap(),
+        ],
+    );
 
     let adapter = daemon.adapter().unwrap();
     let (relay, _) = children(adapter)
