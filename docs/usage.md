@@ -53,7 +53,7 @@ The daemon [records each restore step before its side effect](design.md#restore)
 
 An agent with Rexume's skill reads the guide `rexume skill show` prints. The guide also covers starting agents in Rex panes and reading their answers.
 
-The skill starts a worker nobody needs to watch in a detached pane of the orchestrator's session. No tab shows it, the Rex app included. Ask the agent to put a worker in a tab when you want to watch it or step in. Before it finishes, the agent releases or closes its detached workers and reports any it leaves running.
+The skill starts a worker nobody needs to watch in a detached pane of the orchestrator's session. A worker you want to watch or take over gets a separate tab in that session. Participants in a round can share a tab. The orchestrator handles implementation questions and asks you in your original conversation when it needs your decision. If you need to interact with the worker directly, the orchestrator moves its running pane into the worker tab. Before it finishes, the orchestrator releases or closes its detached workers and reports any it leaves running.
 
 Run task commands from the orchestrator's own Rex pane. They find the orchestrator through `REX_BLOCK`. Start the worker without `REX_SESSION`, as the skill does with `env -u REX_SESSION codex ...`: with Rex's Let agents name sessions setting on, Rex asks an agent that has the variable to label the session after its own task, and a worker's task is not the session's. Register the worker right after starting it, with its pane's block ID:
 
@@ -116,7 +116,7 @@ A close carries no reason. Rexume treats every close on a live server as yours, 
 
 Rex has no conditional close. A person can start typing between Rexume's check that a worker's pane is unused and the close.
 
-Rex has no per-pane notification audience. A worker's Done or Blocked indicator notifies you like any other pane.
+Rex has no per-pane notification audience. Rex for Mac mutes a whole tab, in one app at a time. The skill therefore mutes each new worker tab on every Rex app attached to the session before placing the first worker, which requires Remote Control on that app. A muted tab still shows its workers' status, and the orchestrator still receives a registered task's notices. A worker that shares a tab with your conversation alerts you like any other pane. So does one in an app that attaches later or could not be muted. When you take a worker over as your own conversation, the orchestrator unmutes its tab.
 
 A detached worker whose task is never released stays open. Rex restores it and Rexume reopens its conversation at every restart, until you or an agent close it. `rex block ls -s SESSION --json` lists a session's panes with their `placement`, and `rex block close` closes one.
 

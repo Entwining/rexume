@@ -26,11 +26,9 @@ What your commands create belongs to this task until the user takes it over. Not
 
 Label by purpose: session = the shared work, tab = the purpose or round, pane = the participant. A helper names its own pane and tabs it creates, even when it launches helpers of its own. The orchestrator, which coordinates the session's overall work, names the session for that work when it first starts or arranges work there, without waiting for a naming request, and maintains the session and caller's tab names as the work changes. Keep a name that already describes the work; preserve a user-chosen name or a resource the user has taken over unless the user asks for a change. When a session has tabs for different purposes, the orchestrator also gives its default-named initial tab a purpose label; a lone tab can keep its default name.
 
-Start a worker that nobody needs to watch in a detached pane of your own session, as "Launch" shows: it runs, answers by its block ID, and comes back after a Rex restart like any pane, but no tab shows it, the Rex app included. Put a worker the user wants to watch, interject in, or take over in a tab instead: one helper in a pane beside the caller, in the same tab and working directory, and a multi-participant round in its own tab. Budget every pane in a tab, the user's included, against the window's actual width: around 60 columns has proved unreadable to the user and 80 is the usual floor, so use batches or another tab when a round cannot fit, and say so.
+Start a worker that nobody needs to watch in a detached pane of your own session, as "Launch" shows: it runs, answers by its block ID, and comes back after a Rex restart like any pane, but no tab shows it, the Rex app included. Give a visible worker or round its own tab in that session. A single helper uses the caller's working directory unless the task specifies another. When participants share a tab, budget each pane against the window's actual width, usually at least 80 columns per pane. Use batches or another tab when a round cannot fit, and say so.
 
-Open a round's tab together with its first program, `rex window new -s <session> <round> --focus=false --keep-open -- <command>`, and split the other participants beside the block it returns. Label a pane with `--label '<participant>'` on `rex run` or `rex split`, or with `rex block rename -s <session> <block> '<participant>'`; `rex window new` has no `--label`, and the name of the pane it opens labels the tab.
-
-An agent participant's label names its runtime and model, and its role when siblings share them, such as `Pi DeepSeek reviewer`, so the user can tell panes apart without remembering their launch order. Update these labels within that scope once they no longer match the work, unless the user has taken that resource over.
+An agent participant's label names its runtime and model, and its role when siblings share them, such as `Pi DeepSeek reviewer`, so the user can tell panes apart without remembering their launch order. Update these labels within that scope once they no longer match the work, with `rex block rename -s <session> <block> '<participant>'` for a pane, unless the user has taken that resource over.
 
 ## Launch
 
@@ -46,7 +44,13 @@ jq -n --arg s "$REX_SESSION" --arg label '<participant>' --arg cwd "$PWD" \
   rex api call session.new_block -
 ```
 
-The reply's `block_id` is the pane, which starts at 80 columns by 24 rows. To show it, as when the user asks to watch the worker or must answer its dialog, `session.move_block` places it beside a pane in a window, given as `anchor_block_id`; `rex move` moves only panes already in windows.
+The reply's `block_id` is the pane, which starts at 80 columns by 24 rows.
+
+For a new worker tab, run `rex window new -s <session> <purpose> --focus=false --json` with no program, and keep its `window_id` and its shell's block ID, `.block_ids[0]`. Before placing a worker there, mute the tab on every Rex app attached to the session, because each app alerts on its own and a worker already waiting for an answer alerts as soon as it appears in an unmuted tab: `rex client ls -s <session>` lists the apps, and `rex -C <client> do client.tab.mute window_id=<window_id> muted=true` mutes the tab on one. Muting needs no device choice from the user, unlike showing a session. When an app lacks the action or refuses it, name that app once in your report and continue the requested work.
+
+Use the tab's shell as the anchor. Start a visible worker with `rex split -s <session> -b <shell> -c <directory> --label '<participant>' --focus=false --keep-open --json -- <command>` and register its `.block_ids[0]` as "Collect the result" directs before anything else. For a worker already running detached, `session.move_block` with its `block_id` and the shell as `anchor_block_id` shows the same pane, and its task stays as registered. Then close the shell by the block ID `window new` returned. Place the rest of a round beside a participant in that tab.
+
+The tab stays muted while its workers answer to you, also while the user watches one or answers a dialog in it. When the user takes a worker over as their own conversation, unmute its tab on the same apps with `muted=false`; when other workers still share the tab, leave it muted and tell the user that it is.
 
 Start the program with its task in the launch command instead of opening a shell and typing into it. Unless a helper's task drives Rex, such as opening its own reviewers, tell it in its task that it is the participant and does the work itself: a brief quoting the user's request to orchestrate otherwise leads it to load this skill and launch agents of its own.
 

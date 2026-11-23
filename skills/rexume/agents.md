@@ -26,7 +26,7 @@ A later prompt reuses the conversation's prompt cache only within the provider's
 
 ## Answer a dialog inside an agent you started
 
-Capture an interactive agent's screen before its first prompt: a dialog may already be showing. A dialog in someone else's agent belongs to the user. A question the agent's own model raises is such a dialog, and a Codex question card, described in `runtimes`, shows no options until opened. Identify the intended and selected options and navigate without submitting until the whole option list is visible; never confirm unseen options.
+Capture an interactive agent's screen before its first prompt: a dialog may already be showing. A dialog in someone else's agent belongs to the user. A question the model of an agent you started raises is a dialog you answer too, and a Codex question card, described in `runtimes`, shows no options until opened. Identify the intended and selected options and navigate without submitting until the whole option list is visible; never confirm unseen options.
 
 Answer only within the task's authorization, with no uncleared stop under the host's authority rules and no answer only the user holds. Without shared rules, require an undoable action visible only to the user, or specific user direction clearing the otherwise-stopped effect. Judge the action enabled, not the keypress; do not spend a helper's permission boundary. Resolve a model choice from the requested or configured ID; ask only for an undelegated material choice.
 
@@ -34,7 +34,7 @@ A folder trust prompt for the agent's checkout falls under that rule, since acce
 
 Decline optional onboarding or configuration offers, such as `Teach auto mode about your environment?`, with their visible defer option, not a settings-writing option or an assumed Escape binding. Move to the chosen option with `rex send-key`, confirm it, and capture again after each key, because another dialog may follow.
 
-When user input is required, report the agent, pane, and exact dialog and options while unblocked participants continue; place a detached agent's pane beside yours first, since the user cannot reach it otherwise.
+Settle a worker's implementation question yourself from the task, the code, and what the user already said. When only the user can decide, ask in your own conversation, saying what each option leads to, and carry the decision back the way the question came: into the open dialog, or with `rexume task send` when the worker ended its turn to ask, since a request sent while a dialog blocks the round waits behind it. If the user must act in the worker itself, as for a sign-in, show its running pane as the guide's "Launch" describes and name its tab and the exact dialog. Let unblocked participants continue.
 
 ## Deliver a prompt
 

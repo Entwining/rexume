@@ -1,0 +1,1 @@
+The skill opens visible workers in a separate tab and mutes it on each Rex for Mac app attached to the session, where Remote Control is on. The orchestrator settles implementation questions and brings decisions to your original conversation. If you take over a background worker, its running conversation opens in the worker tab, which is unmuted once the worker is yours.
