@@ -200,8 +200,8 @@ pub(super) fn owner_and_run(
         .execute_batch(&format!(
             "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
                VALUES ('claude', 'owner', 1, 0);
-             INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env, reported_at)
-               VALUES ('{owner}', 'claude', 'owner', {owner_pid}, 1, 0);"
+             INSERT INTO occupant (block_lineage, runtime, native_id, pid, reported_at)
+               VALUES ('{owner}', 'claude', 'owner', {owner_pid}, 0);"
         ))
         .unwrap();
     wait_until("the run to be the worker's foreground", WAIT, || {

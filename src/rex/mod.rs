@@ -144,9 +144,32 @@ impl Cli {
     }
 
     pub fn call(&self, method: &str, params: &Value) -> Result<Value, CallError> {
-        let mut child = self
-            .command()
-            .args(["api", "call", method, "-"])
+        self.call_in(None, method, params)
+    }
+
+    /// `-s` with a full block ID selects the session that holds the block; Rex servers before
+    /// 0.1.0-preview.23 refuse it.
+    pub fn block_method(&self, block: &str, method: &str) -> Result<Value, CallError> {
+        self.call_in(
+            Some(block),
+            "block.method",
+            &json!({ "block_id": block, "method": method, "args": {} }),
+        )
+    }
+
+    fn call_in(
+        &self,
+        session: Option<&str>,
+        method: &str,
+        params: &Value,
+    ) -> Result<Value, CallError> {
+        let mut command = self.command();
+        command.args(["api", "call"]);
+        if let Some(session) = session {
+            command.args(["-s", session]);
+        }
+        let mut child = command
+            .args([method, "-"])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())

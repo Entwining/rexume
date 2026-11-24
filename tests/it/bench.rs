@@ -166,7 +166,7 @@ fn bench() {
                 "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
                    VALUES ('claude', 'c{i}', 1, 0);
                  INSERT INTO occupant (block_lineage, runtime, native_id, pid, pid_name,
-                   keeps_session_env, reported_at) VALUES ('{first}', 'claude', 'c{i}', {pid}, 'claude', 0, 0);"
+                   reported_at) VALUES ('{first}', 'claude', 'c{i}', {pid}, 'claude', 0);"
             ))
             .unwrap();
         sessions.push(session);

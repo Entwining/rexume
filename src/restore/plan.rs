@@ -58,8 +58,6 @@ pub struct Plan {
     pub transcript: Option<String>,
     #[serde(default)]
     pub record_length: Option<u64>,
-    /// Workers run without `REX_SESSION` so that Rex does not ask them to label the session.
-    pub keeps_session_env: bool,
     pub reason: String,
 }
 

@@ -70,11 +70,11 @@ fn a_gate_recorded_occupant_becomes_the_foreground_its_process_started() -> Resu
                   ('r3', 'i1', 'old', 'agent', 'codex', 'o', '{}', 'claimed', 0, 0, 0, 'agent', 200),
                   ('r4', 'i2', 'in-place', 'agent', 'codex', 'p', '{}', 'claimed', 0, 0, 0, 'agent', 600);
          INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid, pid_name,
-           keeps_session_env, reported_at)
-           VALUES ('gate', 'codex', 'c', 'i2', 200, NULL, 0, 0),
-                  ('named', 'codex', 'n', 'i2', 200, 'codex', 0, 0),
-                  ('old', 'codex', 'o', 'i1', 200, NULL, 0, 0),
-                  ('in-place', 'codex', 'p', 'i2', 600, NULL, 0, 0);",
+           reported_at)
+           VALUES ('gate', 'codex', 'c', 'i2', 200, NULL, 0),
+                  ('named', 'codex', 'n', 'i2', 200, 'codex', 0),
+                  ('old', 'codex', 'o', 'i1', 200, NULL, 0),
+                  ('in-place', 'codex', 'p', 'i2', 600, NULL, 0);",
     )?;
     let first = json!({ "pid": 300, "name": "sleep" });
     for lineage in ["gate", "named", "old"] {

@@ -92,6 +92,31 @@ fn the_adapters_arguments_go_on_stdin_and_stay_off_argv() {
     assert_eq!(sent, json!({ "relay": relay, "token": token }));
 }
 
+/// Rex 0.1.0-preview.23 refuses a `session_id` that is a block ID, so the block goes to `-s` only.
+#[test]
+fn a_block_method_names_its_block_as_the_session_and_sends_no_session_id() {
+    let dir = tempfile::tempdir().unwrap();
+    let (argv, stdin) = (dir.path().join("argv"), dir.path().join("stdin"));
+    let cli = fake_rex(
+        dir.path(),
+        &format!(
+            "printf '%s\\n' \"$@\" > {}\n/bin/cat > {}\necho '{{\"foreground\":{{\"pid\":7}}}}'",
+            quoted(&argv),
+            quoted(&stdin)
+        ),
+    );
+    let reply = cli.block_method("block:b", "process").unwrap();
+    assert_eq!(reply, json!({ "foreground": { "pid": 7 } }));
+    let argv = std::fs::read_to_string(&argv).unwrap();
+    let call = ["api", "call", "-s", "block:b", "block.method", "-"];
+    assert!(argv.lines().collect::<Vec<_>>().ends_with(&call), "{argv}");
+    let sent: Value = serde_json::from_slice(&std::fs::read(&stdin).unwrap()).unwrap();
+    assert_eq!(
+        sent,
+        json!({ "block_id": "block:b", "method": "process", "args": {} })
+    );
+}
+
 #[test]
 fn a_rex_do_that_cannot_take_its_arguments_is_ended() {
     let dir = tempfile::tempdir().unwrap();

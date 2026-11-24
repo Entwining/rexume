@@ -19,8 +19,8 @@ fn conversation(store: &Store, block: &str, runtime: &str, transcript: &Path) ->
         ],
     )?;
     store.conn().execute(
-        "INSERT INTO occupant (block_lineage, runtime, native_id, pid, pid_name, keeps_session_env,
-           reported_at) VALUES (?1, ?2, ?3, 10, ?2, 0, 0)",
+        "INSERT INTO occupant (block_lineage, runtime, native_id, pid, pid_name,
+           reported_at) VALUES (?1, ?2, ?3, 10, ?2, 0)",
         params![block, runtime, format!("{block}-conversation")],
     )?;
     Ok(())
@@ -162,7 +162,7 @@ fn planned(pane: &Pane) -> Result<Start> {
     if let Some((reported_at, running)) = pane.elsewhere {
         conn.execute(
             "INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid,
-               keeps_session_env, reported_at) VALUES ('c', 'claude', 'b-conversation', 'i1', 20, 0, ?1)",
+               reported_at) VALUES ('c', 'claude', 'b-conversation', 'i1', 20, ?1)",
             params![reported_at],
         )?;
         conn.execute(

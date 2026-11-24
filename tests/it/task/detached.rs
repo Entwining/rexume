@@ -85,8 +85,8 @@ fn a_worker_in_no_window_stays_a_worker_across_restarts() {
         .execute_batch(&format!(
             "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
                VALUES ('claude', 'owner', 1, 0);
-             INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env, reported_at)
-               VALUES ('{owner}', 'claude', 'owner', {}, 1, 0);",
+             INSERT INTO occupant (block_lineage, runtime, native_id, pid, reported_at)
+               VALUES ('{owner}', 'claude', 'owner', {}, 0);",
             fg[0]
         ))
         .unwrap();

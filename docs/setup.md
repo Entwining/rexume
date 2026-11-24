@@ -2,7 +2,7 @@
 
 Rexume runs on the machine that runs the Rex server. On macOS, it needs macOS 15 or later and the Rex app, and is developed on Apple Silicon. On Linux, it needs Linux 5.3 or later on x86_64 or arm64 and runs as a systemd user service. Installing its hooks and job needs the Rex CLI, `rex`, on `PATH`.
 
-Rexume needs Rex's own session restore: the Rex app 0.1.0-preview.23 or later on macOS, or the Rex server 0.1.0-preview.11 or later on Linux. The first restart after upgrading Rex brings nothing back. The earlier server saved nothing.
+Rexume needs Rex's own session restore, and `rexume report` and Rexume's skill pass a pane's block ID where Rex takes a session, so Rexume needs the Rex server 0.1.0-preview.23 or later on macOS and Linux. An earlier server refuses the block ID, and the hooks then record no conversation to reopen, so upgrade Rex before Rexume, and its CLI with it. On macOS, the server is the one the Rex app runs, and the app's own version does not show the server's: `rex server status` shows the running server's version, and `rex version` the CLI's. The first restart after upgrading from a Rex server without session restore brings nothing back, because that server saved nothing.
 
 OpenCode conversations need OpenCode 2.3 or later.
 

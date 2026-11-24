@@ -172,8 +172,8 @@ fn a_conversation_opened_elsewhere_is_not_reopened() -> Result<()> {
         let opened = |store: &Store, reported_at: i64| {
             store.conn().execute(
                 "INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid,
-                   keeps_session_env, reported_at)
-                 VALUES ('c', 'claude', 'owner', 'i2', 9, 0, ?1), ('d', 'claude', 'worker', 'i2', 8, 0, ?1)",
+                   reported_at)
+                 VALUES ('c', 'claude', 'owner', 'i2', 9, ?1), ('d', 'claude', 'worker', 'i2', 8, ?1)",
                 params![reported_at],
             )
         };

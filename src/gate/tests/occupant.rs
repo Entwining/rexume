@@ -46,7 +46,6 @@ fn a_claim_records_the_conversation_it_starts_as_the_gates_process() -> Result<(
     );
     let process = |start_position| Process {
         transport: Map::new(),
-        keeps_session_env: false,
         instance: "i2".into(),
         pid: 42,
         name: Some("claude".into()),

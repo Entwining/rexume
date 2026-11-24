@@ -14,11 +14,11 @@ Read each topic before its first action with `rexume skill show TOPIC`, the same
 
 ## Find the target
 
-`rex whoami --json` reports `session_id` and `block_id` only while the inherited IDs still resolve; it cannot discover a pane whose IDs have changed. When a saved session or block no longer resolves, re-list current sessions and blocks and verify any candidate restored agent by its native conversation ID and task state before declaring it lost or starting a replacement. If the match remains uncertain, report that without redispatching the same work.
+`rex whoami --json` reports `session_id` and `block_id` only while the inherited `REX_BLOCK` still resolves; it cannot discover a pane whose ID has changed. When a saved session or block no longer resolves, re-list current sessions and blocks and verify any candidate restored agent by its native conversation ID and task state before declaring it lost or starting a replacement. If the match remains uncertain, report that without redispatching the same work.
 
 When current caller IDs cannot be verified, treat this agent as outside a Rex terminal. There, with no named or matching session, create one labelled for the task; the user sees that work only in the Rex app, so report the session's label, and show it with `session.select` only when the user asks.
 
-Pass `-s <session>` with every window or block ID: without it Rex looks only in the session `REX_SESSION` names and reports an ID from another session as not found. Inspect with `--autostart=false` so that probing for an absent server does not start one.
+Inspect with `--autostart=false` so that probing for an absent server does not start one.
 
 ## Label and place work
 
@@ -34,14 +34,14 @@ An agent participant's label names its runtime and model, and its role when sibl
 
 Pass `--focus=false` to `rex run`, `rex split`, and `rex window new` unless the user asks to switch, background work or not: a new tab or pane takes focus, and with it whatever the user is typing. `rex new` has no such option, because a new session is not shown. Pass `--keep-open` whenever you or the user must read the output or exit status afterwards, because a pane created for a program closes with it.
 
-Start a detached pane with `session.new_block`, its program and task in `command` after `env -u REX_SESSION`, and add `exit: {on_completion: false}` wherever `--keep-open` would apply:
+Start a detached pane with `session.new_block`, its program and task in `command`, and add `exit: {on_completion: false}` wherever `--keep-open` would apply; outside Rex, or for another session, pass the full session ID "Find the target" chose to `-s` instead of `"$REX_BLOCK"`:
 
 ```sh
-jq -n --arg s "$REX_SESSION" --arg label '<participant>' --arg cwd "$PWD" \
-  '{session_id: $s, flavor: "com.superlogical.terminal.shell", label: $label,
-    options: {cwd: $cwd, command: ["env", "-u", "REX_SESSION", "<program>", "<argument>"],
+jq -n --arg label '<participant>' --arg cwd "$PWD" \
+  '{flavor: "com.superlogical.terminal.shell", label: $label,
+    options: {cwd: $cwd, command: ["<program>", "<argument>"],
       exit: {on_completion: false}}}' |
-  rex api call session.new_block -
+  rex api call -s "$REX_BLOCK" session.new_block -
 ```
 
 The reply's `block_id` is the pane, which starts at 80 columns by 24 rows.
@@ -52,9 +52,7 @@ Use the tab's shell as the anchor. Start a visible worker with `rex split -s <se
 
 The tab stays muted while its workers answer to you, also while the user watches one or answers a dialog in it. When the user takes a worker over as their own conversation, unmute its tab on the same apps with `muted=false`; when other workers still share the tab, leave it muted and tell the user that it is.
 
-Start the program with its task in the launch command instead of opening a shell and typing into it. Unless a helper's task drives Rex, such as opening its own reviewers, tell it in its task that it is the participant and does the work itself: a brief quoting the user's request to orchestrate otherwise leads it to load this skill and launch agents of its own.
-
-Start every program you launch for a task after `env -u REX_SESSION`, with `rex run`, `rex split`, and `rex window new` too. Rex sets `REX_SESSION` in the panes it starts, and with its Let agents name sessions setting on, its session-start hook tells an agent started with that variable to label the session, yours, after the agent's own task. Give a helper whose task drives Rex your session ID in its task instead, for `-s`.
+Start the program with its task in the launch command instead of opening a shell and typing into it. When the program is a worker agent in your shared session, begin its task with `You are a worker in a shared Rex session. The coordinator owns the session name.`: with Rex's Let agents name sessions setting on, Rex's session-start hook tells an agent that runs it, such as Claude Code or Codex, to name the session that holds its pane after the agent's own task. Unless a helper's task drives Rex, such as opening its own reviewers, tell it in its task that it is the participant and does the work itself: a brief quoting the user's request to orchestrate otherwise leads it to load this skill and launch agents of its own.
 
 Answer a dialog in an agent you launched, a folder trust prompt included, as `agents` directs.
 
@@ -95,10 +93,10 @@ Rex accepts input even while the program reports that it is blocked on a questio
 Enter text as a paste event and press keys separately with `rex send-key`. `rex send` types its text as keystrokes, which leaves the program to guess where the text ends: Codex takes a quickly typed prompt for a paste and turns the Enter that follows into a newline, and every newline in typed text acts as Enter. A program that turns on bracketed paste, as Claude Code, Codex, Pi, and zsh do, receives a paste event as one delimited paste, newlines included, so the next key acts on the whole text; a program whose `rex block call ... modes` shows `bracketed_paste` unset receives it as typed text, each newline as Enter. Write the text to a task-owned file and let `jq` build the event, so no shell quoting touches the text; for a short line without shell syntax, `--arg t '<text>'` replaces `--rawfile`:
 
 ```sh
-jq -n --arg s "$session" --arg b "$block" --rawfile t "$text_file" \
-  '{session_id: $s, block_id: $b, event: {type: "paste", payload: {text: ($t | rtrimstr("\n"))}}}' |
-  rex api call -s "$session" block.event -
-rex send-key -s "$session" -b "$block" enter
+jq -n --arg b "$block" --rawfile t "$text_file" \
+  '{block_id: $b, event: {type: "paste", payload: {text: ($t | rtrimstr("\n"))}}}' |
+  rex api call -s "$session" block.event - &&
+  rex send-key -s "$session" -b "$block" enter
 ```
 
 ## Drive the Rex app
@@ -115,15 +113,14 @@ When the user asks you to close the pane, tab, or session you run in, a direct c
 
 ```sh
 python3 - <<'PY'
-import os
 import subprocess
 
 subprocess.Popen(
     ['sh', '-c', r'''for _ in $(seq 300); do
-  rex block call --autostart=false -s "$1" -b "$2" program_status | jq -e "any(.records[]; .state == \"working\")" >/dev/null || break
+  rex block call --autostart=false -b "$REX_BLOCK" program_status | jq -e "any(.records[]; .state == \"working\")" >/dev/null || break
   sleep 1
 done
-rex block close -s "$1" "$2"''', 'sh', os.environ['REX_SESSION'], os.environ['REX_BLOCK']],
+rex block close "$REX_BLOCK"'''],
     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     start_new_session=True,
 )

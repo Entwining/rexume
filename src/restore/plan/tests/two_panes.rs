@@ -8,8 +8,8 @@ fn a_conversation_shown_in_two_panes_is_reopened_in_one() -> Result<()> {
     std::fs::write(&transcript, "")?;
     conversation(&store, "a", "codex", &transcript)?;
     store.conn().execute_batch(
-        "INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env, reported_at)
-           VALUES ('b', 'codex', 'a-conversation', 20, 0, 0);
+        "INSERT INTO occupant (block_lineage, runtime, native_id, pid, reported_at)
+           VALUES ('b', 'codex', 'a-conversation', 20, 0);
          INSERT INTO block (lineage, instance_id, fg_pid)
            VALUES ('a', 'i1', 10), ('b', 'i1', 20), ('c', 'i1', 30);
          INSERT INTO conversation (runtime, native_id, resumable, reported_at)
@@ -55,8 +55,8 @@ fn the_pane_whose_turn_was_cut_off_reopens_a_conversation_two_panes_showed() -> 
     std::fs::write(&transcript, format!("{PROMPT}\n"))?;
     conversation(&store, "b", "claude", &transcript)?;
     store.conn().execute_batch(
-        "INSERT INTO occupant (block_lineage, runtime, native_id, pid, pid_name, keeps_session_env,
-           reported_at) VALUES ('a', 'claude', 'b-conversation', 20, 'claude', 0, 0);
+        "INSERT INTO occupant (block_lineage, runtime, native_id, pid, pid_name,
+           reported_at) VALUES ('a', 'claude', 'b-conversation', 20, 'claude', 0);
          INSERT INTO block (lineage, instance_id, fg_pid, status, status_pid, status_name)
            VALUES ('a', 'i1', 20, 'idle', 20, 'claude'), ('b', 'i1', 10, 'working', 10, 'claude');",
     )?;
@@ -80,8 +80,8 @@ fn a_round_left_to_another_panes_restore_ends_when_that_restore_is_skipped() -> 
     std::fs::write(&transcript, "")?;
     conversation(&store, "a", "codex", &transcript)?;
     store.conn().execute_batch(
-        "INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env, reported_at)
-           VALUES ('b', 'codex', 'a-conversation', 20, 0, 0);
+        "INSERT INTO occupant (block_lineage, runtime, native_id, pid, reported_at)
+           VALUES ('b', 'codex', 'a-conversation', 20, 0);
          INSERT INTO block (lineage, instance_id, fg_pid) VALUES ('a', 'i1', 10), ('b', 'i1', 20);
          INSERT INTO conversation (runtime, native_id, resumable, reported_at)
            VALUES ('claude', 'owner', 1, 0);

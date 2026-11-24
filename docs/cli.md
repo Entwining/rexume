@@ -248,7 +248,6 @@ The guide tells agents to read Rex's own guide first and to follow Rexume's wher
 | `XDG_CONFIG_HOME` | `install`, `uninstall`, `daemon` | where the systemd unit goes on Linux, when absolute, and [OpenCode's directory](setup.md#moved-configuration-directories) when `OPENCODE_CONFIG_DIR` is not set |
 | `REX_BLOCK` | `report`, `task`, `gate` | the calling pane |
 | `OPENCODE_SESSION_ID` | `task` | the OpenCode session that runs the command |
-| `REX_SESSION` | `report`, `gate` | the calling pane's session, which `gate` leaves out of a reopened conversation that ran without it |
 | `CLAUDE_CODE_MESSAGING_SOCKET` | `report claude` | where notices to that conversation go |
 | `REXUME_LAUNCH_PID`, `REXUME_LAUNCH` | `report claude`, from the environment Claude Code was started with | [a launcher's command](#a-launchers-command) |
 | `REXUME_TASK_META` | `task add`; `report`, from the environment the agent was started with | a JSON object of at most 1 KiB, saved as the `meta` of each task the command registers and printed only by `export`; Rexume reads no key of it, and unset or empty saves `{}`. `task add` fails when it is not a JSON object or is larger. A launcher or harness sets it for the orchestrator, whose commands inherit it, and [`report`](#report) saves it so that a restore reopens the orchestrator with it |

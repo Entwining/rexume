@@ -20,7 +20,7 @@ The orchestrator does not have to wait on its workers. Rexume saves each registe
 
 ## Install
 
-Run Rexume on the machine running the Rex server. It [requires Rex's session restore](docs/setup.md). Put `rex` on `PATH` first. On macOS:
+Run Rexume on the machine running the Rex server. It [requires a recent Rex server](docs/setup.md). Put `rex` on `PATH` first. On macOS:
 
 ```sh
 brew install entwining/tap/rexume

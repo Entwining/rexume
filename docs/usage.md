@@ -55,7 +55,9 @@ An agent with Rexume's skill reads the guide `rexume skill show` prints. The gui
 
 The skill starts a worker nobody needs to watch in a detached pane of the orchestrator's session. A worker you want to watch or take over gets a separate tab in that session. Participants in a round can share a tab. The orchestrator handles implementation questions and asks you in your original conversation when it needs your decision. If you need to interact with the worker directly, the orchestrator moves its running pane into the worker tab. Before it finishes, the orchestrator releases or closes its detached workers and reports any it leaves running.
 
-Run task commands from the orchestrator's own Rex pane. They find the orchestrator through `REX_BLOCK`. Start the worker without `REX_SESSION`, as the skill does with `env -u REX_SESSION codex ...`: with Rex's Let agents name sessions setting on, Rex asks an agent that has the variable to label the session after its own task, and a worker's task is not the session's. Register the worker right after starting it, with its pane's block ID:
+With Rex's Let agents name sessions setting on, Rex's session-start hook tells an agent that runs it to name the session that holds its pane, workers included; `rex skill status` lists the agents that run the hook, such as Claude Code and Codex. The skill begins the task of each worker agent it starts in the orchestrator's session by saying that the orchestrator owns the session name. That is an instruction the worker reads, not a restriction Rexume enforces, so a worker can still rename the session.
+
+Run task commands from the orchestrator's own Rex pane. They find the orchestrator through `REX_BLOCK`. Register the worker right after starting it, with its pane's block ID:
 
 ```sh
 rexume task add --worker "$WORKER_BLOCK" --title 'review the parser'

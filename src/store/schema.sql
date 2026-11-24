@@ -126,8 +126,7 @@ CREATE TABLE IF NOT EXISTS conversation (
 -- report before version 3 that no epoch dates. `own_program`: the process was the
 -- terminal's own program rather than one started from its shell, so its exit is the terminal's,
 -- as a conversation an earlier version's restore started was; NULL, unknown, before version 3.
--- `keeps_session_env`: the process ran with `REX_SESSION`, so its reopened conversation gets it
--- too. `start_position`: the length of the conversation's record of turns when the process was
+-- `start_position`: the length of the conversation's record of turns when the process was
 -- first recorded, where a task bound to this report starts reading, so that turns the record
 -- already held, as a resumed conversation's does, never belong to a task; 0 before version 4, and
 -- for Claude Code before version 8. A later report of the same conversation from the same
@@ -144,7 +143,6 @@ CREATE TABLE IF NOT EXISTS occupant (
   pid               INTEGER NOT NULL,
   pid_name          TEXT,
   own_program       INTEGER CHECK (own_program IN (0, 1)),
-  keeps_session_env INTEGER NOT NULL CHECK (keeps_session_env IN (0, 1)),
   transport         TEXT    CHECK (transport IS NULL OR json_type(transport) = 'object'),
   start_position    INTEGER NOT NULL DEFAULT 0,
   left_fg_changes   INTEGER,
@@ -547,4 +545,4 @@ CREATE TABLE IF NOT EXISTS archive (
 
 -- 'rexu' in ASCII, which Store::open checks before it uses a database.
 PRAGMA application_id = 0x72657875;
-PRAGMA user_version = 12;
+PRAGMA user_version = 13;

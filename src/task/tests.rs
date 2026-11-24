@@ -47,8 +47,8 @@ pub(crate) fn task_world(
          INSERT INTO block (lineage, instance_id, fg_pid, fg_generation, status, status_pid, status_at)
            VALUES ('a', 'i1', 10, 1, 'idle', 10, 1), ('b', 'i1', 100, 5, 'working', 100, 1);
          INSERT INTO conversation (runtime, native_id, resumable, reported_at) VALUES ('claude', 'owner', 1, 0);
-         INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env, reported_at)
-           VALUES ('a', 'claude', 'owner', 10, 0, 0);",
+         INSERT INTO occupant (block_lineage, runtime, native_id, pid, reported_at)
+           VALUES ('a', 'claude', 'owner', 10, 0);",
     )?;
     tx.execute(
         "INSERT INTO conversation (runtime, native_id, transcript, resumable, reported_at)
@@ -56,8 +56,8 @@ pub(crate) fn task_world(
         params![transcript.to_string_lossy()],
     )?;
     tx.execute_batch(
-        "INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env, reported_at)
-           VALUES ('b', 'claude', 'worker', 100, 0, 50);",
+        "INSERT INTO occupant (block_lineage, runtime, native_id, pid, reported_at)
+           VALUES ('b', 'claude', 'worker', 100, 50);",
     )?;
     let (runtime, native_id) = match result_file {
         None => (Some("claude"), Some("worker")),

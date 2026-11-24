@@ -43,8 +43,8 @@ pub fn report(state: &Path, transcript: &Path, blocks: &[String], fg: &[i64]) {
     .unwrap();
     for (block, pid) in blocks.iter().zip(fg) {
         conn.execute(
-            "INSERT INTO occupant (block_lineage, runtime, native_id, pid, pid_name, keeps_session_env, reported_at)
-             VALUES (?1, 'claude', 'story', ?2, 'claude', 1, 0)",
+            "INSERT INTO occupant (block_lineage, runtime, native_id, pid, pid_name, reported_at)
+             VALUES (?1, 'claude', 'story', ?2, 'claude', 0)",
             params![block, pid],
         )
         .unwrap();

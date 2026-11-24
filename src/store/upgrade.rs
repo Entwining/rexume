@@ -30,8 +30,8 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
         to_v7(tx, version)?;
     }
     // From version 10 on, rebuilding `task_round` would cascade into the episodes version 10 and
-    // 11 record. Version 11 changed `occupant`, and version 12 `notice` and `blocked_episode`,
-    // dropping the episode's `round`, which its notice also records.
+    // 11 record. Version 11 changed `occupant`, version 12 `notice` and `blocked_episode`,
+    // dropping the episode's `round`, which its notice also records, and version 13 `occupant`.
     let changed: &[&str] = match version {
         ..10 => &[
             "notice",
@@ -42,8 +42,8 @@ pub(super) fn from(tx: &Transaction, version: i64) -> Result<()> {
             "block",
             "occupant",
         ],
-        10 => &["notice", "blocked_episode", "occupant"],
-        _ => &["notice", "blocked_episode"],
+        10 | 11 => &["notice", "blocked_episode", "occupant"],
+        _ => &["occupant"],
     };
     rebuild(tx, changed)?;
     for (task, round, started_at) in blocked {

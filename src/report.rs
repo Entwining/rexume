@@ -6,7 +6,7 @@ use rusqlite::{Transaction, params};
 use serde_json::{Map, Value, json};
 
 use crate::proc;
-use crate::rex::{Cli, Rex, require_str, str_at};
+use crate::rex::{Cli, require_str, str_at};
 use crate::runtime::{Runtime, claude};
 use crate::store::{Store, ensure_lineage, now_ms};
 
@@ -134,15 +134,8 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
         (None, Some(path)) => record_length(&path)?,
         (None, None) => 0,
     };
-    let mut rex = Rex::Cli(Cli::from_env()?);
-    // Workers run without `REX_SESSION`.
-    let session = match std::env::var_os("REX_SESSION") {
-        Some(session) => session.to_string_lossy().into_owned(),
-        None => rex
-            .block_session(&block)?
-            .with_context(|| format!("pane {block} is not on the server"))?,
-    };
-    let process = rex.block_method(&session, &block, "process")?;
+    let rex = Cli::from_env()?;
+    let process = rex.block_method(&block, "process")?;
     let program = proc::program_above(std::process::id());
     let Some(foreground) = process
         .pointer("/foreground/pid")
@@ -176,7 +169,6 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
         &report,
         &Process {
             transport,
-            keeps_session_env: std::env::var_os("REX_SESSION").is_some(),
             instance,
             pid: i64::try_from(foreground)?,
             name: str_at(&process, "/foreground/name").map(str::to_owned),
@@ -198,7 +190,6 @@ pub fn record_length(path: &Path) -> Result<u64> {
 
 pub struct Process {
     pub transport: Map<String, Value>,
-    pub keeps_session_env: bool,
     pub instance: String,
     pub pid: i64,
     pub name: Option<String>,
@@ -250,8 +241,8 @@ pub fn record(
         .transpose()?;
     tx.execute(
         "INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid, pid_name,
-           own_program, keeps_session_env, transport, start_position, reported_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+           own_program, transport, start_position, reported_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
          ON CONFLICT (block_lineage) DO UPDATE SET
            start_position = CASE
              WHEN (runtime, native_id, pid) = (excluded.runtime, excluded.native_id, excluded.pid)
@@ -262,8 +253,8 @@ pub fn record(
                AND instance_id IS excluded.instance_id THEN left_fg_changes END,
            runtime = excluded.runtime, native_id = excluded.native_id,
            instance_id = excluded.instance_id, pid = excluded.pid, pid_name = excluded.pid_name,
-           own_program = excluded.own_program, keeps_session_env = excluded.keeps_session_env,
-           transport = excluded.transport, reported_at = excluded.reported_at",
+           own_program = excluded.own_program, transport = excluded.transport,
+           reported_at = excluded.reported_at",
         params![
             lineage,
             runtime.as_str(),
@@ -272,7 +263,6 @@ pub fn record(
             process.pid,
             process.name,
             process.own_program,
-            process.keeps_session_env,
             transport,
             i64::try_from(process.start_position)?,
             now,

@@ -66,7 +66,7 @@ fn planned(pane: &Left) -> Result<(Start, String)> {
     if matches!(pane.elsewhere, Elsewhere::InAnOpenPane) {
         conn.execute_batch(
             "INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid,
-               keeps_session_env, reported_at) SELECT 'c', runtime, native_id, 'i1', 40, 0, 3000
+               reported_at) SELECT 'c', runtime, native_id, 'i1', 40, 3000
              FROM occupant WHERE block_lineage = 'b'",
         )?;
     }

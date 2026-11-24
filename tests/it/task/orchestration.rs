@@ -74,9 +74,9 @@ impl Orchestration {
             )
             .unwrap();
             conn.execute(
-                "INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env, reported_at,
+                "INSERT INTO occupant (block_lineage, runtime, native_id, pid, reported_at,
                    transport, start_position)
-                 VALUES (?1, 'claude', ?2, ?3, 1, 0, json_object('messaging_socket', ?4), ?5)",
+                 VALUES (?1, 'claude', ?2, ?3, 0, json_object('messaging_socket', ?4), ?5)",
                 params![
                     block,
                     native_id,

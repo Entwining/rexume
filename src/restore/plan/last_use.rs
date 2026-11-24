@@ -30,7 +30,6 @@ struct Occupant {
     runtime: Runtime,
     conversation: Conversation,
     resumable: bool,
-    keeps_session_env: bool,
     instance_id: Option<String>,
     pid: i64,
     pid_name: Option<String>,
@@ -44,8 +43,7 @@ fn occupant(conn: &Connection, state_dir: &Path, block: &str) -> Result<Option<O
     Ok(conn
         .query_row(
             "SELECT o.runtime, o.native_id, c.transcript, c.settings, c.resumable,
-               o.keeps_session_env, o.instance_id, o.pid, o.pid_name, o.own_program, o.reported_at,
-               o.left_fg_changes
+               o.instance_id, o.pid, o.pid_name, o.own_program, o.reported_at, o.left_fg_changes
              FROM occupant o JOIN conversation c USING (runtime, native_id)
              WHERE o.block_lineage = ?1",
             params![block],
@@ -69,13 +67,12 @@ fn occupant(conn: &Connection, state_dir: &Path, block: &str) -> Result<Option<O
                     ),
                     conversation,
                     resumable: row.get(4)?,
-                    keeps_session_env: row.get(5)?,
-                    instance_id: row.get(6)?,
-                    pid: row.get(7)?,
-                    pid_name: row.get(8)?,
-                    own_program: row.get(9)?,
-                    reported_at: row.get(10)?,
-                    left_fg_changes: row.get(11)?,
+                    instance_id: row.get(5)?,
+                    pid: row.get(6)?,
+                    pid_name: row.get(7)?,
+                    own_program: row.get(8)?,
+                    reported_at: row.get(9)?,
+                    left_fg_changes: row.get(10)?,
                 })
             },
         )
@@ -275,7 +272,6 @@ fn reopen(
             prompt,
             transcript: occupant.conversation.transcript.clone(),
             record_length,
-            keeps_session_env: occupant.keeps_session_env,
             reason,
         },
     })

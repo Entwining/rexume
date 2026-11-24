@@ -37,7 +37,6 @@ fn a_resumed_claude_conversation_keeps_its_launch_model() -> Result<()> {
     let mut store = Store::open(dir.path())?;
     let process = Process {
         transport: Map::new(),
-        keeps_session_env: false,
         instance: "i1".into(),
         pid: 100,
         name: Some("claude".into()),
@@ -76,7 +75,6 @@ fn a_resumed_claude_conversation_keeps_its_launch_model() -> Result<()> {
 fn process(pid: i64) -> Process {
     Process {
         transport: Map::new(),
-        keeps_session_env: false,
         instance: "i1".into(),
         pid,
         name: Some("agent".into()),

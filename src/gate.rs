@@ -49,12 +49,7 @@ fn agent(shell: &str, plan: &Plan, started: Start) -> std::io::Error {
         Ok(command) => command,
         Err(e) => return std::io::Error::other(e.to_string()),
     };
-    let mut process = Command::new(shell);
-    process.args(["-i", "-c", &command]);
-    if !plan.keeps_session_env {
-        process.env_remove("REX_SESSION");
-    }
-    process.exec()
+    Command::new(shell).args(["-i", "-c", &command]).exec()
 }
 
 /// Assignments before the command rather than `env`, which would skip the user's alias or
@@ -157,7 +152,6 @@ fn occupy(
     };
     let process = Process {
         transport: Map::new(),
-        keeps_session_env: plan.keeps_session_env,
         instance: instance.to_owned(),
         pid: i64::from(pid),
         name: None,

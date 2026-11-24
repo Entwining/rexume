@@ -119,8 +119,8 @@ fn a_conversation_reported_elsewhere_since_the_plan_starts_nothing() -> Result<(
     std::fs::write(&transcript, format!("{PROMPT}\n"))?;
     let mut store = typed(dir.path(), &transcript)?;
     store.conn().execute(
-        "INSERT INTO occupant (block_lineage, runtime, native_id, pid, keeps_session_env,
-           reported_at) VALUES ('other', 'claude', 'c', 1, 0, 100)",
+        "INSERT INTO occupant (block_lineage, runtime, native_id, pid, reported_at)
+           VALUES ('other', 'claude', 'c', 1, 100)",
         [],
     )?;
     let (start, _) = claim(&mut store, "r", "b", 42)?;

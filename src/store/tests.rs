@@ -157,9 +157,9 @@ fn sweep_forgets_the_occupant_of_a_pane_it_forgets() -> Result<()> {
          INSERT INTO conversation (runtime, native_id, resumable, reported_at)
            VALUES ('claude', 'c-closed', 1, {old}), ('claude', 'c-new', 1, {old});
          INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid,
-           keeps_session_env, reported_at)
-           VALUES ('b-closed', 'claude', 'c-closed', 'i1', 1, 0, {old}),
-             ('b-unseen', 'claude', 'c-new', 'i2', 2, 0, {old});"
+           reported_at)
+           VALUES ('b-closed', 'claude', 'c-closed', 'i1', 1, {old}),
+             ('b-unseen', 'claude', 'c-new', 'i2', 2, {old});"
     ))?;
     sweep(&tx, "i2")?;
     tx.commit()?;
