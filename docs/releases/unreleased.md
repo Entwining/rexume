@@ -3,3 +3,5 @@ Rexume now follows the Rex server 0.1.0-preview.23, whose terminals set `REX_BLO
 With Rex's Let agents name sessions setting on, Rex's session-start hook asks agents that run it, such as Claude Code and Codex, to name the session that holds their pane, so a worker could rename the orchestrator's session. The skill now begins the task of each worker agent it starts in the orchestrator's session by saying that the orchestrator owns the session name, an instruction Rexume does not enforce.
 
 The state database moves to schema version 13, which earlier versions of Rexume refuse to open.
+
+The skill starts the first program of a new tab or session, whether a worker, a command, or a shell the user asked for, in the pane the tab opens with, instead of opening a shell there first.

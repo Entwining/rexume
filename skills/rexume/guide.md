@@ -16,7 +16,7 @@ Read each topic before its first action with `rexume skill show TOPIC`, the same
 
 `rex whoami --json` reports `session_id` and `block_id` only while the inherited `REX_BLOCK` still resolves; it cannot discover a pane whose ID has changed. When a saved session or block no longer resolves, re-list current sessions and blocks and verify any candidate restored agent by its native conversation ID and task state before declaring it lost or starting a replacement. If the match remains uncertain, report that without redispatching the same work.
 
-When current caller IDs cannot be verified, treat this agent as outside a Rex terminal. There, with no named or matching session, create one labelled for the task; the user sees that work only in the Rex app, so report the session's label, and show it with `session.select` only when the user asks.
+When current caller IDs cannot be verified, treat this agent as outside a Rex terminal. There, with no named or matching session, create one labelled for the task when you launch its first program, as "Launch" shows; the user sees that work only in the Rex app, so report the session's label, and show it with `session.select` only when the user asks.
 
 Inspect with `--autostart=false` so that probing for an absent server does not start one.
 
@@ -32,6 +32,8 @@ An agent participant's label names its runtime and model, and its role when sibl
 
 ## Launch
 
+Give the first program and its arguments to the command that creates its tab: `rex new <session> --window <purpose> -c <directory> --json -- <command> [args...]` for a new session, whose reply has the pane as `.initial_windows[0].block_ids[0]` and the tab as `.initial_windows[0].window_id`, or `rex window new -s <session> <purpose> -c <directory> --focus=false --json -- <command> [args...]` in an existing one, whose reply has them as `.block_ids[0]` and `.window_id`. A shell the user asks for, or a quick command, is itself that program. Split beside a running program when another participant or command needs a pane in the same tab.
+
 Pass `--focus=false` to `rex run`, `rex split`, and `rex window new` unless the user asks to switch, background work or not: a new tab or pane takes focus, and with it whatever the user is typing. `rex new` has no such option, because a new session is not shown. Pass `--keep-open` whenever you or the user must read the output or exit status afterwards, because a pane created for a program closes with it.
 
 Start a detached pane with `session.new_block`, its program and task in `command`, and add `exit: {on_completion: false}` wherever `--keep-open` would apply; outside Rex, or for another session, pass the full session ID "Find the target" chose to `-s` instead of `"$REX_BLOCK"`:
@@ -44,11 +46,15 @@ jq -n --arg label '<participant>' --arg cwd "$PWD" \
   rex api call -s "$REX_BLOCK" session.new_block -
 ```
 
-The reply's `block_id` is the pane, which starts at 80 columns by 24 rows.
+The reply's `block_id` is the pane, which starts at 80 columns by 24 rows. For a session that holds only detached work, `session.create` with a `label` and no `initial_windows` returns its ID without opening a tab.
 
-For a new worker tab, run `rex window new -s <session> <purpose> --focus=false --json` with no program, and keep its `window_id` and its shell's block ID, `.block_ids[0]`. Before placing a worker there, mute the tab on every Rex app attached to the session, because each app alerts on its own and a worker already waiting for an answer alerts as soon as it appears in an unmuted tab: `rex client ls -s <session>` lists the apps, and `rex -C <client> do client.tab.mute window_id=<window_id> muted=true` mutes the tab on one. Muting needs no device choice from the user, unlike showing a session. When an app lacks the action or refuses it, name that app once in your report and continue the requested work.
+A delegated worker that starts a new tab needs that tab muted on every Rex app attached to the session before it runs, because each app alerts on its own and a worker that stops on a question alerts at once in an unmuted tab. Hold it until then: give the command that creates the tab `--keep-open` and the program `sh -c 'read -r _; exec "$@"' sh <program> [args...]`, register the reply's pane as "Collect the result" directs, mute the tab, and then press Enter in the pane with `rex send-key -s <session> -b <block> enter`. The worker replaces `sh` in that pane and process, with its task in its arguments, so the registered task, the result, and the exit status are the worker's.
 
-Use the tab's shell as the anchor. Start a visible worker with `rex split -s <session> -b <shell> -c <directory> --label '<participant>' --focus=false --keep-open --json -- <command>` and register its `.block_ids[0]` as "Collect the result" directs before anything else. For a worker already running detached, `session.move_block` with its `block_id` and the shell as `anchor_block_id` shows the same pane, and its task stays as registered. Then close the shell by the block ID `window new` returned. Place the rest of a round beside a participant in that tab.
+To mute a tab, list the apps with `rex client ls -s <session> -q --short=false`, where `<session>` is the session's full ID, not a block ID, and run `rex -C <app> do client.tab.mute window_id=<window_id> muted=true` for each. Muting needs no device choice from the user, unlike showing a session. When an app lacks the action or refuses it, go on with the other apps and the launch, and name that app once in your report.
+
+Name each pane for its participant, and place the rest of a round beside a participant in that tab.
+
+Only a worker already running before the user asks to see it, a request from a remote Rex app included, is moved into view: move its own block with `session.move_block`, its `block_id` as `block_id` and a participant already placed in its muted tab as `anchor_block_id`, and its task stays as registered. `session.move_block` needs an anchor already in a window, so for a tab of its own, create the tab with no program, mute it, move the worker beside the tab's shell, and close that shell by its block ID. A worker to be seen from its start begins in the pane its tab opens with, not detached and moved later.
 
 The tab stays muted while its workers answer to you, also while the user watches one or answers a dialog in it. When the user takes a worker over as their own conversation, unmute its tab on the same apps with `muted=false`; when other workers still share the tab, leave it muted and tell the user that it is.
 
@@ -62,7 +68,7 @@ Collect an agent you launch for a result through a Rexume task. The task command
 
 ### Register and read a round
 
-Right after the agent starts, register it from your own pane with `rexume task add --worker <block> --title '<task>'`: add `--result-file <absolute path>` for a non-interactive run whose output file is the result, and `--keep-pane` when the pane has a purpose after the task, such as an agent the user watches or asked to keep. Registration is what lets Rexume match the run's exit or the agent's first finished turn to this task, so register before doing anything else with that pane.
+Right after the agent starts, register it from your own pane with `rexume task add --worker <block> --title '<task>'`: add `--result-file <absolute path>` for a non-interactive run whose output file is the result, and `--keep-pane` when the pane has a purpose after the task, such as an agent the user watches or asked to keep. Registration is what lets Rexume match the run's exit or the agent's first finished turn to this task, so register before doing anything else with that pane. `task add` refuses a run that already exited, in a kept pane too: read its exit as `last_exit` from `rex block call -s <session> -b <block> process` and its result file instead of running it again.
 
 Rexume saves the result and sends your conversation a notice naming the task once you are idle, so do other work or end the turn instead of polling. When the next step needs the result now, `rexume task wait <id> --timeout <seconds>` exits 124 on timeout and 3 when the worker blocks. On exit 3 or a blocked notice, read the worker's screen, handle the dialog or question, and continue the same round. Rexume watches the worker until you release the task, so a blocked notice can also come while no round is open: the dialog may then be the user's own work in that pane, so read the screen first and leave a dialog the user is handling to them.
 

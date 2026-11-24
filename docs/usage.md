@@ -118,7 +118,7 @@ A close carries no reason. Rexume treats every close on a live server as yours, 
 
 Rex has no conditional close. A person can start typing between Rexume's check that a worker's pane is unused and the close.
 
-Rex has no per-pane notification audience. Rex for Mac mutes a whole tab, in one app at a time. The skill therefore mutes each new worker tab on every Rex app attached to the session before placing the first worker, which requires Remote Control on that app. A muted tab still shows its workers' status, and the orchestrator still receives a registered task's notices. A worker that shares a tab with your conversation alerts you like any other pane. So does one in an app that attaches later or could not be muted. When you take a worker over as your own conversation, the orchestrator unmutes its tab.
+Rex has no per-pane notification audience. Rex for Mac mutes a whole tab, in one app at a time. The skill therefore mutes each new worker tab on every Rex app attached to the session before the worker runs there, which requires Remote Control on that app. A muted tab still shows its workers' status, and the orchestrator still receives a registered task's notices. A worker that shares a tab with your conversation alerts you like any other pane. So does one in an app that attaches later or could not be muted. The orchestrator reports each app where muting the tab failed. When you take a worker over as your own conversation, the orchestrator unmutes its tab.
 
 A detached worker whose task is never released stays open. Rex restores it and Rexume reopens its conversation at every restart, until you or an agent close it. `rex block ls -s SESSION --json` lists a session's panes with their `placement`, and `rex block close` closes one.
 
