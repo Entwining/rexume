@@ -9,12 +9,9 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result, bail};
-use clap::ValueEnum as _;
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Transaction, TransactionBehavior, params,
 };
-
-use crate::runtime::Runtime;
 
 const SCHEMA: &str = include_str!("schema.sql");
 pub const SCHEMA_VERSION: i64 = 13;
@@ -237,15 +234,15 @@ pub fn forget_block(tx: &Transaction, lineage: &str) -> Result<()> {
     Ok(())
 }
 
-pub fn sweep_records(store: &Store) -> Result<()> {
+pub fn sweep_records(
+    store: &Store,
+    record_dirs: impl IntoIterator<Item = (&'static str, PathBuf)>,
+) -> Result<()> {
     let cutoff = SystemTime::now() - RETENTION;
     let mut known = store.conn().prepare(
         "SELECT EXISTS (SELECT 1 FROM conversation WHERE runtime = ?1 AND native_id = ?2)",
     )?;
-    for runtime in Runtime::value_variants() {
-        let Some(dir) = runtime.records(store.dir()) else {
-            continue;
-        };
+    for (runtime, dir) in record_dirs {
         let entries = match std::fs::read_dir(&dir) {
             Ok(entries) => entries,
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => continue,
@@ -262,7 +259,7 @@ pub fn sweep_records(store: &Store) -> Result<()> {
             };
             let written = std::fs::metadata(&path).and_then(|meta| meta.modified());
             if written.is_ok_and(|at| at < cutoff)
-                && !known.query_row(params![runtime.as_str(), native_id], |row| row.get(0))?
+                && !known.query_row(params![runtime, native_id], |row| row.get(0))?
                 && let Err(e) = std::fs::remove_file(&path)
             {
                 log::warn!("failed to delete `{}`: {e}", path.display());

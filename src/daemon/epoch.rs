@@ -1,4 +1,5 @@
-use std::time::Instant;
+use std::convert::Infallible;
+use std::time::{Duration, Instant};
 
 use anyhow::Result;
 use rusqlite::params;
@@ -8,11 +9,32 @@ use super::view::View;
 use super::{ADAPTER, Daemon, Exit, FIRST_FILE, PIPE, WAITER_EXIT, WAL};
 use crate::restore::Restorer;
 use crate::rex::{Pipe, Rex, str_at};
+use crate::runtime::Runtime;
 use crate::store::{self, archive, now_ms};
 use crate::task::{self, Follow, Interest};
 
+const MAX_BACKOFF: Duration = Duration::from_secs(30);
+
 impl Daemon<'_> {
-    pub(super) fn observe(&mut self) -> Result<&'static str> {
+    pub(super) fn serve(&mut self) -> Result<Infallible> {
+        let mut backoff = Duration::from_secs(1);
+        loop {
+            self.wait_for_server()?;
+            let started = Instant::now();
+            match self.observe() {
+                Ok(reason) => log::info!("epoch ended: {reason}"),
+                Err(e) if e.is::<Exit>() => return Err(e),
+                Err(e) => log::error!("epoch ended with an error: {e:#}"),
+            }
+            if started.elapsed() > MAX_BACKOFF {
+                backoff = Duration::from_secs(1);
+            }
+            self.sleep(backoff)?;
+            backoff = (backoff * 2).min(MAX_BACKOFF);
+        }
+    }
+
+    fn observe(&mut self) -> Result<&'static str> {
         let (mut child, mut pipe) = self.connect()?;
         self.queue.read(pipe.fd(), PIPE)?;
         let witnessed = self.witness(&mut pipe);
@@ -79,7 +101,7 @@ impl Daemon<'_> {
         if let Err(e) = archive::sweep(&mut self.store, instance, now_ms()) {
             log::warn!("failed to archive finished records: {e:#}");
         }
-        if let Err(e) = store::sweep_records(&self.store) {
+        if let Err(e) = store::sweep_records(&self.store, Runtime::record_dirs(self.store.dir())) {
             log::warn!("failed to sweep the runtimes' records: {e:#}");
         }
         if let Err(e) = task::sweep_snapshots(&mut self.store) {

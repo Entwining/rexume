@@ -3,7 +3,7 @@
 
 use anyhow::{Result, bail};
 
-use super::send::Due;
+use super::Due;
 use crate::runtime;
 
 pub(super) fn finished(due: &Due, unread: Option<usize>) -> Result<String> {

@@ -10,7 +10,6 @@ use crate::store::{Store, new_id};
 
 pub(super) mod receipt;
 pub(super) mod send;
-mod text;
 mod undelivered;
 
 pub(super) use send::send_due;

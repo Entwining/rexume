@@ -1,5 +1,5 @@
 use super::*;
-use crate::runtime::claude;
+use crate::runtime::{Runtime, claude};
 
 fn store() -> (tempfile::TempDir, Store) {
     let dir = tempfile::tempdir().unwrap();
@@ -243,7 +243,7 @@ fn sweep_records_deletes_only_old_records_of_forgotten_conversations() -> Result
                 .set_modified(modified)?;
         }
     }
-    sweep_records(&store)?;
+    sweep_records(&store, Runtime::record_dirs(dir.path()))?;
     assert_eq!(left(Runtime::Claude)?, ["known.jsonl", "recent.jsonl"]);
     assert_eq!(left(Runtime::Omp)?, ["recent.jsonl"]);
     assert_eq!(left(Runtime::Pi)?, ["recent.jsonl"]);

@@ -2,7 +2,8 @@ use anyhow::Result;
 
 use crate::restore;
 use crate::store::Store;
-use crate::task::follow::{OPEN_ROUNDS, TAKEN};
+use crate::task::evidence::TAKEN;
+use crate::task::follow::OPEN_ROUNDS;
 use crate::task::gone::WORKER_ROUNDS;
 use crate::task::{blocked, cleanup, evidence, notice, outcome, queue, request, watch};
 

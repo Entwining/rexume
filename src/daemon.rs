@@ -13,7 +13,6 @@ use std::os::unix::net::UnixListener;
 use std::path::PathBuf;
 
 use anyhow::{Context, Result, bail};
-use clap::ValueEnum as _;
 use nix::sys::signal::{SigSet, Signal};
 use rusqlite::params;
 
@@ -52,10 +51,8 @@ pub fn run(options: &Options) -> Result<()> {
     }
     stop.thread_block()?;
     // `register` can follow a record not written yet only through an existing directory.
-    for runtime in Runtime::value_variants() {
-        if let Some(records) = runtime.records(&options.state_dir) {
-            store::create_private_dir(&records)?;
-        }
+    for (_, records) in Runtime::record_dirs(&options.state_dir) {
+        store::create_private_dir(&records)?;
     }
     // Earlier versions created the state directory open to other users; restoring works either
     // way, so a failure only warns.

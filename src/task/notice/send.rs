@@ -1,3 +1,5 @@
+mod text;
+
 use std::sync::LazyLock;
 use std::time::{Duration, Instant};
 
@@ -5,7 +7,7 @@ use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::{Map, Value};
 
-use super::{HOLDER, Kind, WANTED, supersede_unread, text};
+use super::{HOLDER, Kind, WANTED, supersede_unread};
 use crate::proc;
 use crate::runtime::{Runtime, Sent, Target};
 use crate::store::{Store, now_ms};
@@ -37,22 +39,22 @@ pub(in crate::task) static PENDING: LazyLock<String> = LazyLock::new(|| {
     )
 });
 
-pub(super) struct Due {
-    pub notice: String,
-    pub kind: Kind,
-    pub task: String,
-    pub title: String,
-    pub round: Option<i64>,
-    pub round_state: Option<String>,
-    pub note: Option<String>,
-    pub waiter: Option<i64>,
-    pub since: i64,
-    pub worker: Option<String>,
+struct Due {
+    notice: String,
+    kind: Kind,
+    task: String,
+    title: String,
+    round: Option<i64>,
+    round_state: Option<String>,
+    note: Option<String>,
+    waiter: Option<i64>,
+    since: i64,
+    worker: Option<String>,
     /// The request of the round open now, if any.
-    pub request: Option<String>,
-    pub open_round: Option<i64>,
-    pub waited_on: Option<String>,
-    pub interactive: bool,
+    request: Option<String>,
+    open_round: Option<i64>,
+    waited_on: Option<String>,
+    interactive: bool,
 }
 
 pub(in crate::task) fn send_due(

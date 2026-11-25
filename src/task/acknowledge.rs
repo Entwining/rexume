@@ -6,8 +6,9 @@ use serde_json::Value;
 
 use super::blocked::{self, EndReason};
 use super::queue::Queued;
-use super::register::latest_finished;
-use super::{caller, finished, notice, outcome, owned, round_state, shown, snapshot, unread};
+use super::{
+    caller, finished, latest_finished, notice, outcome, owned, round_state, shown, snapshot, unread,
+};
 use crate::store::{Store, now_ms};
 
 pub fn abandon(state_dir: &Path, id: &str, round: Option<i64>) -> Result<Value> {

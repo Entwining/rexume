@@ -9,9 +9,9 @@ use anyhow::Result;
 use rusqlite::Connection;
 
 use super::blocked::{self, OPEN_EPISODE};
-use super::evidence::{PANE_COLUMNS, Pane};
+use super::evidence::{self, PANE_COLUMNS, Pane};
 use super::notice::{self, Kind};
-use super::{Interest, OPEN, follow};
+use super::{Interest, OPEN};
 use crate::runtime::{Runtime, Tracker};
 use crate::store::{Store, now_ms};
 
@@ -146,7 +146,7 @@ impl Watch {
             Some(tracker) if tracker.path() == path => tracker,
             _ => {
                 let position = u64::try_from(task.position)?;
-                let taken = follow::taken(store.conn(), &task.task)?;
+                let taken = evidence::taken(store.conn(), &task.task)?;
                 let tracker = Tracker::new(task.runtime, &path, position, taken, None);
                 self.trackers
                     .entry(key.clone())

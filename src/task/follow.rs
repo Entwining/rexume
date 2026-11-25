@@ -4,20 +4,14 @@ use std::sync::LazyLock;
 use std::time::Instant;
 
 use anyhow::Result;
-use rusqlite::{Connection, OptionalExtension, params};
+use rusqlite::{OptionalExtension, params};
 
 use super::evidence::{self, Evidence, Pane, Reading, RunProcess};
 use super::watch::Watch;
-use super::{OPEN, cleanup, gone, notice, outcome, request};
+use super::{Interest, OPEN, cleanup, gone, notice, outcome, request};
 use crate::rex::Rex;
-use crate::runtime::{Receipt, Runtime, Taken, Tracker};
+use crate::runtime::{Receipt, Runtime, Tracker};
 use crate::store::Store;
-
-#[derive(Default)]
-pub struct Interest {
-    pub files: HashSet<PathBuf>,
-    pub pids: HashSet<i64>,
-}
 
 #[derive(Default)]
 pub struct Follow {
@@ -39,8 +33,6 @@ pub(super) static OPEN_ROUNDS: LazyLock<String> = LazyLock::new(|| {
          WHERE {OPEN}"
     )
 });
-
-pub(super) const TAKEN: &str = "SELECT turn_start, result_ref FROM task_round WHERE task_id = ?1";
 
 struct OpenRound {
     task: String,
@@ -152,7 +144,7 @@ impl Follow {
                         Some(tracker) if tracker.path() == path => tracker,
                         _ => {
                             let position = u64::try_from(round.position)?;
-                            let taken = taken(store.conn(), &round.task)?;
+                            let taken = evidence::taken(store.conn(), &round.task)?;
                             let tracker = Tracker::new(
                                 runtime,
                                 &path,
@@ -192,19 +184,6 @@ impl Follow {
         tx.commit()?;
         Ok(())
     }
-}
-
-pub(super) fn taken(conn: &Connection, task: &str) -> Result<Taken> {
-    let rows: Vec<(Option<i64>, Option<String>)> = conn
-        .prepare_cached(TAKEN)?
-        .query_map(params![task], |row| Ok((row.get(0)?, row.get(1)?)))?
-        .collect::<rusqlite::Result<_>>()?;
-    let mut taken = Taken::default();
-    for (start, answer) in rows {
-        taken.starts.extend(start.map(u64::try_from).transpose()?);
-        taken.answers.extend(answer);
-    }
-    Ok(taken)
 }
 
 fn bind(store: &mut Store, round: &mut OpenRound) -> Result<()> {

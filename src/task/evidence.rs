@@ -5,7 +5,7 @@ use std::sync::LazyLock;
 use anyhow::Result;
 use rusqlite::{Connection, OptionalExtension, params};
 
-use crate::runtime::{Tracker, Turn};
+use crate::runtime::{Taken, Tracker, Turn};
 
 const RESULT_LIMIT: u64 = 1 << 20;
 
@@ -138,4 +138,19 @@ impl Pane {
             .is_none_or(|instance| self.instance_id.as_deref() == Some(instance))
             && (self.fg_pid.is_none() || self.fg_pid != run.pid)
     }
+}
+
+pub(super) const TAKEN: &str = "SELECT turn_start, result_ref FROM task_round WHERE task_id = ?1";
+
+pub(super) fn taken(conn: &Connection, task: &str) -> Result<Taken> {
+    let rows: Vec<(Option<i64>, Option<String>)> = conn
+        .prepare_cached(TAKEN)?
+        .query_map(params![task], |row| Ok((row.get(0)?, row.get(1)?)))?
+        .collect::<rusqlite::Result<_>>()?;
+    let mut taken = Taken::default();
+    for (start, answer) in rows {
+        taken.starts.extend(start.map(u64::try_from).transpose()?);
+        taken.answers.extend(answer);
+    }
+    Ok(taken)
 }

@@ -6,7 +6,7 @@ use serde_json::Value;
 
 use super::acknowledge::acknowledge_all;
 use super::blocked::START_STATE;
-use super::{caller, finished, owned, round_state, shown, snapshot, unread};
+use super::{caller, finished, latest_finished, owned, round_state, shown, snapshot, unread};
 use super::{notice, queue};
 use crate::runtime::Runtime;
 use crate::store::{Store, ensure_lineage, new_id, now_ms};
@@ -292,14 +292,6 @@ pub(super) fn start_round(
         )?;
     }
     Ok(Started::Round(round))
-}
-
-pub(super) fn latest_finished(conn: &Connection, id: &str) -> Result<i64> {
-    let (round, state) = round_state(conn, id, None)?;
-    if !finished(&state) {
-        bail!("task {id} is {state}; wait until the round has finished");
-    }
-    Ok(round)
 }
 
 #[cfg(test)]

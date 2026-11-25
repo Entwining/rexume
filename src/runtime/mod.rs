@@ -15,6 +15,7 @@ use std::path::{Path, PathBuf};
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
+use clap::ValueEnum as _;
 use rusqlite::types::{FromSql, FromSqlError, FromSqlResult, ValueRef};
 use serde_json::{Map, Value};
 
@@ -70,6 +71,13 @@ impl Runtime {
             Self::OpenCode => Some(opencode::records(state_dir)),
             Self::Codex => None,
         }
+    }
+
+    /// The records directory of each runtime that has one, with the name `conversation` stores.
+    pub fn record_dirs(state_dir: &Path) -> impl Iterator<Item = (&'static str, PathBuf)> {
+        Self::value_variants()
+            .iter()
+            .filter_map(|runtime| Some((runtime.as_str(), runtime.records(state_dir)?)))
     }
 
     pub fn inbox(self, state_dir: &Path, native_id: &str) -> Option<PathBuf> {

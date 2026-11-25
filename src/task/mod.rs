@@ -16,10 +16,11 @@ pub(crate) mod tests;
 mod wait;
 mod watch;
 
-use std::path::Path;
+use std::collections::HashSet;
+use std::path::{Path, PathBuf};
 use std::sync::LazyLock;
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use rusqlite::{Connection, OptionalExtension, params};
 use serde::Serialize;
 use serde_json::{Value, json};
@@ -33,7 +34,7 @@ pub use acknowledge::{abandon, ack, release};
 pub use blocked::{EndReason, end_blocked_episodes};
 pub use cleanup::{close_unfocused, held, hold, keep, release_held, retired_workers};
 pub use evidence::is_run;
-pub use follow::{Follow, Interest};
+pub use follow::Follow;
 pub use gone::{block_gone, end_left_to_server};
 pub use notice::{orphaned_sends, undelivered};
 pub use register::{MESSAGE_LIMIT, NewTask, add, next, refuse_too_large, send};
@@ -65,6 +66,12 @@ static ROUND_REQUEST: LazyLock<String> = LazyLock::new(|| {
 
 const LIVE_WORKER: &str = "LEFT JOIN live l ON l.instance_id = ?1 AND l.lineage = t.worker_lineage
   AND t.pane_state != 'closed'";
+
+#[derive(Default)]
+pub struct Interest {
+    pub files: HashSet<PathBuf>,
+    pub pids: HashSet<i64>,
+}
 
 #[derive(Serialize)]
 struct Task {
@@ -189,7 +196,7 @@ fn turns(conn: &Connection, state_dir: &Path, id: &str) -> Result<Option<Tracker
         return Ok(None);
     };
     let position = u64::try_from(position)?;
-    let taken = follow::taken(conn, id)?;
+    let taken = evidence::taken(conn, id)?;
     let mut tracker = Tracker::new(runtime, &path, position, taken, None);
     if let Err(e) = tracker.update() {
         log::debug!("task {id}: the worker's record could not be read: {e:#}");
@@ -290,6 +297,14 @@ fn round_state(conn: &Connection, id: &str, round: Option<i64>) -> Result<(i64, 
 
 fn finished(state: &str) -> bool {
     !matches!(state, "queued" | "running" | "blocked")
+}
+
+fn latest_finished(conn: &Connection, id: &str) -> Result<i64> {
+    let (round, state) = round_state(conn, id, None)?;
+    if !finished(&state) {
+        bail!("task {id} is {state}; wait until the round has finished");
+    }
+    Ok(round)
 }
 
 pub fn unacknowledged(conn: &Connection, runtime: Runtime, native_id: &str) -> Result<Vec<String>> {

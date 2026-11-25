@@ -1,4 +1,3 @@
-use std::convert::Infallible;
 use std::io::Read;
 use std::os::unix::net::UnixStream;
 use std::path::Path;
@@ -14,7 +13,6 @@ use crate::rex::{Pipe, require_str, str_at};
 use crate::store::new_id;
 
 const CONNECT_WAIT: Duration = Duration::from_secs(10);
-const MAX_BACKOFF: Duration = Duration::from_secs(30);
 /// Rex gives no sign of when the adapter's subscription is live and never shows a client that
 /// joined before, so short attempts retry soon after it is.
 const WITNESS_WAIT: Duration = Duration::from_millis(300);
@@ -22,24 +20,6 @@ const WITNESS_ATTEMPTS: usize = 20;
 const MAX_TOKEN_LINE: usize = 128;
 
 impl Daemon<'_> {
-    pub(super) fn serve(&mut self) -> Result<Infallible> {
-        let mut backoff = Duration::from_secs(1);
-        loop {
-            self.wait_for_server()?;
-            let started = Instant::now();
-            match self.observe() {
-                Ok(reason) => log::info!("epoch ended: {reason}"),
-                Err(e) if e.is::<Exit>() => return Err(e),
-                Err(e) => log::error!("epoch ended with an error: {e:#}"),
-            }
-            if started.elapsed() > MAX_BACKOFF {
-                backoff = Duration::from_secs(1);
-            }
-            self.sleep(backoff)?;
-            backoff = (backoff * 2).min(MAX_BACKOFF);
-        }
-    }
-
     /// Also closes every connection waiting on the socket, since only `accept` takes one and a
     /// pending connection would end every wait at once.
     pub(super) fn wait(&mut self, timeout: Option<Duration>) -> Result<Vec<Fired>> {
@@ -80,7 +60,7 @@ impl Daemon<'_> {
         Ok(fired)
     }
 
-    fn wait_for_server(&mut self) -> Result<()> {
+    pub(super) fn wait_for_server(&mut self) -> Result<()> {
         let Some(path) = self.options.cli.socket_path() else {
             return Ok(());
         };
@@ -106,7 +86,7 @@ impl Daemon<'_> {
         Ok(())
     }
 
-    fn sleep(&mut self, duration: Duration) -> Result<()> {
+    pub(super) fn sleep(&mut self, duration: Duration) -> Result<()> {
         if let Some(dir) = self
             .options
             .cli
