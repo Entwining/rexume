@@ -16,7 +16,7 @@ Read each topic before its first action with `rexume skill show TOPIC`, the same
 
 `rex whoami --json` reports `session_id` and `block_id` only while the inherited `REX_BLOCK` still resolves; it cannot discover a pane whose ID has changed. When a saved session or block no longer resolves, re-list current sessions and blocks and verify any candidate restored agent by its native conversation ID and task state before declaring it lost or starting a replacement. If the match remains uncertain, report that without redispatching the same work.
 
-When current caller IDs cannot be verified, treat this agent as outside a Rex terminal. There, with no named or matching session, create one labelled for the task when you launch its first program, as "Launch" shows; the user sees that work only in the Rex app, so report the session's label, and show it with `session.select` only when the user asks.
+When your startup context says Rex can't tell which pane you're in, or current caller IDs cannot otherwise be verified, treat this agent as outside a Rex terminal. In the first case `REX_BLOCK` and `rex whoami` still name a pane, but it may be another agent's, and task commands run from there would act for that pane's conversation instead of yours. There, with no named or matching session, create one labelled for the task when you launch its first program, as "Launch" shows; the user sees that work only in the Rex app, so report the session's label, and show it with `session.select` only when the user asks.
 
 Inspect with `--autostart=false` so that probing for an absent server does not start one.
 
@@ -115,7 +115,7 @@ Once results are collected and no further work needs the other terminals, close 
 
 Cancel an owned helper's obsolete turn instead of waiting for it. CLI block and window closes can leave an empty session. A successful close at the chosen level completes cleanup; inspect that same level to reconcile an uncertain result before retrying.
 
-When the user asks you to close the pane, tab, or session you run in, a direct close ends your program before the call returns or your final reply reaches the user. Start the waiter below in a separate process session so shell-tool cleanup does not kill it, then give your final reply, saying the terminal will close, and end the turn. The waiter closes once your pane stops reporting `working` or after five minutes. For a tab or session, replace its last command with `rex window close` or `rex kill` for that target.
+When the user asks you to close the pane, tab, or session you run in, a direct close ends your program before the call returns or your final reply reaches the user. Start the waiter below in a separate process session so shell-tool cleanup does not kill it, then give your final reply, saying the terminal will close, and end the turn. The waiter closes once your pane stops reporting `working` or after five minutes. For a tab or session, replace its last command with `rex window close` or `rex kill` for that target. Outside a Rex terminal, as "Find the target" decides, `$REX_BLOCK` may name another pane: ask the user which pane is yours and start the waiter with `REX_BLOCK=<that block ID>` before `python3`, because both its status query and Rex's default session for the close come from `REX_BLOCK`.
 
 ```sh
 python3 - <<'PY'
