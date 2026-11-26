@@ -82,7 +82,7 @@ A worker that ends its turn to wait for its own background job, such as CI it fo
 
 If you choose to stop waiting for an unfinished round, end it with `rexume task abandon <id>`; it leaves the worker alone and does not withdraw a request already sent, so reconcile before resending and take later unread turns with `task next`.
 
-When you need nothing more from a registered worker, run `rexume task release <id>`. It refuses while a round is unfinished or turns are unread. After release, leave closing the pane to Rexume: it checks that a disposable pane is still unused. Preserve a pane it leaves open, including when cleaning up its tab or session.
+When you need nothing more from a registered worker, run `rexume task release <id>`. It refuses while a round is unfinished or turns are unread. After release, leave a disposable pane to Rexume, including when cleaning up its tab or session: Rexume closes it once it checks that the pane is still unused, and otherwise leaves it to whoever used it. Rexume never closes a pane registered with `--keep-pane`; close or keep it as "Release what you opened" directs.
 
 Before you finish, release the registered detached workers you are done with. Close an unregistered detached worker yourself only if this task still owns it and its work is done. Detached panes survive a restart and are invisible in the Rex app. To find them, `rexume task list` shows your tasks with their `released_at`, and `rex block ls -s <session> --json` each pane's `placement`. Report any detached worker you leave running, with its block ID and why.
 
