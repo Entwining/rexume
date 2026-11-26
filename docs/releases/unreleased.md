@@ -1,0 +1,1 @@
+The Rexume skill reads a worker's answer directly from `task wait`. When a finished notice arrives, it reads and acknowledges the round named in the notice, even if another round has started. After releasing a worker, the orchestrator leaves its pane to Rexume so a user who took it over can keep working.

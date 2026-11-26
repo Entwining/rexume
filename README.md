@@ -16,7 +16,7 @@ Conversations reopen with their model and effort. Claude Code also keeps its pro
 
 ## Worker results come back
 
-The orchestrator does not have to wait on its workers. Rexume saves each registered worker's result and [notifies the orchestrator that registered the worker](docs/usage.md#hand-work-to-a-worker). The orchestrator can then prompt the worker again, or release it so Rexume closes its pane.
+The orchestrator does not have to wait on its workers. Rexume saves each registered worker's result and [notifies the orchestrator that registered the worker](docs/usage.md#hand-work-to-a-worker). The orchestrator can then prompt the worker again or release it. Rexume closes a disposable worker's pane only if it is still unused.
 
 ## Install
 

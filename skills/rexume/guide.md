@@ -72,7 +72,7 @@ Right after the agent starts, register it from your own pane with `rexume task a
 
 Rexume saves the result and sends your conversation a notice naming the task once you are idle, so do other work or end the turn instead of polling. When the next step needs the result now, `rexume task wait <id> --timeout <seconds>` exits 124 on timeout and 3 when the worker blocks. On exit 3 or a blocked notice, read the worker's screen, handle the dialog or question, and continue the same round. Rexume watches the worker until you release the task, so a blocked notice can also come while no round is open: the dialog may then be the user's own work in that pane, so read the screen first and leave a dialog the user is handling to them.
 
-For a finished round, read the full `result` from `rexume task show <id>` before confirming it with `rexume task ack <id>`; interactive results come from the native session record, independent of the terminal viewport. If tool output would truncate it, save the command's JSON in this task's temporary directory and read the result in parts.
+`task wait` returns the round it waited on. Check its `round` and `state`. For `completed`, read the full `result` from that JSON. If the round ended without a result, read `note`. Interactive results come from the native session record. After a finished notice, or if the output was cut, read that round with `rexume task show <id> --round <n>`. Save long JSON in the task's temporary directory and read it in parts. After reading the result, acknowledge just that round with `rexume task ack <id> --round <n>`. If you have handled every round and are done with the worker, `rexume task release <id>` also acknowledges them all.
 
 ### Continue or release a task
 
@@ -82,9 +82,9 @@ A worker that ends its turn to wait for its own background job, such as CI it fo
 
 If you choose to stop waiting for an unfinished round, end it with `rexume task abandon <id>`; it leaves the worker alone and does not withdraw a request already sent, so reconcile before resending and take later unread turns with `task next`.
 
-When you need nothing more from the worker, run `rexume task release <id>`, which refuses while a round is unfinished or turns are unread; Rexume then closes a pane registered without `--keep-pane` unless someone used it since.
+When you need nothing more from a registered worker, run `rexume task release <id>`. It refuses while a round is unfinished or turns are unread. After release, leave closing the pane to Rexume: it checks that a disposable pane is still unused. Preserve a pane it leaves open, including when cleaning up its tab or session.
 
-Release or close every detached worker before you finish. Nothing else closes one: the user cannot see it, and Rex restores it and Rexume reopens its conversation at every restart. `rexume task list` shows your tasks with their `released_at`, and `rex block ls -s <session> --json` each pane's `placement`; report any detached worker you leave running, with its block ID and why.
+Before you finish, release the registered detached workers you are done with. Close an unregistered detached worker yourself only if this task still owns it and its work is done. Detached panes survive a restart and are invisible in the Rex app. To find them, `rexume task list` shows your tasks with their `released_at`, and `rex block ls -s <session> --json` each pane's `placement`. Report any detached worker you leave running, with its block ID and why.
 
 ### Collect directly
 

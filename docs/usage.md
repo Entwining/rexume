@@ -53,7 +53,7 @@ The daemon [records each restore step before its side effect](design.md#restore)
 
 An agent with Rexume's skill reads the guide `rexume skill show` prints. The guide also covers starting agents in Rex panes and reading their answers.
 
-The skill starts a worker nobody needs to watch in a detached pane of the orchestrator's session. A worker you want to watch or take over gets a separate tab in that session. Participants in a round can share a tab. The orchestrator handles implementation questions and asks you in your original conversation when it needs your decision. If you need to interact with the worker directly, the orchestrator moves its running pane into the worker tab. Before it finishes, the orchestrator releases or closes its detached workers and reports any it leaves running.
+The skill starts a worker nobody needs to watch in a detached pane of the orchestrator's session. A worker you want to watch or take over gets a separate tab in that session. Participants in a round can share a tab. The orchestrator handles implementation questions and asks you in your original conversation when it needs your decision. If you need to interact with the worker directly, the orchestrator moves its running pane into the worker tab. When it no longer needs a registered worker, the orchestrator releases the task. It reports any detached worker it leaves running.
 
 With Rex's Let agents name sessions setting on, Rex's session-start hook tells an agent that runs it to name the session that holds its pane, workers included; `rex skill status` lists the agents that run the hook, such as Claude Code and Codex. The skill begins the task of each worker agent it starts in the orchestrator's session by saying that the orchestrator owns the session name. That is an instruction the worker reads, not a restriction Rexume enforces, so a worker can still rename the session.
 
@@ -67,16 +67,16 @@ rexume task add --worker "$WORKER_BLOCK" --title 'review the parser'
 
 ### Read, acknowledge, and release
 
-When the worker's turn ends, Rexume saves its result and sends the orchestrator one notice. Read and acknowledge it:
+When a finished notice arrives, use the round number it names. A later round may already be open.
 
 ```sh
-rexume task show ID
-rexume task ack ID
+rexume task show ID --round N
+rexume task ack ID --round N
 ```
 
-Once you are done with the worker, run `rexume task release ID`. The daemon can then close a disposable worker's pane, but only if nothing has happened in it since the result. After a restart, it closes a released worker's restored pane once it shows its shell with nothing typed. Otherwise it keeps the pane.
+Once you have handled every round and are done with the worker, `rexume task release ID` also acknowledges its rounds. The daemon can then close a disposable worker's pane, but only if nothing has happened in it since the result. After a restart, it closes a released worker's restored pane once it shows its shell with nothing typed. Otherwise it keeps the pane.
 
-To wait for the result in the orchestrator's own turn instead, run `rexume task wait ID`. When the worker stops on a question or permission dialog, Rexume sends one notice for that stop too. That notice needs no acknowledgement. `task wait` returns for it with exit status 3.
+To wait in the orchestrator's own turn, run `rexume task wait ID`. Its JSON identifies the round it waited on and includes the result when its state is `completed`. Exit status 0 also covers a round that ended without a result. When the worker stops on a question or permission dialog, Rexume sends one notice for that stop or returns it to the waiter with exit status 3. A blocked notice needs no acknowledgement.
 
 Until the task is released, Rexume keeps watching the worker after its result is acknowledged. A dialog it stops on later gets the same notice. A turn it finishes on its own gets a notice that the turn is unread, which `rexume task next ID` takes. Such a dialog or turn may come from you working in the worker's pane, so the notice asks the orchestrator to read the pane first.
 
@@ -120,7 +120,7 @@ Rex has no conditional close. A person can start typing between Rexume's check t
 
 Rex has no per-pane notification audience. Rex for Mac mutes a whole tab, in one app at a time. The skill therefore mutes each new worker tab on every Rex app attached to the session before the worker runs there, which requires Remote Control on that app. A muted tab still shows its workers' status, and the orchestrator still receives a registered task's notices. A worker that shares a tab with your conversation alerts you like any other pane. So does one in an app that attaches later or could not be muted. The orchestrator reports each app where muting the tab failed. When you take a worker over as your own conversation, the orchestrator unmutes its tab.
 
-A detached worker whose task is never released stays open. Rex restores it and Rexume reopens its conversation at every restart, until you or an agent close it. `rex block ls -s SESSION --json` lists a session's panes with their `placement`, and `rex block close` closes one.
+A detached worker whose task is never released stays open. Rex restores its pane and Rexume reopens its conversation at every restart. When the orchestrator is done with the worker, it [releases the task](#read-acknowledge-and-release). To close a detached pane yourself, find it by its `placement` in `rex block ls -s SESSION --json` and run `rex block close BLOCK`.
 
 `rexume task add` refuses a worker whose pane runs on another machine than the Rex server. Rexume follows a worker through this machine's files and processes.
 
