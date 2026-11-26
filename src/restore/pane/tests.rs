@@ -48,17 +48,31 @@ fn only_a_right_hand_prompt_may_follow_the_cursor() {
 #[test]
 fn only_the_login_shell_the_server_started_is_the_shell() {
     let process = |foreground: Value, ancestors: Value, last_exit: Value| json!({ "foreground": foreground, "ancestors": ancestors, "last_exit": last_exit });
+    let plain = |_| Some(1);
     let shell = json!({ "pid": 2, "argv0": "-zsh", "name": "zsh" });
     assert_eq!(
-        foreground(&process(shell.clone(), json!(["login"]), Value::Null)),
+        foreground(
+            &process(shell.clone(), json!(["login"]), Value::Null),
+            plain
+        ),
         None
     );
-    assert!(foreground(&process(shell, json!(["login"]), json!(0))).is_some());
+    assert!(foreground(&process(shell.clone(), json!(["login"]), json!(0)), plain).is_some());
+    // Rex resumes a program as `-zsh +m -ilc SCRIPT rex-run /bin/zsh -zsh claude ...`.
+    let resuming = process(shell.clone(), json!(["login"]), Value::Null);
+    assert!(foreground(&resuming, |_| Some(9)).is_some());
+    assert!(foreground(&resuming, |_| None).is_some());
     let sleep = json!({ "pid": 3, "argv0": "sleep", "name": "sleep" });
-    assert!(foreground(&process(sleep, json!(["zsh", "login"]), Value::Null)).is_some());
+    assert!(foreground(&process(sleep, json!(["zsh", "login"]), Value::Null), plain).is_some());
     let nested = json!({ "pid": 4, "argv0": "-zsh", "name": "zsh" });
-    assert!(foreground(&process(nested, json!(["zsh", "login"]), Value::Null)).is_some());
-    assert!(foreground(&process(Value::Null, json!([]), Value::Null)).is_some());
+    assert!(
+        foreground(
+            &process(nested, json!(["zsh", "login"]), Value::Null),
+            plain
+        )
+        .is_some()
+    );
+    assert!(foreground(&process(Value::Null, json!([]), Value::Null), plain).is_some());
 }
 
 #[test]

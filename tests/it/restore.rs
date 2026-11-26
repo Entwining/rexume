@@ -8,6 +8,8 @@ use crate::common::{
     Daemon, REXUME, SHELL, Server, claude, db, query, rexume, shell_block, shell_pids, wait_until,
 };
 
+mod program_resume;
+
 pub const WAIT: Duration = Duration::from_secs(20);
 /// Rex saves a change to its sessions about a second later; a server killed sooner restores them
 /// as they were before it.

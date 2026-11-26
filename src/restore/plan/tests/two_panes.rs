@@ -98,6 +98,7 @@ fn a_round_left_to_another_panes_restore_ends_when_that_restore_is_skipped() -> 
         block: "a".into(),
         typed_at: None,
         created_at: 0,
+        continues: false,
     };
     crate::restore::skip(&mut store, "i2", &restore, "the pane closed")?;
     let state: String = store

@@ -6,8 +6,9 @@ use serde_json::Value;
 
 use super::{Conversation, Lines, Sealed, Sent, Span, Target, Turn, text_at};
 
-/// `codex resume` takes the configured defaults rather than the conversation's own settings, so
-/// they are passed on the command line.
+/// Codex 0.172.0 restores the model and effort its record last applied, but an older `codex resume`
+/// takes the configured defaults, and which version began restoring them is unknown, so they are
+/// passed on the command line.
 pub fn resume_argv(c: &Conversation) -> Vec<String> {
     let mut argv = vec!["codex".to_owned(), "resume".to_owned(), c.native_id.clone()];
     if let Some(model) = c.setting("model") {

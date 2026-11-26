@@ -200,32 +200,36 @@ fn open_upgrades_a_version_3_database_and_keeps_its_occupants() -> Result<()> {
 }
 
 #[test]
-fn open_upgrades_a_version_12_database_and_keeps_its_occupants() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let conn = Connection::open(dir.path().join("state.db"))?;
-    conn.execute_batch(include_str!("../../../tests/fixtures/schema-v12.sql"))?;
-    conn.execute_batch(
-        "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
-           VALUES ('claude', 'worker', 1, 0);
-         INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid, pid_name,
-           own_program, keeps_session_env, transport, start_position, left_fg_changes,
-           reported_at)
-           VALUES ('b', 'claude', 'worker', 'i1', 7, 'claude', 0, 1,
-             '{\"messaging_socket\":\"/s\"}', 42, 3, 5);",
-    )?;
-    drop(conn);
-    let store = Store::open(dir.path())?;
-    assert_eq!(definitions(store.conn())?, fresh()?);
-    let occupant: String = store.conn().query_row(
-        "SELECT json_array(block_lineage, runtime, native_id, instance_id, pid, pid_name,
-           own_program, transport, start_position, left_fg_changes, reported_at) FROM occupant",
-        [],
-        |row| row.get(0),
-    )?;
-    assert_eq!(
-        occupant,
-        r#"["b","claude","worker","i1",7,"claude",0,"{\"messaging_socket\":\"/s\"}",42,3,5]"#
-    );
+fn open_upgrades_versions_12_and_13_and_keeps_their_occupants() -> Result<()> {
+    const V12: &str = include_str!("../../../tests/fixtures/schema-v12.sql");
+    const V13: &str = include_str!("../../../tests/fixtures/schema-v13.sql");
+    for (fixture, column, value) in [(V12, "keeps_session_env, ", "1, "), (V13, "", "")] {
+        let dir = tempfile::tempdir()?;
+        let conn = Connection::open(dir.path().join("state.db"))?;
+        conn.execute_batch(fixture)?;
+        conn.execute_batch(&format!(
+            "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+               VALUES ('claude', 'worker', 1, 0);
+             INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid, pid_name,
+               own_program, {column}transport, start_position, left_fg_changes, reported_at)
+               VALUES ('b', 'claude', 'worker', 'i1', 7, 'claude', 0, {value}
+                 '{{\"messaging_socket\":\"/s\"}}', 42, 3, 5);"
+        ))?;
+        drop(conn);
+        let store = Store::open(dir.path())?;
+        assert_eq!(definitions(store.conn())?, fresh()?);
+        let occupant: String = store.conn().query_row(
+            "SELECT json_array(block_lineage, runtime, native_id, instance_id, pid, pid_name,
+               agent_pid, own_program, transport, start_position, left_fg_changes, reported_at)
+             FROM occupant",
+            [],
+            |row| row.get(0),
+        )?;
+        assert_eq!(
+            occupant,
+            r#"["b","claude","worker","i1",7,"claude",null,0,"{\"messaging_socket\":\"/s\"}",42,3,5]"#
+        );
+    }
     Ok(())
 }
 
@@ -295,5 +299,6 @@ fn open_upgrades_versions_3_and_4_and_keeps_rounds_notices_and_requests() -> Res
 }
 
 mod history;
+mod restores;
 mod server;
 mod turn_records;

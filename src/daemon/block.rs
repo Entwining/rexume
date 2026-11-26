@@ -1,7 +1,8 @@
 use anyhow::Result;
-use rusqlite::{Connection, Transaction, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, params};
 use serde_json::Value;
 
+use crate::proc;
 use crate::rex::{str_at, time_at};
 use crate::store::ensure_lineage;
 use crate::task::{self, EndReason};
@@ -75,6 +76,43 @@ pub(super) fn set_foreground(
                            WHERE r.instance_id = occupant.instance_id AND r.block_lineage = ?2
                              AND r.pid IN (?1, ?3))",
             params![pid, lineage, parent],
+        )?;
+    }
+    Ok(())
+}
+
+/// The occupant's agent process when Rex reported another as the foreground, once it is gone: the
+/// login shell Rex resumed it through keeps its ID and Rex's foreground when it exits, so its exit
+/// shows only here, read on each of the pane's events.
+pub(super) fn exited_agent(conn: &Connection, instance: &str, block: &str) -> Result<Option<i64>> {
+    let agent: Option<i64> = conn
+        .query_row(
+            "SELECT o.agent_pid FROM live l JOIN occupant o ON o.block_lineage = l.lineage
+             WHERE l.instance_id = ?1 AND l.live_id = ?2 AND o.instance_id = ?1",
+            params![instance, block],
+            |row| row.get(0),
+        )
+        .optional()?
+        .flatten();
+    Ok(agent.filter(|&pid| !proc::alive(pid)))
+}
+
+/// Counts the agent's exit as the foreground leaving the occupant, which then stands for the agent,
+/// as one whose own process Rex reported does once it leaves; nothing, when a report replaced the
+/// occupant since `exited_agent` read it outside this transaction.
+pub(super) fn agent_gone(tx: &Transaction, lineage: &str, agent: i64) -> Result<()> {
+    let moved = tx.execute(
+        "UPDATE block SET fg_changes = fg_changes + 1
+         WHERE lineage = ?1
+           AND EXISTS (SELECT 1 FROM occupant WHERE block_lineage = ?1 AND agent_pid = ?2)",
+        params![lineage, agent],
+    )?;
+    if moved == 1 {
+        tx.execute(
+            "UPDATE occupant SET pid = agent_pid, agent_pid = NULL,
+               left_fg_changes = (SELECT fg_changes FROM block WHERE lineage = ?1)
+             WHERE block_lineage = ?1 AND agent_pid = ?2",
+            params![lineage, agent],
         )?;
     }
     Ok(())

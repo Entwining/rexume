@@ -96,6 +96,9 @@ impl Daemon<'_> {
             store::sweep(&tx, instance)?;
             tx.commit()?;
         }
+        // Taken before the first restores read the state, so that a hook's commit between that read
+        // and the loop, such as the report of a conversation Rex resumed, still wakes them.
+        let mut version = self.store.data_version()?;
         restorer.reconcile(rex, &mut self.store, instance);
         // After the first restores so as not to delay them; the next epoch retries what fails here.
         if let Err(e) = archive::sweep(&mut self.store, instance, now_ms()) {
@@ -107,7 +110,6 @@ impl Daemon<'_> {
         if let Err(e) = task::sweep_snapshots(&mut self.store) {
             log::warn!("failed to sweep the snapshots: {e:#}");
         }
-        let mut version = self.store.data_version()?;
         let mut follow_due = true;
         loop {
             let (events, ended) = pipe_of(rex).events();

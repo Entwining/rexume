@@ -4,6 +4,7 @@ use crate::store::{Store, now_ms};
 use crate::task;
 use anyhow::Result;
 use pane::Pane;
+use rusqlite::params;
 
 pub(super) struct Retired {
     task: String,
@@ -66,12 +67,22 @@ impl Restorer {
         if self.unchanged(store, &retired.block, retired.until, now)? {
             return Ok(false);
         }
+        // A conversation that reported from the pane on this instance, as one Rex resumed there
+        // does, used the pane, which a shell at its prompt after the conversation exits hides.
+        let reported: bool = store.conn().query_row(
+            "SELECT EXISTS (SELECT 1 FROM occupant WHERE block_lineage = ?1 AND instance_id = ?2)",
+            params![retired.block, instance],
+            |row| row.get(0),
+        )?;
         let located = located(rex, store, instance, &retired.block)?;
         let pane = match &located {
             Some((session, live)) => pane::read(rex, session, live)?,
             None => Pane::Gone,
         };
         let kept = match (pane, located) {
+            (Pane::Shell { .. }, Some(_)) if reported => {
+                Some("a conversation was opened in the pane".into())
+            }
             (Pane::Shell { typed_after: false }, Some((session, live))) => {
                 task::close_unfocused(rex, &session, &live)?
             }

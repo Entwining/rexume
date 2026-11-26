@@ -39,6 +39,7 @@ fn a_resumed_claude_conversation_keeps_its_launch_model() -> Result<()> {
         transport: Map::new(),
         instance: "i1".into(),
         pid: 100,
+        agent_pid: None,
         name: Some("claude".into()),
         own_program: false,
         start_position: 0,
@@ -77,6 +78,7 @@ fn process(pid: i64) -> Process {
         transport: Map::new(),
         instance: "i1".into(),
         pid,
+        agent_pid: None,
         name: Some("agent".into()),
         own_program: false,
         start_position: 0,
@@ -301,3 +303,6 @@ fn a_report_replaces_or_removes_what_it_names_and_keeps_the_rest() -> Result<()>
     }
     Ok(())
 }
+
+mod foreground;
+mod previous;

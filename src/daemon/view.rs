@@ -2,7 +2,9 @@ use anyhow::Result;
 use rusqlite::params;
 use serde_json::{Value, json};
 
-use super::block::{foreground_pid, recorded, set_foreground, set_status, touch_block};
+use super::block::{
+    agent_gone, exited_agent, foreground_pid, recorded, set_foreground, set_status, touch_block,
+};
 use crate::rex::{Rex, is_root, items, listed_blocks, root_status, str_at};
 use crate::store::{Store, ensure_lineage, lineage_of, now_ms};
 use crate::{proc, task};
@@ -16,6 +18,7 @@ enum Change<'a> {
     Foreground(Option<&'a Value>, Option<i64>),
     Status(Option<&'a Value>),
     Exit(Option<i64>),
+    None,
 }
 
 impl View {
@@ -79,8 +82,12 @@ impl View {
             .as_ref()
             .and_then(|p| foreground_pid(p.get("foreground")))
             .and_then(proc::parent);
+        let exited = exited_agent(store.conn(), &self.instance, block)?;
         let tx = store.write()?;
         let lineage = touch_block(&tx, &self.instance, block)?;
+        if let Some(agent) = exited {
+            agent_gone(&tx, &lineage, agent)?;
+        }
         if let Some(process) = process {
             set_foreground(&tx, &lineage, process.get("foreground"), None, parent)?;
             if let Some(code) = process
@@ -153,26 +160,31 @@ impl View {
                 Change::Status(None)
             }
             "child_exited" => Change::Exit(payload.get("exit_code").and_then(Value::as_i64)),
-            _ => return Ok(false),
+            // Such as `program_resume_changed`, subscribed to because Rex sends it when the record of
+            // a program it resumed goes after the program's exit, which may move nothing else.
+            _ => Change::None,
         };
         let Some(block) = str_at(event, "/block_id") else {
             return Ok(false);
         };
+        let exited = exited_agent(store.conn(), &self.instance, block)?;
+        if matches!(change, Change::None) && exited.is_none() {
+            return Ok(false);
+        }
         let parent = match change {
             Change::Foreground(foreground, _) => foreground_pid(foreground).and_then(proc::parent),
             _ => None,
         };
         let tx = store.write()?;
         let lineage = touch_block(&tx, &self.instance, block)?;
-        let moves_task = match change {
+        if let Some(agent) = exited {
+            agent_gone(&tx, &lineage, agent)?;
+        }
+        match change {
             Change::Foreground(foreground, generation) => {
                 set_foreground(&tx, &lineage, foreground, generation, parent)?;
-                true
             }
-            Change::Status(record) => {
-                set_status(&tx, &lineage, record)?;
-                true
-            }
+            Change::Status(record) => set_status(&tx, &lineage, record)?,
             // Rex reports the empty foreground late or never, as after a program that printed
             // just before it exited.
             Change::Exit(code) => {
@@ -181,11 +193,11 @@ impl View {
                     "UPDATE block SET last_exit = ?1 WHERE lineage = ?2",
                     params![code, lineage],
                 )?;
-                true
             }
-        };
+            Change::None => {}
+        }
         tx.commit()?;
-        Ok(moves_task)
+        Ok(true)
     }
 
     pub(super) fn flush(&mut self, rex: &mut Rex, store: &mut Store) -> Result<()> {

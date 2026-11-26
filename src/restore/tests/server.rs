@@ -1,7 +1,9 @@
 use std::collections::HashMap;
 use std::io::{BufRead, BufReader, Write as _};
 use std::os::unix::net::UnixStream;
-use std::sync::{Arc, Mutex};
+use std::os::unix::process::CommandExt as _;
+use std::process::{Command, Stdio};
+use std::sync::{Arc, LazyLock, Mutex};
 
 use anyhow::Result;
 use serde_json::{Value, json};
@@ -21,8 +23,20 @@ pub(super) struct Server {
     pub(super) refuse: Option<&'static str>,
 }
 
-pub(super) const SHELL: &str =
-    r#"{"foreground":{"pid":2,"argv0":"-zsh","name":"zsh"},"ancestors":["login"]}"#;
+/// A pane's login shell, as a real process: the readiness check reads its arguments, which are its
+/// name alone. The process ends at the end of its input, when this binary exits.
+pub(super) static SHELL: LazyLock<String> = LazyLock::new(|| {
+    let shell = Command::new("cat")
+        .arg0("-zsh")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .spawn()
+        .unwrap();
+    let pid = shell.id();
+    std::mem::forget(shell);
+    json!({ "foreground": { "pid": pid, "argv0": "-zsh", "name": "zsh" }, "ancestors": ["login"] })
+        .to_string()
+});
 pub(super) const STARTUP: &str =
     r#"{"foreground":{"pid":3,"argv0":"sleep","name":"sleep"},"ancestors":["zsh","login"]}"#;
 const IDLE: (&str, &str) = ("p% ", "p% \u{1b}[1;4H");

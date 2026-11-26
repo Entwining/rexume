@@ -23,7 +23,9 @@ pub fn read(rex: &mut Rex, session: &str, block: &str) -> Result<Pane, CallError
     let Some(process) = call("process", json!({}))? else {
         return Ok(Pane::Gone);
     };
-    if let Some(busy) = foreground(&process) {
+    if let Some(busy) = foreground(&process, |pid| {
+        crate::proc::launch(pid).map(|l| l.argv.len())
+    }) {
         return Ok(Pane::Busy(busy));
     }
     // A line editor reads keys with canonical mode off; with it on, the shell still runs its
@@ -65,8 +67,9 @@ pub fn read(rex: &mut Rex, session: &str, block: &str) -> Result<Pane, CallError
 }
 
 /// The login shell Rex starts has at most one ancestor, the terminal's own program (`login` on
-/// macOS).
-fn foreground(process: &Value) -> Option<String> {
+/// macOS), and no arguments: a login shell with arguments was given a command, as Rex starts a
+/// program it resumes, and canonical mode holds a typed line for that program before it draws.
+fn foreground(process: &Value, argc: impl FnOnce(u32) -> Option<usize>) -> Option<String> {
     if !process.get("last_exit").is_none_or(Value::is_null) {
         return Some("the pane's shell has exited".into());
     }
@@ -79,7 +82,17 @@ fn foreground(process: &Value) -> Option<String> {
     if !name.starts_with('-') || items(process, "/ancestors").len() > 1 {
         return Some(format!("{name} runs in the pane"));
     }
-    None
+    let pid = foreground
+        .get("pid")
+        .and_then(Value::as_u64)
+        .and_then(|pid| u32::try_from(pid).ok());
+    match pid.and_then(argc) {
+        Some(1) => None,
+        Some(_) => Some(format!(
+            "{name} runs a command, as when Rex resumes a program"
+        )),
+        None => Some(format!("the arguments of {name} could not be read")),
+    }
 }
 
 /// In zsh, Ctrl-E and Ctrl-U clear only the current buffer line, so lines below would run with

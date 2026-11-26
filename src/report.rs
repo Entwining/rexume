@@ -136,19 +136,14 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
     };
     let rex = Cli::from_env()?;
     let process = rex.block_method(&block, "process")?;
-    let program = proc::program_above(std::process::id());
-    let Some(foreground) = process
-        .pointer("/foreground/pid")
-        .and_then(Value::as_u64)
-        .filter(|pid| program.map(u64::from) == Some(*pid))
+    let Some((foreground, program)) = proc::program_above(std::process::id())
+        .and_then(|program| Some((foreground_of(&process, program)?, program)))
     else {
         bail!(
             "this {runtime} process is not the pane's foreground program, so nothing was recorded"
         );
     };
-    report
-        .settings
-        .extend(runtime.launch_settings(u32::try_from(foreground)?));
+    report.settings.extend(runtime.launch_settings(program));
     let instance = require_str(&rex.call("server.status", &json!({}))?, "/instance_id")?;
     let transport: Map<String, Value> = std::env::var_os("CLAUDE_CODE_MESSAGING_SOCKET")
         .map(|socket| {
@@ -170,14 +165,34 @@ pub fn run(runtime: Runtime, state_dir: &Path) -> Result<()> {
         &Process {
             transport,
             instance,
-            pid: i64::try_from(foreground)?,
+            pid: i64::from(foreground),
+            agent_pid: (foreground != program).then_some(i64::from(program)),
             name: str_at(&process, "/foreground/name").map(str::to_owned),
-            own_program: process.pointer("/child/pid").and_then(Value::as_u64) == Some(foreground),
+            own_program: own_program(&process, program),
             start_position,
         },
     )?;
     tx.commit()?;
     Ok(())
+}
+
+/// The pane's foreground as Rex reports it: the program itself, or the login shell Rex resumed it
+/// through, which runs it in the shell's own process group and which Rex may name instead.
+fn foreground_of(process: &Value, program: u32) -> Option<u32> {
+    let foreground = process.get("foreground")?;
+    let pid = u32::try_from(foreground.get("pid")?.as_u64()?).ok()?;
+    let launcher = || {
+        str_at(foreground, "/argv0").is_some_and(|argv0| argv0.starts_with('-'))
+            && proc::parent(i64::from(program)) == Some(i64::from(pid))
+            && proc::launch(pid).is_some_and(|launch| launch.argv.len() > 1)
+    };
+    (pid == program || launcher()).then_some(pid)
+}
+
+/// Whether the agent is the terminal's own program. The agent, not a launcher Rex names as the
+/// foreground, since `daemon::block::agent_gone` moves the occupant to the agent at its exit.
+fn own_program(process: &Value, program: u32) -> bool {
+    process.pointer("/child/pid").and_then(Value::as_u64) == Some(u64::from(program))
 }
 
 pub fn record_length(path: &Path) -> Result<u64> {
@@ -192,6 +207,7 @@ pub struct Process {
     pub transport: Map<String, Value>,
     pub instance: String,
     pub pid: i64,
+    pub agent_pid: Option<i64>,
     pub name: Option<String>,
     pub own_program: bool,
     pub start_position: u64,
@@ -241,8 +257,8 @@ pub fn record(
         .transpose()?;
     tx.execute(
         "INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid, pid_name,
-           own_program, transport, start_position, reported_at)
-           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+           agent_pid, own_program, transport, start_position, reported_at)
+           VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
          ON CONFLICT (block_lineage) DO UPDATE SET
            start_position = CASE
              WHEN (runtime, native_id, pid) = (excluded.runtime, excluded.native_id, excluded.pid)
@@ -251,10 +267,14 @@ pub fn record(
            left_fg_changes = CASE
              WHEN (runtime, native_id, pid) = (excluded.runtime, excluded.native_id, excluded.pid)
                AND instance_id IS excluded.instance_id THEN left_fg_changes END,
+           previous_pid = CASE
+             WHEN (runtime, native_id) != (excluded.runtime, excluded.native_id) THEN NULL
+             WHEN instance_id IS excluded.instance_id THEN previous_pid
+             WHEN instance_id = (SELECT instance_id FROM block WHERE lineage = ?1) THEN pid END,
            runtime = excluded.runtime, native_id = excluded.native_id,
            instance_id = excluded.instance_id, pid = excluded.pid, pid_name = excluded.pid_name,
-           own_program = excluded.own_program, transport = excluded.transport,
-           reported_at = excluded.reported_at",
+           agent_pid = excluded.agent_pid, own_program = excluded.own_program,
+           transport = excluded.transport, reported_at = excluded.reported_at",
         params![
             lineage,
             runtime.as_str(),
@@ -262,6 +282,7 @@ pub fn record(
             process.instance,
             process.pid,
             process.name,
+            process.agent_pid,
             process.own_program,
             transport,
             i64::try_from(process.start_position)?,

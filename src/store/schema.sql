@@ -53,8 +53,9 @@ CREATE INDEX IF NOT EXISTS epoch_instance ON epoch (instance_id, id);
 -- pane reports once, or -1 when a signal ended it; it is attributed to a task by the pane having
 -- that program as its foreground when the task was registered. `fg_changes` counts the times the
 -- daemon found the foreground process ID different from the one it had recorded, a foreground that
--- appeared or went included, since the row came to its instance; a report about the same process,
--- as when it changes directory or a client starts receiving the terminal's output, does not count.
+-- appeared or went included, or the exit of an occupant's `agent_pid`, since the row came to its
+-- instance; a report about the same process, as when it changes directory or a client starts
+-- receiving the terminal's output, does not count.
 -- `fg_generation` is Rex's count of its process_changed events for the terminal, which moves on
 -- those reports too, so it serves only to drop a report older than the one recorded and to tell a
 -- waiting restore that the pane was reported again.
@@ -122,10 +123,23 @@ CREATE TABLE IF NOT EXISTS conversation (
 -- messaging socket, known only from its report; nothing for Codex, Pi, omp, and OpenCode). `pid`
 -- and `pid_name` are the process and the name Rex reported for it, which tell whether a pane's
 -- later status came from the same process; a process the gate recorded has no name until it
--- reports, and matches any name. `instance_id` is the server instance they are from, NULL for a
--- report before version 3 that no epoch dates. `own_program`: the process was the
--- terminal's own program rather than one started from its shell, so its exit is the terminal's,
--- as a conversation an earlier version's restore started was; NULL, unknown, before version 3.
+-- reports, and matches any name. `agent_pid` is the agent's own process when Rex reported another
+-- as the foreground, as it may the login shell through which it resumed the agent: that shell runs
+-- the agent in its own process group and goes on as an interactive shell under the same ID when the
+-- agent exits, so Rex reports no foreground change then. The daemon reads on each of the pane's
+-- events whether `agent_pid` still runs, and at its exit counts the foreground leaving `pid` and
+-- moves `agent_pid` to `pid`, while `pid_name` still names the shell (`daemon::block::agent_gone`);
+-- NULL when the agent's process is `pid`, and before version 14. `previous_pid` is the `pid` the
+-- row held for the same conversation on the earlier server instance, kept when a report from a
+-- later instance replaced the row while the pane's `block` row still described the earlier one, as
+-- the report of a program Rex resumed does when it comes before the daemon plans the pane, so that
+-- the plan can still tell whether the conversation was the pane's foreground there; a later report
+-- of the same conversation on the same instance keeps it, and any other report clears it; NULL
+-- otherwise, and before version 14. `instance_id` is the server
+-- instance they are from, NULL for a report before version 3 that no epoch dates. `own_program`:
+-- the conversation's process was the terminal's own program rather than one started from its shell,
+-- so its exit is the terminal's, as a conversation an earlier version's restore started was; NULL,
+-- unknown, before version 3.
 -- `start_position`: the length of the conversation's record of turns when the process was
 -- first recorded, where a task bound to this report starts reading, so that turns the record
 -- already held, as a resumed conversation's does, never belong to a task; 0 before version 4, and
@@ -142,6 +156,8 @@ CREATE TABLE IF NOT EXISTS occupant (
   instance_id       TEXT,
   pid               INTEGER NOT NULL,
   pid_name          TEXT,
+  agent_pid         INTEGER,
+  previous_pid      INTEGER,
   own_program       INTEGER CHECK (own_program IN (0, 1)),
   transport         TEXT    CHECK (transport IS NULL OR json_type(transport) = 'object'),
   start_position    INTEGER NOT NULL DEFAULT 0,
@@ -152,50 +168,67 @@ CREATE TABLE IF NOT EXISTS occupant (
 CREATE INDEX IF NOT EXISTS occupant_conversation ON occupant (runtime, native_id, reported_at);
 
 -- A conversation reopened in a pane the server restored itself, one row per pane and server
--- instance, planned from the pane's record on the earlier instance. Rex starts a login shell in
--- every pane it restores; the daemon types `rexume gate ID` into that shell once, and the gate
--- claims the row before it starts the conversation, so the line runs the conversation at most
--- once however often it is typed or run again. `start` is what the plan starts and `plan` holds
--- the launch details the gate consumes whole (restore::Plan). `session_label` is the label of
--- the pane's session when the row was planned, which `status` shows. `created_at` is taken
--- before the planner reads the conversation's record, so a report that arrives while it reads
--- counts as later than the plan.
--- `state`: 'planned' until the line is typed, `note` saying why it still waits; 'typed' once
--- the daemon is about to type it, committed with `typed_at` before the write, so it is never
--- typed again; 'claimed' once the gate claimed the row, with `claimed_at`, `pid`, the gate's
--- process, which the shell it becomes keeps and whose foreground children the daemon takes for
--- the conversation until it reports itself, and `started`, what the gate starts, committed
--- before it starts it: 'shell' when the conversation had reported from another pane since the
--- plan, which leaves the pane's shell as it is, and 'agent' instead of 'continue' when the
--- conversation's record showed a turn ended after what the plan read. 'unknown' when no gate
--- claimed the row soon after the write, which may not have reached the shell; a gate that starts
--- later still claims it. 'skipped' when nothing was typed because the pane was in use, closed, or
--- the conversation reported from another pane, and 'failed' when the server refused the write;
--- `note` says which. A row that ends 'skipped' or 'failed' leaves the pane with the shell Rex
--- started.
+-- instance, planned from the pane's record on the earlier instance. The conversation comes to run
+-- there in one of two ways, and `state` says which. Rexume starts it: Rex starts a login shell in a
+-- pane where it resumes no program, the daemon types `rexume gate ID` into that shell once, and the
+-- gate claims the row before it starts the conversation, so the line runs the conversation at most
+-- once however often it is typed or run again. Or it runs there before anything is typed, started
+-- without Rexume, as Rex's Program Resume starts a program that reported its resume command.
+-- `start` is what the plan starts and `plan` holds the launch details the gate consumes whole
+-- (restore::Plan). `session_label` is the label of the pane's session when the row was planned,
+-- which `status` shows. `created_at` is taken before the planner reads the conversation's record,
+-- so a report that arrives while it reads counts as later than the plan.
+-- `state`: 'planned' until the line is typed, `note` saying why it still waits; 'typed' once the
+-- daemon is about to type it, committed with `typed_at` before the write, so it is never typed
+-- again; 'claimed' once the gate claimed the row, with `claimed_at`, `pid`, the gate's process,
+-- which the shell it becomes keeps and whose foreground children the daemon takes for the
+-- conversation until it reports itself, and `started`, what the gate starts, committed before it
+-- starts it: 'shell' when the conversation had reported from another pane since the plan, which
+-- leaves the pane's shell as it is, and 'agent' instead of 'continue' when the conversation's
+-- record showed a prompt or a turn's end after what the plan read. 'unknown' when no gate claimed
+-- the row soon after the write, which may not have reached the shell; a gate that starts later
+-- still claims it. 'opened' when, before anything was typed, the conversation was the pane's
+-- occupant on this instance: nothing is typed from then on, the pane keeps that conversation, and
+-- the row does not record whether Rex or a person started it; `typed_at`, `claimed_at`, `pid`, and
+-- `started` are the gate's and stay NULL. 'skipped' when nothing was typed because the pane was in
+-- use, closed, or the conversation reported from another pane, and 'failed' when the server refused
+-- the write; `note` says which. A row that ends 'skipped' or 'failed' started no conversation and
+-- found none in the pane.
+-- `continuation_state`: how the plan's prompt goes to a conversation found 'opened' whose `start`
+-- is 'continue', through its runtime's transport instead of the gate's command line. 'pending'
+-- until the conversation can take it, `note` saying why it still waits or why a send failed before
+-- anything left; 'sending' once the daemon claimed the send, committed before it; 'sent' once the
+-- transport took it; 'unknown' when the send may have happened, also when a daemon that started
+-- found the row 'sending', so it is never sent again; 'skipped' when it is never sent, because the
+-- conversation's record showed a prompt or a turn's end after what the plan read, the conversation
+-- could not take it within the time a pane is waited for, or Rexume sends none to its runtime,
+-- `note` saying which. NULL on every other row.
 CREATE TABLE IF NOT EXISTS restore (
-  id            TEXT    PRIMARY KEY,
-  instance_id   TEXT    NOT NULL,
-  block_lineage TEXT    NOT NULL,
-  session_label TEXT,
-  start         TEXT    NOT NULL CHECK (start IN ('agent', 'continue')),
-  runtime       TEXT    NOT NULL,
-  native_id     TEXT    NOT NULL,
-  plan          TEXT    NOT NULL CHECK (json_valid(plan)),
-  state         TEXT    NOT NULL
-    CHECK (state IN ('planned', 'typed', 'claimed', 'unknown', 'skipped', 'failed')),
-  note          TEXT,
-  created_at    INTEGER NOT NULL,
-  typed_at      INTEGER,
-  claimed_at    INTEGER,
-  started       TEXT    CHECK (started IN ('shell', 'agent', 'continue')),
-  pid           INTEGER,
+  id                 TEXT    PRIMARY KEY,
+  instance_id        TEXT    NOT NULL,
+  block_lineage      TEXT    NOT NULL,
+  session_label      TEXT,
+  start              TEXT    NOT NULL CHECK (start IN ('agent', 'continue')),
+  runtime            TEXT    NOT NULL,
+  native_id          TEXT    NOT NULL,
+  plan               TEXT    NOT NULL CHECK (json_valid(plan)),
+  state              TEXT    NOT NULL
+    CHECK (state IN ('planned', 'typed', 'claimed', 'unknown', 'opened', 'skipped', 'failed')),
+  note               TEXT,
+  created_at         INTEGER NOT NULL,
+  typed_at           INTEGER,
+  claimed_at         INTEGER,
+  started            TEXT    CHECK (started IN ('shell', 'agent', 'continue')),
+  pid                INTEGER,
+  continuation_state TEXT
+    CHECK (continuation_state IN ('pending', 'sending', 'sent', 'unknown', 'skipped')),
   CHECK ((typed_at IS NOT NULL) = (state IN ('typed', 'claimed', 'unknown'))),
   CHECK ((claimed_at IS NOT NULL) = (state = 'claimed')),
   CHECK ((pid IS NULL) = (claimed_at IS NULL)),
   CHECK ((started IS NULL) = (claimed_at IS NULL)),
   CHECK (started IS NULL OR started = start OR started = 'shell'
          OR (start = 'continue' AND started = 'agent')),
+  CHECK ((continuation_state IS NOT NULL) = (state = 'opened' AND start = 'continue')),
   FOREIGN KEY (runtime, native_id) REFERENCES conversation (runtime, native_id)
 ) STRICT;
 -- One plan per pane and instance.
@@ -545,4 +578,4 @@ CREATE TABLE IF NOT EXISTS archive (
 
 -- 'rexu' in ASCII, which Store::open checks before it uses a database.
 PRAGMA application_id = 0x72657875;
-PRAGMA user_version = 13;
+PRAGMA user_version = 14;

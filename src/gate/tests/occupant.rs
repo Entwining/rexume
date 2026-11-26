@@ -48,6 +48,7 @@ fn a_claim_records_the_conversation_it_starts_as_the_gates_process() -> Result<(
         transport: Map::new(),
         instance: "i2".into(),
         pid: 42,
+        agent_pid: None,
         name: Some("claude".into()),
         own_program: false,
         start_position,

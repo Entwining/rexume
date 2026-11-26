@@ -87,6 +87,16 @@ Codex runs a new hook only after you approve it. Open `/hooks` in Codex and trus
 
 `install` records the first `rex` on `PATH` in the job. It uses the server in `REX_SERVER`, or else the default server: the Rex app's on macOS, `$XDG_RUNTIME_DIR/rex/server.sock` on Linux. Pass `--rex` or `--server` to choose others. The daemon keeps the `PATH` you ran `install` with. That is how it finds `codex` to send notices.
 
+With the hook that `rex skill setup` installs, Rex's Program Resume starts Claude Code in restored panes itself, which [brings back less than Rexume](usage.md#rexs-program-resume) and leaves Rexume nothing to reopen there. Rex also ships rules for Codex and OpenCode, which take effect once something reports their sessions to Rex. To leave those conversations to Rexume, remove Rex's rules for them in [Rex's configuration file](https://www.superlogical.com/rex/docs/customize/resume-rules):
+
+```lua
+rex.set("resume.trust.claude", false)
+rex.set("resume.trust.codex", false)
+rex.set("resume.trust.opencode", false)
+```
+
+`rex.set("resume.defaults", false)` turns off all of Rex's built-in rules instead. `rex config check` lists the rules in force, and `rex config reload` applies a change to running terminals.
+
 On Linux, systemd runs your user services only while you are logged in. If your Rex server keeps running after you log out, run `loginctl enable-linger` once so that the daemon does too.
 
 ## Check the installation

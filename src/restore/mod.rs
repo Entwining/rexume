@@ -1,3 +1,4 @@
+pub(crate) mod opened;
 mod pane;
 mod plan;
 mod retired;
@@ -6,20 +7,24 @@ use std::collections::HashMap;
 use std::time::{Duration, Instant};
 
 use anyhow::Result;
-use rusqlite::{Connection, OptionalExtension, Transaction, params};
+use rusqlite::{OptionalExtension, Transaction, params};
 use serde_json::json;
 
 use crate::rex::{CallError, Rex, items, listed_blocks, str_at};
 use crate::store::{Store, ensure_lineage, live_of, now_ms};
 use crate::task;
+pub use opened::opened_elsewhere;
+use opened::{continue_opened, opened, record_opened};
 use pane::Pane;
 pub use plan::{Plan, Start, plan};
 
 const PANE_WAIT: Duration = Duration::from_secs(30);
 const CLAIM_WAIT: Duration = Duration::from_secs(5);
 
-pub(crate) const OPEN_RESTORES: &str = "SELECT id, block_lineage, typed_at, created_at FROM restore
-  WHERE instance_id = ?1 AND state IN ('planned', 'typed') ORDER BY created_at";
+pub(crate) const OPEN_RESTORES: &str = "SELECT id, block_lineage, typed_at, created_at,
+    continuation_state IS NOT NULL FROM restore
+  WHERE instance_id = ?1 AND (state IN ('planned', 'typed') OR continuation_state = 'pending')
+  ORDER BY created_at";
 pub(crate) const FOREGROUND: &str = "SELECT fg_pid, fg_generation FROM block WHERE lineage = ?1";
 
 struct Open {
@@ -27,6 +32,7 @@ struct Open {
     block: String,
     typed_at: Option<i64>,
     created_at: i64,
+    continues: bool,
 }
 
 pub struct Restorer {
@@ -127,6 +133,7 @@ impl Restorer {
                     block: row.get(1)?,
                     typed_at: row.get(2)?,
                     created_at: row.get(3)?,
+                    continues: row.get(4)?,
                 })
             })?
             .collect::<rusqlite::Result<_>>()?;
@@ -137,6 +144,7 @@ impl Restorer {
         });
         for restore in open {
             let result = match restore.typed_at {
+                _ if restore.continues => continue_opened(store, &restore),
                 Some(typed_at) => claim_wait(store, &restore, typed_at),
                 None => self.try_type(rex, store, instance, &restore),
             };
@@ -163,17 +171,8 @@ impl Restorer {
     ) -> Result<Option<i64>> {
         let until = restore.created_at + millis(PANE_WAIT);
         let now = now_ms();
-        if opened_elsewhere(store.conn(), &restore.id)? {
-            // Unlike `skip`, this leaves the pane's open rounds: they go on from the conversation's
-            // record in the other pane.
-            let tx = store.write()?;
-            tx.execute(
-                "UPDATE restore SET state = 'skipped', note = ?1 WHERE id = ?2 AND state = 'planned'",
-                params![OPENED_IN_ANOTHER_PANE, restore.id],
-            )?;
-            tx.commit()?;
-            log::info!("restore {}: skipped: {OPENED_IN_ANOTHER_PANE}", restore.id);
-            return Ok(None);
+        if let Some(found) = opened(store.conn(), &restore.id)? {
+            return record_opened(store, restore, found);
         }
         if self.unchanged(store, &restore.block, until, now)? {
             return Ok(Some(until));
@@ -280,20 +279,6 @@ fn claim_wait(store: &mut Store, restore: &Open, typed_at: i64) -> Result<Option
     }
     Ok(None)
 }
-
-pub fn opened_elsewhere(conn: &Connection, id: &str) -> Result<bool> {
-    Ok(conn.query_row(OPENED_ELSEWHERE, params![id], |row| row.get(0))?)
-}
-
-/// `o.instance_id = r.instance_id` catches a conversation someone reopened on this instance
-/// before the plan. A report in the plan's millisecond counts as later: keeping the shell is the
-/// safe side.
-pub(crate) const OPENED_ELSEWHERE: &str = "SELECT EXISTS (SELECT 1 FROM restore r JOIN occupant o
-  ON o.runtime = r.runtime AND o.native_id = r.native_id
-  WHERE r.id = ?1 AND o.block_lineage != r.block_lineage
-    AND (o.reported_at >= r.created_at OR o.instance_id = r.instance_id))";
-
-const OPENED_IN_ANOTHER_PANE: &str = "the conversation was opened in another pane";
 
 fn skip(store: &mut Store, instance: &str, restore: &Open, note: &str) -> Result<Option<i64>> {
     let tx = store.write()?;

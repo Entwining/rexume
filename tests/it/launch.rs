@@ -3,28 +3,9 @@ use std::path::{Path, PathBuf};
 
 use serde_json::{Value, json};
 
+use crate::common::claude::readable_perl;
 use crate::common::{Daemon, REXUME, SHELL, Server, claude, db, query, rex_bin, wait_until};
 use crate::restore::{WAIT, agents, restart, restores};
-
-/// macOS withholds a process's start environment, which Rexume reads, for its own binaries such as
-/// `/usr/bin/perl`, but not for a copy signed by anyone else, as Claude Code is.
-#[cfg(target_os = "macos")]
-fn readable_perl(dir: &Path) -> PathBuf {
-    let perl = dir.join("perl");
-    std::fs::copy("/usr/bin/perl", &perl).unwrap();
-    let signed = std::process::Command::new("codesign")
-        .args(["--sign", "-", "--force"])
-        .arg(&perl)
-        .output()
-        .unwrap();
-    assert!(signed.status.success(), "{signed:?}");
-    perl
-}
-
-#[cfg(target_os = "linux")]
-fn readable_perl(_: &Path) -> PathBuf {
-    PathBuf::from("/usr/bin/perl")
-}
 
 const WRAPPER: &str = r#"#!/usr/bin/perl
 use JSON::PP;

@@ -145,6 +145,11 @@ pub fn orphaned_sends(store: &mut Store) -> Result<Vec<(&'static str, String)>> 
             "request",
             "UPDATE request SET state = 'unknown', note = ?1 WHERE state = 'sending' RETURNING id",
         ),
+        (
+            "restore",
+            "UPDATE restore SET continuation_state = 'unknown', note = ?1
+             WHERE continuation_state = 'sending' RETURNING id",
+        ),
     ] {
         let ids = tx
             .prepare(statement)?

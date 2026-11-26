@@ -1,15 +1,17 @@
 use std::collections::{HashMap, HashSet};
-use std::os::unix::net::UnixListener;
+use std::io::{BufRead as _, BufReader, Write as _};
+use std::os::unix::net::{UnixListener, UnixStream};
+use std::process::{Command, Stdio};
 use std::time::Duration;
 
 use anyhow::Result;
-use serde_json::json;
+use serde_json::{Value, json};
 
 use super::block::{set_foreground, touch_block};
 use super::view::View;
 use super::{Daemon, FIRST_FILE, Options};
 use crate::event::Queue;
-use crate::rex::Cli;
+use crate::rex::{Cli, Pipe, Rex};
 use crate::store::Store;
 
 mod view;
@@ -114,6 +116,92 @@ fn a_gate_recorded_occupant_becomes_the_foreground_its_process_started() -> Resu
             ("named".to_owned(), 200, None),
             ("old".to_owned(), 200, None)
         ]
+    );
+    Ok(())
+}
+
+/// Rex's foreground stays the login shell Rex resumed a program through after the program exits,
+/// so the pane's next event, whatever it is, or the next read of the pane counts the exit.
+#[test]
+fn a_launched_programs_exit_counts_as_leaving_the_foreground_when_the_pane_is_next_seen()
+-> Result<()> {
+    /// The occupant's `pid`, `agent_pid`, and `left_fg_changes`, and the pane's `fg_changes`.
+    type Row = (i64, Option<i64>, Option<i64>, i64);
+    let dir = tempfile::tempdir()?;
+    let mut store = Store::open(dir.path())?;
+    let mut exited = Command::new("true").spawn()?;
+    exited.wait()?;
+    let mut running = Command::new("cat").stdin(Stdio::piped()).spawn()?;
+    let (gone, running_pid) = (exited.id(), running.id());
+    let tx = store.write()?;
+    tx.execute_batch(&format!(
+        "INSERT INTO conversation (runtime, native_id, resumable, reported_at)
+           VALUES ('claude', 'c', 1, 0), ('claude', 'd', 1, 0);
+         INSERT INTO block (lineage, instance_id, fg_pid, fg_changes)
+           VALUES ('ended', 'i1', 100, 2), ('runs', 'i1', 101, 2);
+         INSERT INTO live (instance_id, live_id, lineage)
+           VALUES ('i1', 'block:1', 'ended'), ('i1', 'block:2', 'runs');
+         INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid, agent_pid,
+           reported_at)
+           VALUES ('ended', 'claude', 'c', 'i1', 100, {gone}, 0),
+                  ('runs', 'claude', 'd', 'i1', 101, {running_pid}, 0);"
+    ))?;
+    tx.commit()?;
+    let view = View::new("i1");
+    let changed = |store: &mut Store, block: &str| {
+        let event = json!({ "event": "program_resume_changed", "block_id": block, "payload": {} });
+        view.block_event(store, "program_resume_changed", &event, &event["payload"])
+    };
+    let rows = |store: &Store| -> Result<Vec<Row>> {
+        Ok(store
+            .conn()
+            .prepare(
+                "SELECT o.pid, o.agent_pid, o.left_fg_changes, b.fg_changes FROM occupant o
+                   JOIN block b ON b.lineage = o.block_lineage ORDER BY o.block_lineage",
+            )?
+            .query_map([], |row| {
+                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+            })?
+            .collect::<rusqlite::Result<_>>()?)
+    };
+    assert!(changed(&mut store, "block:1")?);
+    assert!(!changed(&mut store, "block:2")?);
+    let left = (i64::from(gone), None, Some(3), 3);
+    assert_eq!(
+        rows(&store)?,
+        [left, (101, Some(i64::from(running_pid)), None, 2)]
+    );
+    assert!(!changed(&mut store, "block:1")?);
+    assert_eq!(rows(&store)?[0], left);
+
+    drop(running.stdin.take());
+    running.wait()?;
+    let (ours, theirs) = UnixStream::pair()?;
+    let server = std::thread::spawn(move || -> Result<()> {
+        let mut out = &theirs;
+        for line in BufReader::new(theirs.try_clone()?).lines() {
+            let request: Value = serde_json::from_str(&line?)?;
+            let result = match request["method"].as_str() {
+                Some("session.list") => json!({ "sessions": [{ "session_id": "session:1" }] }),
+                Some("session.list_blocks") => {
+                    json!({ "blocks": [{ "block_id": "block:1" }, { "block_id": "block:2" }] })
+                }
+                _ if request["params"]["block_id"] == "block:1" => {
+                    json!({ "foreground": { "pid": 100 } })
+                }
+                _ => json!({ "foreground": { "pid": 101 } }),
+            };
+            writeln!(out, "{}", json!({ "id": request["id"], "result": result }))?;
+        }
+        Ok(())
+    });
+    let mut rex = Rex::Pipe(Pipe::new(ours)?);
+    View::new("i1").baseline(&mut rex, &mut store)?;
+    drop(rex);
+    server.join().expect("the fake server ran")?;
+    assert_eq!(
+        rows(&store)?,
+        [left, (i64::from(running_pid), None, Some(3), 3)]
     );
     Ok(())
 }

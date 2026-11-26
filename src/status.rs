@@ -12,8 +12,10 @@ pub fn run(state_dir: &Path, dirs: &install::Dirs) -> Result<Value> {
     let conn = Store::open_read_only(state_dir)?;
     let restores: Vec<Value> = conn
         .prepare(
-            "SELECT id, session_label, block_lineage, state, note, created_at FROM restore
-             WHERE state != 'claimed' ORDER BY created_at",
+            "SELECT id, session_label, block_lineage, state, note, created_at, continuation_state
+             FROM restore WHERE NOT (state = 'claimed'
+                        OR (state = 'opened' AND COALESCE(continuation_state, 'sent') = 'sent'))
+             ORDER BY created_at",
         )?
         .query_map([], |row| {
             Ok(json!({
@@ -23,6 +25,7 @@ pub fn run(state_dir: &Path, dirs: &install::Dirs) -> Result<Value> {
                 "state": row.get::<_, String>(3)?,
                 "note": row.get::<_, Option<String>>(4)?,
                 "created_at": row.get::<_, i64>(5)?,
+                "continuation": row.get::<_, Option<String>>(6)?,
             }))
         })?
         .collect::<rusqlite::Result<_>>()?;

@@ -43,7 +43,7 @@ static LEFT_TO_SERVER_ROUNDS: LazyLock<String> = LazyLock::new(|| {
          WHERE t.worker_lineage = ?1 AND {OPEN} AND t.worker_instance_id IS NOT ?2
            AND r.created_at < (SELECT MIN(started_at) FROM epoch WHERE instance_id = ?2)
            AND NOT EXISTS (SELECT 1 FROM occupant o
-                           WHERE o.block_lineage = ?1 AND o.instance_id = ?2
+                           WHERE o.instance_id = ?2
                              AND o.runtime = t.worker_runtime AND o.native_id = t.worker_native_id)"
     )
 });

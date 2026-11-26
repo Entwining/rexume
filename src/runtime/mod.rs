@@ -141,6 +141,15 @@ impl Runtime {
         self == Self::OpenCode
     }
 
+    /// Whether Rexume sends the continuation prompt through `send` to a conversation it did not
+    /// start, as one Rex's Program Resume starts. Claude Code's plugin submits a line on its
+    /// messaging socket from the moment a resumed session's start hooks run, which its report
+    /// follows. Rex resumes none of the others without a reporter of the user's own: Codex reports
+    /// only at its first turn, and Pi's and omp's inboxes are untried after Rex's resume.
+    pub fn continues_opened(self) -> bool {
+        self == Self::Claude
+    }
+
     fn parser(self) -> Parser {
         match self {
             Self::Claude => Parser::Claude(claude::Parser::default()),

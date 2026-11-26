@@ -47,6 +47,6 @@ local function forward(ctx, ev)
 end
 for _, name in ipairs({ "client_joined", "session_created", "session_view_changed", "block_closed",
   "terminal.process_changed", "terminal.program_status_changed", "terminal.program_status_removed",
-  "terminal.child_exited" }) do
+  "terminal.child_exited", "terminal.program_resume_changed" }) do
   rex.on(name, forward)
 end

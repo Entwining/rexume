@@ -89,15 +89,18 @@ fn a_claim_continues_a_turn_still_open_once() -> Result<()> {
 }
 
 #[test]
-fn a_turn_that_ended_after_the_plan_reopens_without_the_prompt() -> Result<()> {
-    let dir = tempfile::tempdir()?;
-    let transcript = dir.path().join("t.jsonl");
-    std::fs::write(&transcript, format!("{PROMPT}\n"))?;
-    let mut store = typed(dir.path(), &transcript)?;
-    std::fs::write(&transcript, format!("{PROMPT}\n{ANSWER}\n"))?;
-    let (start, _) = claim(&mut store, "r", "b", 42)?;
-    assert_eq!(start, Start::Agent);
-    assert_eq!(started(&store)?, ("claimed".into(), Some("agent".into())));
+fn a_turn_end_or_a_prompt_after_the_plan_reopens_without_the_prompt() -> Result<()> {
+    let prompt = r#"{"event":"prompt","prompt_id":"p2","token":null}"#;
+    for since in [ANSWER, prompt] {
+        let dir = tempfile::tempdir()?;
+        let transcript = dir.path().join("t.jsonl");
+        std::fs::write(&transcript, format!("{PROMPT}\n"))?;
+        let mut store = typed(dir.path(), &transcript)?;
+        std::fs::write(&transcript, format!("{PROMPT}\n{since}\n"))?;
+        let (start, _) = claim(&mut store, "r", "b", 42)?;
+        assert_eq!(start, Start::Agent, "{since}");
+        assert_eq!(started(&store)?, ("claimed".into(), Some("agent".into())));
+    }
     Ok(())
 }
 

@@ -6,7 +6,7 @@ Rex restores its own sessions after its server stops. Tabs, panes, and labels co
 
 In each restored pane that ran Claude Code, Codex, Pi, omp, or OpenCode, Rexume waits for the shell to be ready with nothing typed at its prompt.
 
-An interrupted conversation continues once. Its last status must have been working, and its own record must show a turn that had not ended. Rexume reopens it with one prompt to continue. OpenCode runs its turns in a background service of its own, which goes on with a cut-off turn by itself, so an OpenCode conversation reopens without that prompt.
+An interrupted conversation that Rexume reopens continues once. Its last status must have been working, and its own record must show a turn that had not ended. Rexume reopens it with one prompt to continue. OpenCode runs its turns in a background service of its own, which goes on with a cut-off turn by itself, so an OpenCode conversation reopens without that prompt.
 
 A conversation otherwise reopens without a new turn when it was still the pane's program. It also reopens when the pane was created to run it and it had exited. A conversation a shutdown, a logout, or another signal ended also reopens, as long as Rex saw no other program in its pane afterwards: the system ends the pane's programs before the Rex server stops. That needs Rex to have seen the conversation's program leave the pane, and no pane to have run the conversation since. Pi, omp, and OpenCode record such an end; Claude Code and Codex do not, so their panes keep the shell. Finished, cancelled, or waiting conversations get no new turn, and neither does one a signal ended. Panes you closed stay closed. The same conversation never reopens in two panes.
 
@@ -20,11 +20,24 @@ Rex does not bring back a pane's earlier output yet. A restored pane starts with
 
 ### Conversation settings
 
-Conversations reopen with the model and effort they last used. Claude Code also keeps its supported [launch flags](cli.md#report), such as `--remote-control`. It keeps the variables that chose its provider, or the command of a launcher that [declares its provider or account choice](cli.md#a-launchers-command).
+Conversations Rexume reopens come back with the model and effort they last used. Claude Code also keeps its supported [launch flags](cli.md#report), such as `--remote-control`. It keeps the variables that chose its provider, or the command of a launcher that [declares its provider or account choice](cli.md#a-launchers-command).
 
-A Claude Code conversation reopens in the permission mode its record last shows, including bypass mode. Claude Code's own resume does not bring that mode back. Codex restores its approval policy and permissions itself. Pi has no permission modes. OpenCode keeps a session's agent, model, and permission rules in the session.
+A Claude Code conversation Rexume reopens comes back in the permission mode its record last shows, including bypass mode. Claude Code's own resume does not bring that mode back. Codex restores its approval policy and permissions itself. Pi has no permission modes. OpenCode keeps a session's agent, model, and permission rules in the session.
 
 omp takes its approval mode from launch flags and settings rather than its session. A conversation started with `--approval-mode` or `--yolo` therefore reopens in the mode its settings give. OpenCode likewise takes `--auto` from its command line, so a conversation started with it reopens in the permission mode its TUI settings give, which asks by default.
+
+### Rex's Program Resume
+
+Rex servers with Program Resume can start a pane's program again themselves, when the program reported how to resume it and one of Rex's rules trusts that command. Rex's built-in rules trust Claude Code, Codex, and OpenCode, but only Claude Code reports, through Rex's session-start hook, which `rex skill setup` installs; Rexume reopens Codex and OpenCode conversations as before.
+
+Rexume types nothing into a pane where Rex resumed the conversation. It keeps following the conversation there, so tasks go on, and the restore ends `opened`. When the server's end cut off a Claude Code turn there, Rexume sends the continuation prompt through the conversation's messaging socket, as it sends notices, once the conversation is the pane's foreground program and neither runs a turn nor waits for the user. It sends it at most once, and not at all when the conversation's record shows a prompt or a turn's end since the restart, or when 30 seconds pass first. A conversation of another runtime that Rex resumes gets no continuation prompt.
+
+Rex's resume of Claude Code brings back less than Rexume's:
+
+- The conversation starts with the flags it was launched with, so a model, effort, or permission mode changed later comes back as it was at launch. Without such flags, Claude Code's own resume keeps neither the effort nor a Manual or bypass permission mode.
+- Rex saves the command line, not variables set for one launch, such as a provider chosen that way.
+
+To have Rexume reopen these conversations, [turn off Rex's rules](setup.md#server-and-terminal-settings) for them.
 
 ## Check a restore
 
@@ -32,7 +45,7 @@ omp takes its approval mode from launch flags and settings rather than its sessi
 rexume status
 ```
 
-This lists restored panes whose conversation Rexume tried to reopen but has not reopened. Successful restores appear in the [daemon's log](setup.md#check-the-installation).
+This lists restored panes whose conversation Rexume tried to reopen but has not reopened, and those where Rex resumed it and the continuation prompt for a turn the server's end cut off has not been sent. Successful restores appear in the [daemon's log](setup.md#check-the-installation).
 
 It also lists notices whose delivery is unconfirmed and that are still needed. These include notices sent or that failed to send. A finished round needs its notice until the orchestrator acknowledges it. A blocked episode needs its notice until the episode ends. Unread turns need their notice until a round starts or the task is released.
 
@@ -44,7 +57,8 @@ A pane's `note` says why it is in its state:
 | --- | --- |
 | `planned` | Rexume waits for the shell to read its startup files or show a prompt with nothing typed. A prompt that does not end in a space keeps it waiting. |
 | `typed`, `unknown` | The line is about to be written or may have reached the shell, but its gate has not claimed the restore. After 5 seconds without a claim it is `unknown`. Rexume does not type it again, because the line may still be running. |
-| `skipped` | The pane closed, the conversation opened in another pane, or no empty prompt appeared within 30 seconds. Start the conversation yourself if you want it there. |
+| `opened` | The conversation already ran in this pane, as after Rex resumes it, so nothing was typed. Listed only while the continuation prompt for a turn the server's end cut off has not been sent: `continuation` is `pending` while Rexume waits for the conversation to take it, `unknown` when it may have arrived, and `skipped` when it was not sent; then ask the conversation to go on if you want it to. |
+| `skipped` | The pane closed, the conversation opened in another pane, or no empty prompt appeared within 30 seconds. A conversation the note says was opened in another pane had reported from there when the restore checked, so look there before starting it again; otherwise start it yourself if you want it there. |
 | `failed` | The line could not be sent or the server refused it. |
 
 The daemon [records each restore step before its side effect](design.md#restore).
@@ -102,7 +116,7 @@ Register a non-interactive run that writes its result to a file with `--result-f
 
 ### Shell input
 
-Rex starts a shell in every restored pane. It offers no way to start another program there instead, so Rexume types its line into that shell. You can start typing between Rexume's check and the line.
+Rex starts a shell in every restored pane, or a program its own rules resume. It offers no way to start the program Rexume chooses there instead, so Rexume types its line into that shell. You can start typing between Rexume's check and the line.
 
 The line begins with Ctrl-E and Ctrl-U. These clear what you typed instead of running it with the line. At a zsh or bash prompt, Ctrl-Y brings it back. Text typed before the shell's first prompt is lost.
 

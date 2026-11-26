@@ -72,3 +72,23 @@ pub fn runs(dir: &Path, count: usize) -> Vec<(i64, String)> {
         (runs.len() >= count).then(|| runs.into_iter().map(|(_, p, a)| (p, a)).collect())
     })
 }
+
+/// macOS withholds a process's start environment, which Rexume reads, for its own binaries such as
+/// `/usr/bin/perl`, but not for a copy signed by anyone else, as Claude Code is.
+#[cfg(target_os = "macos")]
+pub fn readable_perl(dir: &Path) -> PathBuf {
+    let perl = dir.join("perl");
+    std::fs::copy("/usr/bin/perl", &perl).unwrap();
+    let signed = std::process::Command::new("codesign")
+        .args(["--sign", "-", "--force"])
+        .arg(&perl)
+        .output()
+        .unwrap();
+    assert!(signed.status.success(), "{signed:?}");
+    perl
+}
+
+#[cfg(target_os = "linux")]
+pub fn readable_perl(_: &Path) -> PathBuf {
+    PathBuf::from("/usr/bin/perl")
+}

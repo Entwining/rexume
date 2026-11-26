@@ -1,10 +1,12 @@
 use std::fmt;
+use std::path::Path;
 use std::str::FromStr;
 
 use anyhow::{Result, bail};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
 
+use crate::runtime::{self, Runtime, Turn};
 use crate::store::{Store, new_id, now_ms};
 use crate::task;
 use last_use::candidate;
@@ -59,6 +61,19 @@ pub struct Plan {
     #[serde(default)]
     pub record_length: Option<u64>,
     pub reason: String,
+}
+
+impl Plan {
+    /// Whether the conversation's record shows nothing of a turn after what the plan read. A prompt
+    /// since, whoever typed it, or the cut-off turn's end leaves the continuation unsent.
+    pub fn record_untouched(&self, runtime: Runtime, record: Option<&Path>) -> bool {
+        record.is_some_and(|record| {
+            matches!(
+                runtime::last_turn(runtime, record, self.record_length.unwrap_or(0)),
+                Ok(Some(Turn::None))
+            )
+        })
+    }
 }
 
 pub fn plan(
@@ -120,8 +135,9 @@ pub fn plan(
             None => reason = "another pane reopens this conversation".into(),
         }
     }
-    // When another pane reopens the conversation, this pane's open rounds go on from its record.
-    if candidate.conversation.is_none() {
+    // When another pane reopens the conversation, this pane's open rounds go on from its record;
+    // those of a conversation that reported from the pane on this instance go on too.
+    if !candidate.reopens {
         task::end_left_to_server(&tx, instance, block)?;
     }
     let start = if id.is_some() {

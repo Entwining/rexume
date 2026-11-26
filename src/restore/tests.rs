@@ -2,9 +2,11 @@ use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 use super::*;
-use crate::task::tests::{PROMPT, task_world};
+use crate::task::tests::task_world;
 use server::{MOVED_BACK, SHELL, STARTUP, Server, TYPED, connect};
 
+mod continuation;
+mod opened;
 mod server;
 
 fn restarted(dir: &Path, a: &str, b: &str) -> Result<(Store, Arc<Mutex<Server>>, Rex)> {
@@ -46,7 +48,7 @@ fn foreground_moved(store: &Store) -> Result<()> {
 #[test]
 fn the_gate_is_typed_once_when_the_shell_is_ready() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let (mut store, server, mut rex) = restarted(dir.path(), STARTUP, SHELL)?;
+    let (mut store, server, mut rex) = restarted(dir.path(), STARTUP, SHELL.as_str())?;
     let mut restorer = new_restorer();
     restorer.start(&mut rex, &mut store, "i2")?;
     restorer.reconcile(&mut rex, &mut store, "i2");
@@ -62,7 +64,7 @@ fn the_gate_is_typed_once_when_the_shell_is_ready() -> Result<()> {
         .lock()
         .unwrap()
         .process
-        .insert("a".into(), serde_json::from_str(SHELL)?);
+        .insert("a".into(), serde_json::from_str(SHELL.as_str())?);
     restorer.reconcile(&mut rex, &mut store, "i2");
     assert!(server.lock().unwrap().written.iter().all(|(b, _)| b != "a"));
     foreground_moved(&store)?;
@@ -85,7 +87,7 @@ fn the_gate_is_typed_once_when_the_shell_is_ready() -> Result<()> {
 #[test]
 fn a_detached_pane_is_restored() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let (mut store, server, mut rex) = restarted(dir.path(), SHELL, SHELL)?;
+    let (mut store, server, mut rex) = restarted(dir.path(), SHELL.as_str(), SHELL.as_str())?;
     server.lock().unwrap().detached.push("a");
     let mut restorer = new_restorer();
     restorer.start(&mut rex, &mut store, "i2")?;
@@ -97,7 +99,7 @@ fn a_detached_pane_is_restored() -> Result<()> {
 #[test]
 fn a_pane_with_text_at_its_prompt_is_left_to_the_user() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let (mut store, server, mut rex) = restarted(dir.path(), SHELL, SHELL)?;
+    let (mut store, server, mut rex) = restarted(dir.path(), SHELL.as_str(), SHELL.as_str())?;
     server.lock().unwrap().screen = Some(TYPED);
     let mut restorer = new_restorer();
     restorer.start(&mut rex, &mut store, "i2")?;
@@ -123,7 +125,7 @@ fn a_pane_with_text_at_its_prompt_is_left_to_the_user() -> Result<()> {
 #[test]
 fn a_shell_reading_its_startup_files_takes_the_line() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let (mut store, server, mut rex) = restarted(dir.path(), SHELL, SHELL)?;
+    let (mut store, server, mut rex) = restarted(dir.path(), SHELL.as_str(), SHELL.as_str())?;
     {
         let mut server = server.lock().unwrap();
         server.screen = Some(TYPED);
@@ -139,7 +141,7 @@ fn a_shell_reading_its_startup_files_takes_the_line() -> Result<()> {
 #[test]
 fn a_typed_line_ends_by_its_answer_or_its_gate() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let (mut store, server, mut rex) = restarted(dir.path(), SHELL, SHELL)?;
+    let (mut store, server, mut rex) = restarted(dir.path(), SHELL.as_str(), SHELL.as_str())?;
     server.lock().unwrap().refuse_write = Some("no (status=409 code=conflict)");
     let mut restorer = new_restorer();
     restorer.start(&mut rex, &mut store, "i2")?;
@@ -147,7 +149,7 @@ fn a_typed_line_ends_by_its_answer_or_its_gate() -> Result<()> {
     assert_eq!(restore_of(&store, "a")?.1, "failed");
 
     let dir = tempfile::tempdir()?;
-    let (mut store, server, mut rex) = restarted(dir.path(), SHELL, SHELL)?;
+    let (mut store, server, mut rex) = restarted(dir.path(), SHELL.as_str(), SHELL.as_str())?;
     server.lock().unwrap().refuse_write = Some("the connection ended");
     let mut restorer = new_restorer();
     restorer.start(&mut rex, &mut store, "i2")?;
@@ -164,80 +166,52 @@ fn a_typed_line_ends_by_its_answer_or_its_gate() -> Result<()> {
 }
 
 #[test]
-fn a_conversation_opened_elsewhere_is_not_reopened() -> Result<()> {
-    for before_the_plan in [false, true] {
-        let dir = tempfile::tempdir()?;
-        let (mut store, server, mut rex) = restarted(dir.path(), STARTUP, STARTUP)?;
-        std::fs::write(dir.path().join("worker.jsonl"), format!("{PROMPT}\n"))?;
-        let opened = |store: &Store, reported_at: i64| {
-            store.conn().execute(
-                "INSERT INTO occupant (block_lineage, runtime, native_id, instance_id, pid,
-                   reported_at)
-                 VALUES ('c', 'claude', 'owner', 'i2', 9, ?1), ('d', 'claude', 'worker', 'i2', 8, ?1)",
-                params![reported_at],
-            )
-        };
-        if before_the_plan {
-            opened(&store, 1)?;
-        }
-        let mut restorer = new_restorer();
-        restorer.start(&mut rex, &mut store, "i2")?;
-        restorer.reconcile(&mut rex, &mut store, "i2");
-        if !before_the_plan {
-            opened(&store, 9_000_000_000_000)?;
-        }
-        for block in ["a", "b"] {
-            server
-                .lock()
-                .unwrap()
-                .process
-                .insert(block.into(), serde_json::from_str(SHELL)?);
-        }
-        foreground_moved(&store)?;
-        store.conn().execute_batch(
-            "UPDATE block SET fg_generation = fg_generation + 1 WHERE lineage = 'b'",
-        )?;
-        restorer.reconcile(&mut rex, &mut store, "i2");
-        for block in ["a", "b"] {
-            let (_, state, note) = restore_of(&store, block)?;
-            assert_eq!(
-                (state.as_str(), note.as_deref()),
-                ("skipped", Some(OPENED_IN_ANOTHER_PANE)),
-                "{block}"
-            );
-        }
-        assert!(server.lock().unwrap().written.is_empty());
-        let round: String = store
-            .conn()
-            .query_row("SELECT state FROM task_round", [], |row| row.get(0))?;
-        assert_eq!(round, "running");
-    }
-    Ok(())
-}
-
-#[test]
 fn a_retired_workers_pane_is_closed_unless_it_is_in_use() -> Result<()> {
-    for (shown, screen, focused, refuse, kept) in [
-        (SHELL, None, None, None, None),
-        (STARTUP, None, None, None, Some("sleep runs in the pane")),
+    for (shown, screen, focused, refuse, reported, kept) in [
+        (SHELL.as_str(), None, None, None, false, None),
         (
-            SHELL,
+            STARTUP,
+            None,
+            None,
+            None,
+            false,
+            Some("sleep runs in the pane"),
+        ),
+        (
+            SHELL.as_str(),
             Some(MOVED_BACK),
             None,
             None,
+            false,
             Some("typed after the cursor"),
         ),
         (
-            SHELL,
+            SHELL.as_str(),
             None,
             Some("b"),
             None,
+            false,
             Some("the worker's pane has focus"),
         ),
-        (SHELL, None, None, Some("input_mode"), Some("refused")),
+        (
+            SHELL.as_str(),
+            None,
+            None,
+            Some("input_mode"),
+            false,
+            Some("refused"),
+        ),
+        (
+            SHELL.as_str(),
+            None,
+            None,
+            None,
+            true,
+            Some("a conversation was opened in the pane"),
+        ),
     ] {
         let dir = tempfile::tempdir()?;
-        let (mut store, server, mut rex) = restarted(dir.path(), SHELL, shown)?;
+        let (mut store, server, mut rex) = restarted(dir.path(), SHELL.as_str(), shown)?;
         server.lock().unwrap().focused = focused;
         server.lock().unwrap().screen = screen;
         store.conn().execute_batch(
@@ -250,6 +224,10 @@ fn a_retired_workers_pane_is_closed_unless_it_is_in_use() -> Result<()> {
         let mut restorer = new_restorer();
         restorer.start(&mut rex, &mut store, "i2")?;
         server.lock().unwrap().refuse = refuse;
+        if reported {
+            let opened = "UPDATE occupant SET instance_id = 'i2' WHERE block_lineage = 'b'";
+            store.conn().execute_batch(opened)?;
+        }
         restorer.reconcile(&mut rex, &mut store, "i2");
         let pane = |store: &Store| -> Result<(String, Option<String>)> {
             Ok(store
@@ -278,7 +256,7 @@ fn a_retired_workers_pane_is_closed_unless_it_is_in_use() -> Result<()> {
 #[test]
 fn a_pane_held_by_an_earlier_epoch_is_let_go() -> Result<()> {
     let dir = tempfile::tempdir()?;
-    let (mut store, _server, mut rex) = restarted(dir.path(), SHELL, STARTUP)?;
+    let (mut store, _server, mut rex) = restarted(dir.path(), SHELL.as_str(), STARTUP)?;
     store.conn().execute_batch(
         "UPDATE block SET fg_pid = NULL, last_exit = 0 WHERE lineage = 'b';
          UPDATE task SET result_file = '/r', worker_runtime = NULL, worker_native_id = NULL,

@@ -8,10 +8,14 @@ use super::{Plan, Start};
 use crate::runtime::{self, Conversation, Runtime};
 use crate::task;
 use continuation::continuation;
+use reported_first::reported_first;
 
 pub(super) struct Candidate {
     pub start: Start,
     pub conversation: Option<(Runtime, String)>,
+    /// The plan reopens the conversation the pane ran on the last instance, so the pane's open
+    /// rounds go on from its record.
+    pub reopens: bool,
     pub plan: Plan,
 }
 
@@ -19,6 +23,7 @@ fn shell(reason: &str) -> Candidate {
     Candidate {
         start: Start::Shell,
         conversation: None,
+        reopens: false,
         plan: Plan {
             reason: reason.to_owned(),
             ..Plan::default()
@@ -33,7 +38,9 @@ struct Occupant {
     instance_id: Option<String>,
     pid: i64,
     pid_name: Option<String>,
+    previous_pid: Option<i64>,
     own_program: Option<bool>,
+    start_position: i64,
     reported_at: i64,
     left_fg_changes: Option<i64>,
     record: Option<PathBuf>,
@@ -43,7 +50,8 @@ fn occupant(conn: &Connection, state_dir: &Path, block: &str) -> Result<Option<O
     Ok(conn
         .query_row(
             "SELECT o.runtime, o.native_id, c.transcript, c.settings, c.resumable,
-               o.instance_id, o.pid, o.pid_name, o.own_program, o.reported_at, o.left_fg_changes
+               o.instance_id, o.pid, o.pid_name, o.previous_pid, o.own_program, o.start_position,
+               o.reported_at, o.left_fg_changes
              FROM occupant o JOIN conversation c USING (runtime, native_id)
              WHERE o.block_lineage = ?1",
             params![block],
@@ -70,9 +78,11 @@ fn occupant(conn: &Connection, state_dir: &Path, block: &str) -> Result<Option<O
                     instance_id: row.get(5)?,
                     pid: row.get(6)?,
                     pid_name: row.get(7)?,
-                    own_program: row.get(8)?,
-                    reported_at: row.get(9)?,
-                    left_fg_changes: row.get(10)?,
+                    previous_pid: row.get(8)?,
+                    own_program: row.get(9)?,
+                    start_position: row.get(10)?,
+                    reported_at: row.get(11)?,
+                    left_fg_changes: row.get(12)?,
                 })
             },
         )
@@ -119,7 +129,13 @@ pub(super) fn candidate(
     if seen.instance_id == instance {
         return Ok(shell("the pane was recorded on this server instance"));
     }
-    let occupant = occupant(conn, state_dir, block)?.filter(|o| {
+    let occupant = match occupant(conn, state_dir, block)? {
+        Some(o) if o.instance_id.as_deref() == Some(instance) => {
+            return reported_first(conn, instance, block, &seen, o);
+        }
+        occupant => occupant,
+    };
+    let occupant = occupant.filter(|o| {
         o.instance_id
             .as_deref()
             .is_none_or(|i| i == seen.instance_id)
@@ -132,12 +148,7 @@ pub(super) fn candidate(
         }));
     };
     if seen.last_exit.is_none() && seen.fg_pid == Some(occupant.pid) {
-        let server_gone: bool = conn.query_row(
-            "SELECT COALESCE((SELECT end_reason = 'server_gone' FROM epoch WHERE instance_id = ?1
-                              ORDER BY id DESC LIMIT 1), 0)",
-            params![seen.instance_id],
-            |row| row.get(0),
-        )?;
+        let server_gone = server_gone(conn, &seen.instance_id)?;
         return reopen(
             conn,
             instance,
@@ -176,6 +187,15 @@ pub(super) fn candidate(
         return Ok(shell("the conversation ran in another pane since"));
     }
     reopen(conn, instance, block, &mut occupant, Stood::Ended(exited))
+}
+
+fn server_gone(conn: &Connection, instance: &str) -> Result<bool> {
+    Ok(conn.query_row(
+        "SELECT COALESCE((SELECT end_reason = 'server_gone' FROM epoch WHERE instance_id = ?1
+                          ORDER BY id DESC LIMIT 1), 0)",
+        params![instance],
+        |row| row.get(0),
+    )?)
 }
 
 /// A shutdown or logout ends the pane's programs before the server stops, and the server reports
@@ -255,17 +275,12 @@ fn reopen(
         Stood::Ended(why) => (Start::Agent, why.to_owned(), None),
     };
     let prompt = (start == Start::Continue)
-        .then(|| -> Result<String> {
-            Ok(runtime::continuation_prompt(
-                instance,
-                block,
-                &task::unacknowledged(conn, occupant.runtime, &occupant.conversation.native_id)?,
-            ))
-        })
+        .then(|| prompt(conn, instance, block, occupant))
         .transpose()?;
     Ok(Candidate {
         start,
         conversation: Some((occupant.runtime, occupant.conversation.native_id.clone())),
+        reopens: true,
         plan: Plan {
             argv: occupant.runtime.resume_argv(&occupant.conversation),
             env: occupant.runtime.resume_env(&occupant.conversation),
@@ -277,4 +292,13 @@ fn reopen(
     })
 }
 
+fn prompt(conn: &Connection, instance: &str, block: &str, occupant: &Occupant) -> Result<String> {
+    Ok(runtime::continuation_prompt(
+        instance,
+        block,
+        &task::unacknowledged(conn, occupant.runtime, &occupant.conversation.native_id)?,
+    ))
+}
+
 mod continuation;
+mod reported_first;

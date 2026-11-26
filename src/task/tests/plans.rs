@@ -1,6 +1,6 @@
 use anyhow::Result;
 
-use crate::restore;
+use crate::restore::{self, opened};
 use crate::store::Store;
 use crate::task::evidence::TAKEN;
 use crate::task::follow::OPEN_ROUNDS;
@@ -19,7 +19,7 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
         "notice_unread_pending",
         "blocked_episode_open",
     );
-    let statements: [(&str, &str, &[&str]); 32] = [
+    let statements: [(&str, &str, &[&str]); 34] = [
         ("OPEN_ROUNDS", &OPEN_ROUNDS, &[open]),
         ("outcome::ROUND", &outcome::ROUND, &[]),
         ("evidence::PANE", &evidence::PANE, &[]),
@@ -70,7 +70,9 @@ fn every_pass_statement_uses_an_index() -> Result<()> {
         ("request::ROUND_OPEN", &request::ROUND_OPEN, &[]),
         ("request::SENT", &request::SENT, &[open]),
         ("restore::OPEN_RESTORES", restore::OPEN_RESTORES, &[]),
-        ("restore::OPENED_ELSEWHERE", restore::OPENED_ELSEWHERE, &[]),
+        ("opened::OPENED_ELSEWHERE", opened::OPENED_ELSEWHERE, &[]),
+        ("opened::OPENED_HERE", opened::OPENED_HERE, &[]),
+        ("opened::RECIPIENT", opened::RECIPIENT, &[]),
         ("restore::FOREGROUND", restore::FOREGROUND, &[]),
     ];
     for (name, sql, partial) in statements {
