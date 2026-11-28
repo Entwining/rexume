@@ -1,6 +1,6 @@
 <h1 align="center"><a href="brand/logo/rexume-mark-color.svg"><img src="brand/logo/rexume-mark-readme.png" width="72" height="72" alt="View the Rexume logo as SVG"></a><br>Rexume</h1>
 
-<p align="center"><a href="#install">Install</a> · <a href="#rexume-and-program-resume">Why Rexume?</a> · <a href="#documentation">Docs</a></p>
+<p align="center"><a href="#install">Install</a> · <a href="#rexume-and-program-resume">Why Rexume?</a></p>
 
 Restart your [Rex](https://www.superlogical.com/rex) server without losing your place. Rexume brings Claude Code, Codex, Pi, omp, and OpenCode conversations back to their original panes. Results from registered workers still reach the conversation that requested them.
 
@@ -8,13 +8,13 @@ Restart your [Rex](https://www.superlogical.com/rex) server without losing your 
 
 Rex's [Program Resume](https://www.superlogical.com/rex/docs/features/session-restore#programs-that-resume) lets an agent or hook report a resume command through OSC 7577. Rexume reads the agent's own session records, so it can reopen a conversation even before the agent adopts the protocol. Conversations Rexume reopens keep the model and effort you last used, and a turn cut short by the restart continues once.
 
-| After a server restart | Program Resume (built-in rules) | Rexume |
+| After a server restart | Program Resume | Rexume |
 | --- | --- | --- |
-| Reopen Claude Code in its original pane | Yes, with Rex's hook | Yes |
-| Reopen a coding conversation when Rex has no resume report | No | Yes |
-| Keep model and effort changes made during a Claude Code session | No | Yes |
-| Continue an interrupted Claude Code turn | No | Yes, once |
-| Return a registered worker's result to the orchestrator | Outside its scope | Yes |
+| Reopen Claude Code in its pane | Yes, with Rex's hook | Yes |
+| Reopen agents that don't report to Rex | With your own rule | Yes |
+| Keep Claude Code's last model and effort | No | Yes |
+| Continue an interrupted Claude Code turn | No | Yes |
+| Return worker results to the orchestrator | Out of scope | Yes |
 
 If Program Resume reopens a conversation, Rexume leaves it in place and keeps tracking its worker tasks. In Claude Code, Rexume can still continue an interrupted turn. To have Rexume reopen Claude Code with its last settings, turn off its [resume rule](docs/setup.md#server-and-terminal-settings) in Rex.
 
