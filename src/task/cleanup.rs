@@ -186,7 +186,13 @@ pub fn close_unfocused(rex: &mut Rex, session: &str, block: &str) -> Result<Opti
         .iter()
         .find(|w| str_at(w, "/window_id") == active)
         .and_then(|w| str_at(w, "/focused_block_id"));
-    if focused == Some(block) {
+    let placed: usize = items(&view, "/windows")
+        .iter()
+        .flat_map(|w| items(w, "/layers"))
+        .map(|l| items(l, "/blocks").len())
+        .sum();
+    // A session's only placed pane has focus whether or not an app shows the session.
+    if focused == Some(block) && placed != 1 {
         return Ok(Some("the worker's pane has focus".into()));
     }
     // Rex has no conditional close, so the pane can change between the last check and this close.

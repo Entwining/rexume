@@ -167,10 +167,20 @@ fn a_typed_line_ends_by_its_answer_or_its_gate() -> Result<()> {
 
 #[test]
 fn a_retired_workers_pane_is_closed_unless_it_is_in_use() -> Result<()> {
-    for (shown, screen, focused, refuse, reported, kept) in [
-        (SHELL.as_str(), None, None, None, false, None),
+    for (shown, screen, focused, detached, refuse, reported, kept) in [
+        (SHELL.as_str(), None, None, None, None, false, None),
+        (
+            SHELL.as_str(),
+            None,
+            Some("b"),
+            Some("a"),
+            None,
+            false,
+            None,
+        ),
         (
             STARTUP,
+            None,
             None,
             None,
             None,
@@ -182,6 +192,7 @@ fn a_retired_workers_pane_is_closed_unless_it_is_in_use() -> Result<()> {
             Some(MOVED_BACK),
             None,
             None,
+            None,
             false,
             Some("typed after the cursor"),
         ),
@@ -190,11 +201,13 @@ fn a_retired_workers_pane_is_closed_unless_it_is_in_use() -> Result<()> {
             None,
             Some("b"),
             None,
+            None,
             false,
             Some("the worker's pane has focus"),
         ),
         (
             SHELL.as_str(),
+            None,
             None,
             None,
             Some("input_mode"),
@@ -206,6 +219,7 @@ fn a_retired_workers_pane_is_closed_unless_it_is_in_use() -> Result<()> {
             None,
             None,
             None,
+            None,
             true,
             Some("a conversation was opened in the pane"),
         ),
@@ -213,6 +227,7 @@ fn a_retired_workers_pane_is_closed_unless_it_is_in_use() -> Result<()> {
         let dir = tempfile::tempdir()?;
         let (mut store, server, mut rex) = restarted(dir.path(), SHELL.as_str(), shown)?;
         server.lock().unwrap().focused = focused;
+        server.lock().unwrap().detached.extend(detached);
         server.lock().unwrap().screen = screen;
         store.conn().execute_batch(
             "UPDATE block SET fg_pid = NULL, last_exit = 0 WHERE lineage = 'b';

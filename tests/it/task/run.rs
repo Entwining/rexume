@@ -10,6 +10,18 @@ use crate::common::{Daemon, REXUME, Server, db, poll, query, shell_block, shell_
 #[test]
 #[ignore = "needs a Rex server"]
 fn a_run_reaches_its_owner_and_its_pane_closes_after_release() {
+    released_run_closes(false);
+}
+
+#[test]
+#[ignore = "needs a Rex server"]
+fn a_released_run_closes_when_its_pane_is_the_only_one_placed() {
+    released_run_closes(true);
+}
+
+/// With `alone`, the owner's pane leaves the window before the release, which leaves the run's pane
+/// its session's only placed pane, focused.
+fn released_run_closes(alone: bool) {
     let dir = tempfile::tempdir().unwrap();
     let state = dir.path().join("state");
     let (go, result) = (dir.path().join("go"), dir.path().join("result.md"));
@@ -69,6 +81,12 @@ fn a_run_reaches_its_owner_and_its_pane_closes_after_release() {
     poll(Duration::from_secs(5), || {
         generation().filter(|now| Some(*now) > at_result)
     });
+    if alone {
+        server.call(
+            "session.detach_block",
+            &json!({ "session_id": session, "block_id": owner }),
+        );
+    }
     assert!(
         run_task(&server, &state, owner, &["release", &id])
             .status
