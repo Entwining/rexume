@@ -1,0 +1,1 @@
+The guide `rexume skill show` prints now has an agent that is asked to close its own pane close the session instead when that pane is the last one in it. Rex keeps a session whose last pane the CLI closed, with no tab, where closing it in the app removes the session.

@@ -113,9 +113,9 @@ Besides the actions Rex's guide gates, open a session on the web or call API met
 
 Once results are collected and no further work needs the other terminals, close in one operation the largest resource this task created and still owns exclusively. Reuse the creation IDs and current evidence already gathered; inspect only unresolved ownership, occupant, or completion details, including detached blocks when closing a session (`rex block ls -s <session> --json`). Collecting helper results does not complete a session or tab being handed back to the user: close a container only when its own purpose is complete. Keep terminals handed to the user, requested services, anything the user took over, and containers with user additions or uncertain ownership; report what remains and why.
 
-Cancel an owned helper's obsolete turn instead of waiting for it. CLI block and window closes can leave an empty session. A successful close at the chosen level completes cleanup; inspect that same level to reconcile an uncertain result before retrying.
+Cancel an owned helper's obsolete turn instead of waiting for it. Rex keeps a session whose last pane or tab the CLI closed, with no tab, where closing it in the app removes the session: when the pane or tab to close holds every block left in its session, detached ones included, close the session with `rex kill` instead. A successful close at the chosen level completes cleanup; inspect that same level to reconcile an uncertain result before retrying.
 
-When the user asks you to close the pane, tab, or session you run in, a direct close ends your program before the call returns or your final reply reaches the user. Start the waiter below in a separate process session so shell-tool cleanup does not kill it, then give your final reply, saying the terminal will close, and end the turn. The waiter closes once your pane stops reporting `working` or after five minutes. For a tab or session, replace its last command with `rex window close` or `rex kill` for that target. Outside a Rex terminal, as "Find the target" decides, `$REX_BLOCK` may name another pane: ask the user which pane is yours and start the waiter with `REX_BLOCK=<that block ID>` before `python3`, because both its status query and Rex's default session for the close come from `REX_BLOCK`.
+When the user asks you to close the pane, tab, or session you run in, a direct close ends your program before the call returns or your final reply reaches the user. Start the waiter below in a separate process session so shell-tool cleanup does not kill it, then give your final reply, saying the terminal will close, and end the turn. The waiter closes once your pane stops reporting `working` or after five minutes, and closes the session instead when your pane is the last block in it. To close your tab instead, have the test ask whether every block's `window_id` is your tab's and the `else` branch run `rex window close` for that tab; to close the session, replace the `if` command with `rex kill "$REX_BLOCK"`. Outside a Rex terminal, as "Find the target" decides, `$REX_BLOCK` may name another pane: ask the user which pane is yours and start the waiter with `REX_BLOCK=<that block ID>` before `python3`, because both its status query and Rex's default session for the close come from `REX_BLOCK`.
 
 ```sh
 python3 - <<'PY'
@@ -126,7 +126,11 @@ subprocess.Popen(
   rex block call --autostart=false -b "$REX_BLOCK" program_status | jq -e "any(.records[]; .state == \"working\")" >/dev/null || break
   sleep 1
 done
-rex block close "$REX_BLOCK"'''],
+if [ "$(rex block ls --autostart=false -s "$REX_BLOCK" --json | jq ".blocks | length == 1")" = true ]; then
+  rex kill "$REX_BLOCK"
+else
+  rex block close "$REX_BLOCK"
+fi'''],
     stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
     start_new_session=True,
 )
